@@ -40,9 +40,10 @@ EventBridge Scheduler -> Checker Lambda -> DynamoDB
 .devcontainer/        Codespaces dev environment
 planner/              Planner: plan.py (Claude + web search), Lambda handler, build.sh
 checker/              Checker: check.py (fetch + Haiku), Lambda handler, build.sh
+notifier/             Notifier: SES email + schedule teardown, build.sh
 terraform/
   bootstrap/          one-time: creates the S3 + DynamoDB Terraform backend itself
-  app/                DynamoDB tables, Lambdas, IAM roles (remote state)
+  app/                tables, Lambdas, IAM, EventBridge bus/rule, SES (remote state)
 ```
 
 Each Lambda is packaged by its own `build.sh`, which zips the handler plus
@@ -51,10 +52,11 @@ its pip dependencies into `dist/`. Terraform picks that zip up directly.
 
 ## Status
 
-Phases 0–2 are complete and running in AWS: the Planner and Checker are
-deployed Lambdas, and EventBridge Scheduler drives the check loop without
-anything else running. Phase 3 (notifications via SES) is next — until
-then, a met condition only flips the watch's status in DynamoDB.
+Phases 0–3 are complete and running in AWS. The loop is closed end to
+end: a plain-English request becomes a watch that checks itself on a
+schedule, emails you when the condition comes true, and then turns its
+own schedules off. Phase 4 (API Gateway + a React chat UI) is next —
+until then, watches are created by invoking the Planner Lambda directly.
 
 See `CLAUDE.md` for the decision log, roadmap, and the known gaps found
-while building Phase 2.
+while building.

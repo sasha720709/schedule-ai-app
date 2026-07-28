@@ -36,6 +36,26 @@ resource "aws_lambda_function" "checker" {
       ANTHROPIC_API_KEY   = var.anthropic_api_key
       WATCHES_TABLE       = aws_dynamodb_table.watches.name
       WATCH_TARGETS_TABLE = aws_dynamodb_table.watch_targets.name
+      EVENT_BUS_NAME      = aws_cloudwatch_event_bus.main.name
+    }
+  }
+}
+
+resource "aws_lambda_function" "notifier" {
+  function_name    = "schedule-ai-app-notifier"
+  role             = aws_iam_role.notifier_lambda.arn
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  architectures    = ["x86_64"]
+  filename         = "${path.module}/../../notifier/dist/notifier.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../notifier/dist/notifier.zip")
+  timeout          = 30
+  memory_size      = 128
+
+  environment {
+    variables = {
+      NOTIFY_EMAIL        = var.notify_email
+      WATCH_TARGETS_TABLE = aws_dynamodb_table.watch_targets.name
     }
   }
 }

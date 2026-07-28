@@ -100,29 +100,46 @@ working first, then do a hardening pass.
 - **No partial-failure handling in the Planner.** If schedule creation
   fails halfway through a multi-target plan, earlier targets keep their
   schedules and the `Watches` row is never written.
+- **The Planner doesn't know what the Checker can do.** Seen in Phase 3:
+  for a Hacker News watch the Planner picked
+  `hacker-news.firebaseio.com/v0/topstories.json` with a hint saying
+  "take the first ID, *then* fetch `/item/{id}.json` to read its score."
+  The Checker does exactly one GET and cannot chain requests, so it
+  correctly reported it couldn't extract a value — but that target is
+  dead weight, and every tick still pays for a fetch and a Haiku call.
+  Cheap fix when hardening: state the Checker's actual capability (one
+  plain GET, no chaining, no JS) in the Planner's system prompt.
+- **A permanently-failing Notifier retries for a day.** EventBridge
+  rule targets default to ~185 retries over 24h. Nothing catches a
+  notification that can never succeed. Phase 5's DLQ item.
 
 ## Current status
 
-**Phase 2 complete and verified against the real AWS account.** The whole
-loop runs unattended: Planner Lambda (Claude Sonnet + web search) turns a
-request into DynamoDB rows and creates one EventBridge Scheduler schedule
-per target; each schedule fires the Checker Lambda (Haiku) on its own
-interval; the Checker fetches, judges, writes back, and flips the watch to
-`triggered` on a match.
+**Phases 0–3 complete and verified against the real AWS account.** The
+product loop is closed: a plain-English request becomes a watch that
+checks itself on a schedule and emails when it comes true, then shuts
+its own schedules off.
 
-Proven end-to-end on watch `w_ea349f2f` ("top Hacker News story over 50
-points"): Planner picked a 5-minute interval and two targets, the Checker
-extracted "314 points", the condition tripped, and CloudWatch confirmed
-Scheduler independently invoking the Checker every 5 minutes afterwards.
+Proven end-to-end twice. Phase 2 on watch `w_ea349f2f`: Planner picked a
+5-minute interval and two targets, the Checker extracted "314 points",
+and CloudWatch confirmed Scheduler invoking the Checker unprompted every
+5 minutes. Phase 3 on watch `w_68c179cb`: the Checker read "404 points",
+emitted `WatchTriggered`, and ~1s later the Notifier had sent the email
+and deleted both schedules.
 
-Phases 0 and 1 are complete: repo, devcontainer, Codespaces, IAM user
-`schedule-ai-terraform`, the Terraform state backend, and the offline
-Planner prototype (`planner/plan.py`).
+Live AWS resources: `schedule-ai-app-watches` /
+`schedule-ai-app-watch-targets` (DynamoDB); `schedule-ai-app-planner`,
+`-checker`, `-notifier` (Lambda); `schedule-ai-app-bus` +
+`schedule-ai-app-watch-triggered` rule (EventBridge); a verified SES
+identity; and four IAM roles (one per Lambda, plus
+`schedule-ai-app-scheduler-invoke-checker` that schedules assume).
 
-Live AWS resources: `schedule-ai-app-watches` and
-`schedule-ai-app-watch-targets` (DynamoDB), `schedule-ai-app-planner` and
-`schedule-ai-app-checker` (Lambda), plus their IAM roles and the
-`schedule-ai-app-scheduler-invoke-checker` role that schedules assume.
+**IAM note:** the `schedule-ai-terraform` user's inline policies hit AWS's
+2048-character *aggregate* limit during Phase 3. They were consolidated
+into one customer-managed policy, `schedule-ai-app-terraform`, and the
+inline ones deleted. Add future permissions there. It uses action
+wildcards (`lambda:*`, `iam:*Role`) to fit, but every statement is still
+scoped to `schedule-ai-app-*` resources.
 
 ## Roadmap
 
@@ -131,11 +148,11 @@ Live AWS resources: `schedule-ai-app-watches` and
    touching infrastructure.
 2. Serverless core — **done.** Planner + Checker in Lambda, DynamoDB
    tables, EventBridge Scheduler wired end-to-end.
-3. Notifications — **current.** Checker emits an event on a match,
-   Notifier Lambda sends an SES email. Also the natural home for
-   deleting a triggered watch's schedules (see known gaps).
-4. API + web chat UI — API Gateway + chat Lambda exposing the Planner as a
-   tool, React frontend deployed to S3 + CloudFront.
+3. Notifications — **done.** Checker emits `WatchTriggered` onto a custom
+   bus, a rule routes it to the Notifier, which emails via SES and then
+   deletes that watch's schedules.
+4. API + web chat UI — **current.** API Gateway + chat Lambda exposing the
+   Planner as a tool, React frontend deployed to S3 + CloudFront.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging.
 6. Stretch — GitHub Actions CI/CD via OIDC (no static keys), headless

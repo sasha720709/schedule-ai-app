@@ -9,3 +9,8 @@ variable "anthropic_api_key" {
   type        = string
   sensitive   = true
 }
+
+variable "notify_email" {
+  description = "Address the Notifier sends to and from. Supply via TF_VAR_notify_email -- deliberately no default, since this repo is public."
+  type        = string
+}

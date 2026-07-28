@@ -4,6 +4,7 @@ target: read the target, check it, write the result back.
 Emitting an event on a match (and the Notifier that reacts to it) is
 Phase 3 -- for now a match just flips the watch's status to "triggered"."""
 
+import json
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -13,6 +14,7 @@ import boto3
 from check import check
 
 dynamodb = boto3.resource("dynamodb")
+events = boto3.client("events")
 
 
 def _from_decimal(value):
@@ -89,8 +91,23 @@ def lambda_handler(event, context):
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "triggered", ":t": now},
         )
-        # Phase 3: emit an EventBridge event here for the Notifier to pick up.
-        print(f"CONDITION MET for watch {watch_id}")
+        # Announce it and move on. The Checker doesn't know or care that a
+        # Notifier exists -- anything interested can subscribe to the bus.
+        events.put_events(Entries=[{
+            "Source": "schedule-ai-app.checker",
+            "DetailType": "WatchTriggered",
+            "EventBusName": os.environ["EVENT_BUS_NAME"],
+            "Detail": json.dumps({
+                "watch_id": watch_id,
+                "target_id": target_id,
+                "url": target["url"],
+                "prompt": watch.get("prompt", ""),
+                "last_value": result.get("last_value"),
+                "note": result.get("note", ""),
+                "triggered_at": now,
+            }),
+        }])
+        print(f"CONDITION MET for watch {watch_id} -- event emitted")
 
     return {
         "checked": True,

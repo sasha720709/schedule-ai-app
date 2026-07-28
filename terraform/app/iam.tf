@@ -131,3 +131,58 @@ resource "aws_iam_role_policy" "planner_lambda_scheduler" {
   role   = aws_iam_role.planner_lambda.id
   policy = data.aws_iam_policy_document.planner_lambda_scheduler.json
 }
+
+# The Checker only announces; it needs nothing but the right to publish.
+data "aws_iam_policy_document" "checker_lambda_events" {
+  statement {
+    actions   = ["events:PutEvents"]
+    resources = [aws_cloudwatch_event_bus.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "checker_lambda_events" {
+  name   = "put-events"
+  role   = aws_iam_role.checker_lambda.id
+  policy = data.aws_iam_policy_document.checker_lambda_events.json
+}
+
+# ---------------------------------------------------------------------------
+# Notifier Lambda
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "notifier_lambda" {
+  name               = "schedule-ai-app-notifier-lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "notifier_lambda_basic_execution" {
+  role       = aws_iam_role.notifier_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "notifier_lambda" {
+  statement {
+    actions   = ["ses:SendEmail"]
+    resources = ["*"]
+  }
+
+  # Querying a GSI needs the index ARN as well as the table's.
+  statement {
+    actions = ["dynamodb:Query"]
+    resources = [
+      aws_dynamodb_table.watch_targets.arn,
+      "${aws_dynamodb_table.watch_targets.arn}/index/watch_id-index",
+    ]
+  }
+
+  statement {
+    actions   = ["scheduler:DeleteSchedule"]
+    resources = ["arn:aws:scheduler:${var.aws_region}:${data.aws_caller_identity.current.account_id}:schedule/default/schedule-ai-app-*"]
+  }
+}
+
+resource "aws_iam_role_policy" "notifier_lambda" {
+  name   = "notify-and-clean-up"
+  role   = aws_iam_role.notifier_lambda.id
+  policy = data.aws_iam_policy_document.notifier_lambda.json
+}
