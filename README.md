@@ -45,4 +45,6 @@ terraform/
 
 ## Status
 
-Phase 0: environment + Terraform backend bootstrap. No application code yet.
+Phase 1: prototyping the Planner locally (`planner/plan.py`). Phase 0
+(environment, Codespaces, IAM, Terraform backend) is complete. See
+`CLAUDE.md` for the full decision log and roadmap.
