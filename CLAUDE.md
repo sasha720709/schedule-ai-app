@@ -62,6 +62,31 @@ and repo layout.
   bills. If a session prompts to approve the API key, decline it.
 - AWS budget alarms are set at $50 / $100 / $200.
 
+## Fetching strategy (decided in Phase 6, with evidence)
+
+A headless-browser probe was run from the Codespace against the sites that
+failed in Phase 2. Result, and the reason the design looks like it does:
+
+- **A browser fixes JS rendering.** steamdeck.com and the Steam store page
+  went from unreadable to yielding real prices (`779,00€`, `919,00€`).
+- **A browser does not fix bot protection.** Best Buy reset the connection
+  (`ERR_HTTP2_PROTOCOL_ERROR`) and Amazon interrupted navigation, against a
+  real Chromium. They fingerprint datacenter IPs; Lambda's are worse than
+  the Codespace's. Beating that needs residential proxies, i.e. a paid
+  scraping API.
+- **Decision: build the browser Lambda, skip the paid API.** It is free,
+  unlocks the large class of JS-rendered-but-unprotected sites, and teaches
+  container-image Lambdas. Amazon and Best Buy are accepted as out of
+  reach; the Planner's prompt now steers away from them.
+- The EUR prices above are a Codespace-geo artifact. A Lambda in
+  `us-east-1` should see USD, which incidentally resolves the Phase 2
+  currency gap.
+
+`fetch_method` (`"http"` | `"browser"`) is chosen per target by the
+Planner and stored on the `WatchTargets` row. The browser lives in its own
+Lambda so that ordinary HTTP checks never pay Chromium's ~2GB memory and
+multi-second cold start.
+
 ## Open decisions, not yet finalized
 
 - Auth on the eventual web UI: currently planned as a single shared
@@ -151,9 +176,49 @@ scoped to `schedule-ai-app-*` resources.
 3. Notifications — **done.** Checker emits `WatchTriggered` onto a custom
    bus, a rule routes it to the Notifier, which emails via SES and then
    deletes that watch's schedules.
-4. API + web chat UI — **current.** API Gateway + chat Lambda exposing the
-   Planner as a tool, React frontend deployed to S3 + CloudFront.
+4. API + web chat UI — API Gateway + chat Lambda exposing the Planner as a
+   tool, React frontend deployed to S3 + CloudFront. **Deferred** below
+   Phase 6 by choice: the owner wants the app to actually work on real
+   sites before it gets a nice interface.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging.
-6. Stretch — GitHub Actions CI/CD via OIDC (no static keys), headless
-   browser or dedicated API integrations for high-value watch targets.
+6. Headless browser — **current, mid-flight.** See "Picking up Phase 6"
+   below.
+7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
+
+## Picking up Phase 6 (in progress)
+
+All code is written and committed; what remains is Docker-dependent.
+
+Done already:
+- `fetcher/` — `handler.py` (Playwright renders one URL, returns text),
+  `Dockerfile` (Playwright base image + `awslambdaric`), `build.sh`
+  (docker build → ECR push).
+- `terraform/app/ecr.tf` — repo + a lifecycle rule expiring untagged
+  images, since a ~2GB image billed per GB adds up.
+- `checker/` — `check.py` split into `fetch_text` and `judge` so text can
+  come from either source; `handler.py` dispatches on `fetch_method` and
+  invokes the Fetcher for `"browser"`.
+- `planner/plan.py` — prompt now emits `fetch_method` and states the
+  Checker's real limits (one GET, no chaining, no bot-protected sites),
+  which also fixes the Phase 3 multi-step-hint gap.
+- `terraform/app` — Fetcher Lambda (`package_type = "Image"`, 2048MB),
+  its role, and the Checker's permission to invoke it.
+- `.devcontainer/devcontainer.json` — added the docker-in-docker feature.
+
+Remaining, in order:
+1. Add ECR permissions to the `schedule-ai-app-terraform` managed policy:
+   `ecr:*` on `arn:aws:ecr:us-east-1:851725214678:repository/schedule-ai-app-*`,
+   plus `ecr:GetAuthorizationToken` on `*` (docker login needs it before
+   any repo is known).
+2. Rebuild the Codespace so Docker exists.
+3. `terraform apply -target=aws_ecr_repository.fetcher -target=aws_ecr_lifecycle_policy.fetcher`
+   — the registry must exist before an image can be pushed, and the image
+   before the Lambda can be created.
+4. `fetcher/build.sh` (pulls ~2GB of base image the first time).
+5. Full `terraform apply` to create the Fetcher Lambda and rewire the
+   Checker.
+6. Test: create a watch on a Steam page, confirm the Planner marks it
+   `fetch_method: "browser"` and that the Checker gets a real price.
+   Watch the Fetcher's first cold start — if it exceeds the Checker's
+   60s timeout, raise the Checker's timeout rather than the Fetcher's.

@@ -65,9 +65,10 @@ def _parse_json(raw: str) -> dict:
     return json.loads(raw[start:end + 1])
 
 
-def check(url: str, extract_hint: str, condition: dict) -> dict:
-    page_text = fetch_text(url)
-
+def judge(url: str, extract_hint: str, condition: dict, page_text: str) -> dict:
+    """Decide the condition against already-fetched text. Kept separate from
+    fetching so the caller can source that text however it likes -- plain
+    GET here, or the browser Fetcher Lambda for JS-rendered pages."""
     client = Anthropic()
     response = client.messages.create(
         model=MODEL,
@@ -89,3 +90,8 @@ def check(url: str, extract_hint: str, condition: dict) -> dict:
         raise RuntimeError(f"No text in response: {response.content}")
 
     return _parse_json(text_blocks[-1])
+
+
+def check(url: str, extract_hint: str, condition: dict) -> dict:
+    """Plain-HTTP convenience path, used for local testing."""
+    return judge(url, extract_hint, condition, fetch_text(url))

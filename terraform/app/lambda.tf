@@ -33,12 +33,27 @@ resource "aws_lambda_function" "checker" {
 
   environment {
     variables = {
-      ANTHROPIC_API_KEY   = var.anthropic_api_key
-      WATCHES_TABLE       = aws_dynamodb_table.watches.name
-      WATCH_TARGETS_TABLE = aws_dynamodb_table.watch_targets.name
-      EVENT_BUS_NAME      = aws_cloudwatch_event_bus.main.name
+      ANTHROPIC_API_KEY    = var.anthropic_api_key
+      WATCHES_TABLE        = aws_dynamodb_table.watches.name
+      WATCH_TARGETS_TABLE  = aws_dynamodb_table.watch_targets.name
+      EVENT_BUS_NAME       = aws_cloudwatch_event_bus.main.name
+      FETCHER_FUNCTION_ARN = aws_lambda_function.fetcher.arn
     }
   }
+}
+
+# A container-image Lambda: no handler/runtime/filename here, because the
+# image itself carries the interpreter, Chromium, and the entrypoint.
+# Memory is high because Chromium genuinely needs it -- and on Lambda, CPU
+# scales with memory, so this also buys the speed to render a page.
+resource "aws_lambda_function" "fetcher" {
+  function_name = "schedule-ai-app-fetcher"
+  role          = aws_iam_role.fetcher_lambda.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.fetcher.repository_url}:latest"
+  architectures = ["x86_64"]
+  timeout       = 60
+  memory_size   = 2048
 }
 
 resource "aws_lambda_function" "notifier" {

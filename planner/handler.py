@@ -67,6 +67,7 @@ def lambda_handler(event, context):
             "watch_id": watch_id,
             "url": target["url"],
             "extract_hint": target["extract_hint"],
+            "fetch_method": target.get("fetch_method", "http"),
         }
         # Write the row before the schedule exists, so the Checker can never
         # fire at a target it can't read; then rewrite it with the ARN.

@@ -11,10 +11,29 @@ from decimal import Decimal
 
 import boto3
 
-from check import check
+from check import fetch_text, judge
 
 dynamodb = boto3.resource("dynamodb")
 events = boto3.client("events")
+lambda_client = boto3.client("lambda")
+
+
+def _fetch(url: str, fetch_method: str) -> str:
+    """Plain GET by default. The Planner marks a target "browser" when the
+    page needs JavaScript to render, which costs a second Lambda and a few
+    seconds -- so it's opt-in per target, not the default."""
+    if fetch_method != "browser":
+        return fetch_text(url)
+
+    response = lambda_client.invoke(
+        FunctionName=os.environ["FETCHER_FUNCTION_ARN"],
+        Payload=json.dumps({"url": url}),
+    )
+    payload = json.loads(response["Payload"].read())
+
+    if "FunctionError" in response:
+        raise RuntimeError(f"browser fetch failed: {payload}")
+    return payload["text"]
 
 
 def _from_decimal(value):
@@ -53,8 +72,13 @@ def lambda_handler(event, context):
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        result = check(
-            target["url"], target["extract_hint"], _from_decimal(watch["condition"])
+        fetch_method = target.get("fetch_method", "http")
+        page_text = _fetch(target["url"], fetch_method)
+        result = judge(
+            target["url"],
+            target["extract_hint"],
+            _from_decimal(watch["condition"]),
+            page_text,
         )
     except Exception as exc:  # noqa: BLE001 -- record it, don't crash the tick
         print(f"check failed for {target_id}: {type(exc).__name__}: {exc}")

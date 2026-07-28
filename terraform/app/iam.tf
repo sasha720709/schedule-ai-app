@@ -147,6 +147,36 @@ resource "aws_iam_role_policy" "checker_lambda_events" {
 }
 
 # ---------------------------------------------------------------------------
+# Browser Fetcher Lambda
+#
+# It only renders a page and returns text -- it touches no AWS service, so
+# CloudWatch Logs is the entire permission set.
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "fetcher_lambda" {
+  name               = "schedule-ai-app-fetcher-lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "fetcher_lambda_basic_execution" {
+  role       = aws_iam_role.fetcher_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "checker_lambda_invoke_fetcher" {
+  statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.fetcher.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "checker_lambda_invoke_fetcher" {
+  name   = "invoke-fetcher"
+  role   = aws_iam_role.checker_lambda.id
+  policy = data.aws_iam_policy_document.checker_lambda_invoke_fetcher.json
+}
+
+# ---------------------------------------------------------------------------
 # Notifier Lambda
 # ---------------------------------------------------------------------------
 
