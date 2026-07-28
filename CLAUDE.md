@@ -40,10 +40,16 @@ and repo layout.
 - **Terraform remote state**: S3 bucket + DynamoDB lock table, created once
   by `terraform/bootstrap`, the one module that intentionally uses local
   state since it creates the backend everything else will use.
-- **IAM**: the `schedule-ai-terraform` user gets AWS-managed policies added
-  one at a time, per phase, as each new AWS service is introduced —
-  deliberately not broad access up front. Currently: `AmazonS3FullAccess`,
-  `AmazonDynamoDBFullAccess`.
+- **IAM**: the `schedule-ai-terraform` user gets permissions added one at a
+  time, per phase, as each new AWS service is introduced — deliberately not
+  broad access up front. AWS-managed: `AmazonS3FullAccess`,
+  `AmazonDynamoDBFullAccess`. Phase 2 added *custom scoped* inline policies
+  instead of managed ones (the owner chose scoping over
+  `IAMFullAccess`/`AWSLambda_FullAccess`), each restricted to
+  `schedule-ai-app-*` resources: IAM role management, Lambda function
+  management, CloudWatch Logs read, EventBridge Scheduler read/delete.
+  Expect to discover missing actions by hitting `AccessDenied` — that's the
+  intended tradeoff of tight scoping.
 - **Secrets**: AWS and Anthropic credentials live only as *repository-level*
   GitHub Codespaces secrets (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
   `AWS_DEFAULT_REGION`, `ANTHROPIC_API_KEY`) — repo-level, not personal
@@ -65,27 +71,69 @@ and repo layout.
   with a headless browser or a scraping API once we know which sites
   actually need it.
 
+## Known gaps, found by running Phase 2 (deferred on purpose)
+
+Deliberately not fixed yet — the plan is to get the full product shape
+working first, then do a hardening pass.
+
+- **Planner JSON parsing is fragile.** `plan.py` assumes the last text
+  block is clean JSON. Observed failing for real once in Lambda
+  (`JSONDecodeError` on an empty last block); the same request succeeded
+  on retry. Fix later with forced structured output (a tool call) or a
+  retry-on-parse-failure loop. `checker/check.py` already uses a slightly
+  sturdier outermost-`{...}` parse.
+- **Plain HTTP GET does not work on real retail sites.** Confirmed
+  against all three Steam Deck targets: Steam renders price in JS,
+  Best Buy times out (bot protection), Amazon returns a page with no
+  visible price. The Checker handles this correctly (records the miss,
+  never invents a value) but cannot actually watch these sites. This is
+  the Phase 6 headless-browser/scraping-API item, now confirmed as
+  necessary rather than hypothetical.
+- **Prices are geo-dependent.** steamdeck.com served EUR from the
+  Codespace; a Lambda in `us-east-1` may see USD. Extraction hints and
+  conditions carry a currency, but nothing pins the fetch's locale.
+- **Triggered watches keep their schedules.** The Checker flips a watch
+  to `triggered` and then early-returns on every later tick (cheap — no
+  Claude call), but the EventBridge schedule keeps firing forever.
+  Nothing deletes schedules yet. Do this when the Notifier lands in
+  Phase 3, since that's the natural place to decide a watch is finished.
+- **No partial-failure handling in the Planner.** If schedule creation
+  fails halfway through a multi-target plan, earlier targets keep their
+  schedules and the `Watches` row is never written.
+
 ## Current status
 
-**Phase 1, in progress.** `planner/plan.py` is a local prototype proving
-the Planner idea (plain-English request -> structured JSON plan) using
-Claude + the `web_search_20250305` tool, no AWS involved yet.
+**Phase 2 complete and verified against the real AWS account.** The whole
+loop runs unattended: Planner Lambda (Claude Sonnet + web search) turns a
+request into DynamoDB rows and creates one EventBridge Scheduler schedule
+per target; each schedule fires the Checker Lambda (Haiku) on its own
+interval; the Checker fetches, judges, writes back, and flips the watch to
+`triggered` on a match.
 
-Phase 0 is complete and verified: repo, devcontainer (Python, Node,
-Terraform, AWS CLI, GitHub CLI, Claude Code), GitHub Codespaces, IAM user
-`schedule-ai-terraform`, and the Terraform state backend (S3 bucket +
-DynamoDB lock table) all exist and were confirmed working against the real
-AWS account.
+Proven end-to-end on watch `w_ea349f2f` ("top Hacker News story over 50
+points"): Planner picked a 5-minute interval and two targets, the Checker
+extracted "314 points", the condition tripped, and CloudWatch confirmed
+Scheduler independently invoking the Checker every 5 minutes afterwards.
+
+Phases 0 and 1 are complete: repo, devcontainer, Codespaces, IAM user
+`schedule-ai-terraform`, the Terraform state backend, and the offline
+Planner prototype (`planner/plan.py`).
+
+Live AWS resources: `schedule-ai-app-watches` and
+`schedule-ai-app-watch-targets` (DynamoDB), `schedule-ai-app-planner` and
+`schedule-ai-app-checker` (Lambda), plus their IAM roles and the
+`schedule-ai-app-scheduler-invoke-checker` role that schedules assume.
 
 ## Roadmap
 
 0. Environment & IaC foundation — **done**
-1. Planner, offline — **current.** Prove the Planner logic works before
+1. Planner, offline — **done.** Prove the Planner logic works before
    touching infrastructure.
-2. Serverless core — move Planner + Checker into Lambda, DynamoDB tables,
-   EventBridge Scheduler wired end-to-end.
-3. Notifications — Checker emits an event on a match, Notifier Lambda
-   sends an SES email.
+2. Serverless core — **done.** Planner + Checker in Lambda, DynamoDB
+   tables, EventBridge Scheduler wired end-to-end.
+3. Notifications — **current.** Checker emits an event on a match,
+   Notifier Lambda sends an SES email. Also the natural home for
+   deleting a triggered watch's schedules (see known gaps).
 4. API + web chat UI — API Gateway + chat Lambda exposing the Planner as a
    tool, React frontend deployed to S3 + CloudFront.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured

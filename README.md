@@ -37,14 +37,24 @@ EventBridge Scheduler -> Checker Lambda -> DynamoDB
 ## Repo layout
 
 ```
-.devcontainer/       Codespaces dev environment
+.devcontainer/        Codespaces dev environment
+planner/              Planner: plan.py (Claude + web search), Lambda handler, build.sh
+checker/              Checker: check.py (fetch + Haiku), Lambda handler, build.sh
 terraform/
   bootstrap/          one-time: creates the S3 + DynamoDB Terraform backend itself
-  (more to come as the app is built out)
+  app/                DynamoDB tables, Lambdas, IAM roles (remote state)
 ```
+
+Each Lambda is packaged by its own `build.sh`, which zips the handler plus
+its pip dependencies into `dist/`. Terraform picks that zip up directly.
+`boto3` is deliberately not bundled — the Lambda Python runtime ships it.
 
 ## Status
 
-Phase 1: prototyping the Planner locally (`planner/plan.py`). Phase 0
-(environment, Codespaces, IAM, Terraform backend) is complete. See
-`CLAUDE.md` for the full decision log and roadmap.
+Phases 0–2 are complete and running in AWS: the Planner and Checker are
+deployed Lambdas, and EventBridge Scheduler drives the check loop without
+anything else running. Phase 3 (notifications via SES) is next — until
+then, a met condition only flips the watch's status in DynamoDB.
+
+See `CLAUDE.md` for the decision log, roadmap, and the known gaps found
+while building Phase 2.
