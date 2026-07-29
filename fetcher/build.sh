@@ -17,7 +17,12 @@ aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
 
 echo "==> building (this pulls ~2GB of Playwright base image the first time)"
-docker build --platform linux/amd64 -t "${REPO}:latest" .
+# --provenance=false is not optional. Modern Buildx defaults to attaching an
+# attestation manifest, which turns the push into an OCI *index* (a
+# multi-platform manifest list). Lambda only accepts a single-platform image
+# manifest and rejects an index with an unhelpful "source image is not
+# supported" error at function-create time, long after the push looked fine.
+docker build --platform linux/amd64 --provenance=false -t "${REPO}:latest" .
 
 echo "==> pushing to ${URI}:latest"
 docker tag "${REPO}:latest" "${URI}:latest"

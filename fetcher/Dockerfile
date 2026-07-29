@@ -4,6 +4,14 @@
 # not a zip: it is far past Lambda's 250MB unzipped limit.
 FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
 
+# This image ships the *browsers* (at PLAYWRIGHT_BROWSERS_PATH=/ms-playwright)
+# and their system libraries, but not the Python bindings -- `import
+# playwright` fails on it out of the box. Pin the package to the image tag so
+# the bindings never disagree with the browser build they drive; a mismatch
+# fails at launch, not at build. No `playwright install` step is needed, since
+# the browsers are already on disk and the env var points at them.
+RUN pip install --no-cache-dir playwright==1.61.0
+
 # A container only becomes a Lambda by speaking Lambda's runtime protocol.
 # awslambdaric (Runtime Interface Client) is the adapter that does that,
 # turning `handler.lambda_handler` into something Lambda can invoke.
