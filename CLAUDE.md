@@ -273,6 +273,28 @@ scoped to `schedule-ai-app-*` resources.
    logging, plus the items in "Known gaps" above.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
 
+## Picking up Phase 4 (next session starts here)
+
+The plan is written up in full in **`docs/phase-4-plan.md`** — API
+surface, product vision, sub-phases, and what it teaches. Read that
+first.
+
+**Five decisions are open and need the owner's answer before any code
+gets written.** They are listed at the bottom of that document. The
+biggest is whether the Planner should stop creating schedules itself and
+instead propose a plan the owner confirms — that one changes
+`planner/handler.py`, not just the frontend.
+
+Two things to know before starting:
+
+- **Phase 4 does not start with React.** It starts with the watch
+  lifecycle API (list / get / pause / delete), because none of it exists
+  and a UI cannot be built without it. See the "Blocking for Phase 4"
+  entries under Known gaps.
+- **The Planner takes ~19.5s against a 29s API Gateway ceiling.** The API
+  has to be asynchronous. The `planning` status already in the schema is
+  the intended mechanism.
+
 ## How Phase 6 actually went
 
 Two bugs were latent in the committed code and only surfaced on the first
