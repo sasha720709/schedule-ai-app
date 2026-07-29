@@ -1,15 +1,27 @@
 {
   "name": "schedule-ai-app",
   "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "mounts": [
+  "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
+],
   "features": {
+    "ghcr.io/devcontainers/features/node:2.1.0": { "version": "lts" },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {"moby": false},
     "ghcr.io/devcontainers/features/terraform:1": {},
     "ghcr.io/devcontainers/features/aws-cli:1": {},
-    "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
   },
+  "overrideFeatureInstallOrder": [
+    "ghcr.io/devcontainers/features/node",
+    "ghcr.io/devcontainers/features/docker-in-docker",
+    "ghcr.io/devcontainers/features/terraform",
+    "ghcr.io/devcontainers/features/aws-cli",
+    "ghcr.io/devcontainers/features/github-cli",
+    "ghcr.io/anthropics/devcontainer-features/claude-code"
+  ],
   "postCreateCommand": "pip install --upgrade pip",
+  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude 2>/dev/null || true",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -20,4 +32,6 @@
       ]
     }
   }
+
+  
 }
