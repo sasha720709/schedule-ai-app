@@ -41,22 +41,33 @@ EventBridge Scheduler -> Checker Lambda -> DynamoDB
 planner/              Planner: plan.py (Claude + web search), Lambda handler, build.sh
 checker/              Checker: check.py (fetch + Haiku), Lambda handler, build.sh
 notifier/             Notifier: SES email + schedule teardown, build.sh
+fetcher/              Fetcher: Playwright/Chromium renderer, Dockerfile, build.sh
 terraform/
   bootstrap/          one-time: creates the S3 + DynamoDB Terraform backend itself
-  app/                tables, Lambdas, IAM, EventBridge bus/rule, SES (remote state)
+  app/                tables, Lambdas, IAM, ECR, EventBridge bus/rule, SES (remote state)
 ```
 
-Each Lambda is packaged by its own `build.sh`, which zips the handler plus
-its pip dependencies into `dist/`. Terraform picks that zip up directly.
-`boto3` is deliberately not bundled — the Lambda Python runtime ships it.
+Three of the four Lambdas are packaged by their own `build.sh`, which zips
+the handler plus its pip dependencies into `dist/`. Terraform picks that zip
+up directly. `boto3` is deliberately not bundled — the Lambda Python runtime
+ships it.
+
+The Fetcher is different: Chromium and its system libraries are far past
+Lambda's 250MB unzipped limit, so it ships as a container image. Its
+`build.sh` builds and pushes to ECR, and Terraform stores only the image
+URI. That means **pushing a new image to the same `:latest` tag will not
+redeploy it** — `terraform apply` sees an unchanged URI string. Use
+`aws lambda update-function-code --image-uri ...` after a rebuild.
 
 ## Status
 
-Phases 0–3 are complete and running in AWS. The loop is closed end to
-end: a plain-English request becomes a watch that checks itself on a
+Phases 0–3 and 6 are complete and running in AWS. The loop is closed end
+to end: a plain-English request becomes a watch that checks itself on a
 schedule, emails you when the condition comes true, and then turns its
-own schedules off. Phase 4 (API Gateway + a React chat UI) is next —
-until then, watches are created by invoking the Planner Lambda directly.
+own schedules off — and it now works on pages that render their value in
+JavaScript, via a headless-Chromium Lambda the Planner opts into per
+target. Phase 4 (API Gateway + a React chat UI) is next — until then,
+watches are created by invoking the Planner Lambda directly.
 
 See `CLAUDE.md` for the decision log, roadmap, and the known gaps found
 while building.

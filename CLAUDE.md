@@ -107,57 +107,80 @@ working first, then do a hardening pass.
   on retry. Fix later with forced structured output (a tool call) or a
   retry-on-parse-failure loop. `checker/check.py` already uses a slightly
   sturdier outermost-`{...}` parse.
-- **Plain HTTP GET does not work on real retail sites.** Confirmed
-  against all three Steam Deck targets: Steam renders price in JS,
-  Best Buy times out (bot protection), Amazon returns a page with no
-  visible price. The Checker handles this correctly (records the miss,
-  never invents a value) but cannot actually watch these sites. This is
-  the Phase 6 headless-browser/scraping-API item, now confirmed as
-  necessary rather than hypothetical.
-- **Prices are geo-dependent.** steamdeck.com served EUR from the
-  Codespace; a Lambda in `us-east-1` may see USD. Extraction hints and
-  conditions carry a currency, but nothing pins the fetch's locale.
-- **Triggered watches keep their schedules.** The Checker flips a watch
-  to `triggered` and then early-returns on every later tick (cheap — no
-  Claude call), but the EventBridge schedule keeps firing forever.
-  Nothing deletes schedules yet. Do this when the Notifier lands in
-  Phase 3, since that's the natural place to decide a watch is finished.
 - **No partial-failure handling in the Planner.** If schedule creation
   fails halfway through a multi-target plan, earlier targets keep their
   schedules and the `Watches` row is never written.
-- **The Planner doesn't know what the Checker can do.** Seen in Phase 3:
-  for a Hacker News watch the Planner picked
-  `hacker-news.firebaseio.com/v0/topstories.json` with a hint saying
-  "take the first ID, *then* fetch `/item/{id}.json` to read its score."
-  The Checker does exactly one GET and cannot chain requests, so it
-  correctly reported it couldn't extract a value — but that target is
-  dead weight, and every tick still pays for a fetch and a Haiku call.
-  Cheap fix when hardening: state the Checker's actual capability (one
-  plain GET, no chaining, no JS) in the Planner's system prompt.
 - **A permanently-failing Notifier retries for a day.** EventBridge
   rule targets default to ~185 retries over 24h. Nothing catches a
   notification that can never succeed. Phase 5's DLQ item.
+- **Lambda zips are built for whatever machine ran `build.sh`.**
+  `pip install -t` vendors platform-specific wheels — `checker/build/`
+  contains `_pydantic_core.cpython-312-x86_64-linux-gnu.so`. It works
+  only because the Codespace is Python 3.12 / x86_64 Linux, matching
+  the Lambda runtime. Build on a Mac and the zip deploys fine, then
+  dies at import. Fix in the hardening pass:
+  `pip install ... --platform manylinux2014_x86_64 --only-binary=:all:`.
+  Deliberately *not* done during Phase 6 — it changes `source_code_hash`
+  on two working Lambdas and would muddy the diagnosis if the browser
+  work went wrong.
+- **The `anthropic` bundle is vendored twice.** Planner and Checker each
+  carry ~7.7MB of the same dependency tree. A Lambda Layer would
+  deduplicate it. Cosmetic at this size; worth it if a fourth zip
+  Lambda appears.
+- **The Anthropic API key lives in Terraform state and Lambda env vars.**
+  `sensitive = true` only hides a value from CLI *output*; it is stored
+  in plaintext in the state file (S3, `encrypt = true`) and readable by
+  anyone with `lambda:GetFunctionConfiguration`. Acceptable for a
+  single-user project with a scoped IAM user; the real fix is Secrets
+  Manager or SSM Parameter Store fetched at runtime.
+- **The Fetcher is over-provisioned and unmeasured.** 2048MB allocated,
+  915MB actually used. Do not just lower it — Lambda scales CPU with
+  memory, and cost is memory × duration, so less memory can render
+  slower and cost the same or more while creeping toward the 60s
+  timeout. Needs measurement at 1024 / 1536 / 2048, not a guess.
 
 ## Current status
 
-**Phases 0–3 complete and verified against the real AWS account.** The
-product loop is closed: a plain-English request becomes a watch that
-checks itself on a schedule and emails when it comes true, then shuts
-its own schedules off.
+**Phases 0–3 and 6 complete and verified against the real AWS account.**
+The product loop is closed and now works on JavaScript-rendered pages.
 
-Proven end-to-end twice. Phase 2 on watch `w_ea349f2f`: Planner picked a
-5-minute interval and two targets, the Checker extracted "314 points",
-and CloudWatch confirmed Scheduler invoking the Checker unprompted every
-5 minutes. Phase 3 on watch `w_68c179cb`: the Checker read "404 points",
-emitted `WatchTriggered`, and ~1s later the Notifier had sent the email
-and deleted both schedules.
+Proven end-to-end three times. Phase 2 on watch `w_ea349f2f`: Planner
+picked a 5-minute interval and two targets, the Checker extracted "314
+points", and CloudWatch confirmed Scheduler invoking the Checker
+unprompted every 5 minutes. Phase 3 on watch `w_68c179cb`: the Checker
+read "404 points", emitted `WatchTriggered`, and ~1s later the Notifier
+had sent the email and deleted both schedules. Phase 6 on watch
+`w_cd9975d8`: the Planner marked a Steam store target
+`fetch_method: "browser"` and picked *only* that target (no Amazon, no
+Best Buy — the prompt steering works), the Checker invoked the Fetcher,
+Chromium rendered the page, and Haiku read `$629.00` against a `< $450`
+condition. All three test watches have since been deleted; both tables
+and the schedule list are empty.
 
 Live AWS resources: `schedule-ai-app-watches` /
 `schedule-ai-app-watch-targets` (DynamoDB); `schedule-ai-app-planner`,
-`-checker`, `-notifier` (Lambda); `schedule-ai-app-bus` +
+`-checker`, `-notifier`, `-fetcher` (Lambda, the last one a container
+image); `schedule-ai-app-fetcher` (ECR, with an untagged-image
+expiry rule); `schedule-ai-app-bus` +
 `schedule-ai-app-watch-triggered` rule (EventBridge); a verified SES
-identity; and four IAM roles (one per Lambda, plus
+identity; and five IAM roles (one per Lambda, plus
 `schedule-ai-app-scheduler-invoke-checker` that schedules assume).
+
+**Measured Phase 6 numbers**, worth keeping for cost work: Fetcher cold
+start 1544ms init / 10.2s total, warm renders ~4.7s, 915MB of 2048MB
+used. A full browser check (Fetcher + Checker + Haiku) costs roughly
+$0.0057, of which ~97% is the Haiku call — the browser is not the
+expensive part. The expensive part is `check_interval_min`, which the
+Planner chooses on its own: a single target at 5-minute intervals is
+about $50/month, at 10 minutes about $25, at 60 minutes about $4.
+
+**Container-image Lambdas do not redeploy via `terraform apply`.**
+Terraform stores only the image *URI*. Push a new image to the same
+`:latest` tag and the URI string is unchanged, so Terraform reports no
+changes while the running code stays stale. Updating the Fetcher needs
+`aws lambda update-function-code --image-uri ...` (then
+`aws lambda wait function-updated`), or a versioned tag instead of
+`:latest`. This bit us once during Phase 6 and will again.
 
 **IAM note:** the `schedule-ai-terraform` user's inline policies hit AWS's
 2048-character *aggregate* limit during Phase 3. They were consolidated
@@ -176,49 +199,52 @@ scoped to `schedule-ai-app-*` resources.
 3. Notifications — **done.** Checker emits `WatchTriggered` onto a custom
    bus, a rule routes it to the Notifier, which emails via SES and then
    deletes that watch's schedules.
-4. API + web chat UI — API Gateway + chat Lambda exposing the Planner as a
-   tool, React frontend deployed to S3 + CloudFront. **Deferred** below
-   Phase 6 by choice: the owner wants the app to actually work on real
-   sites before it gets a nice interface.
+6. Headless browser — **done.** Fetcher Lambda (container image on ECR)
+   renders JS pages; the Planner picks `fetch_method` per target. Taken
+   out of order, ahead of Phase 4, so the app would actually work on real
+   sites before it got a nice interface.
+4. API + web chat UI — **next.** API Gateway + chat Lambda exposing the
+   Planner as a tool, React frontend deployed to S3 + CloudFront.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
-   logging.
-6. Headless browser — **current, mid-flight.** See "Picking up Phase 6"
-   below.
+   logging, plus the items in "Known gaps" above.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
 
-## Picking up Phase 6 (in progress)
+## How Phase 6 actually went
 
-All code is written and committed; what remains is Docker-dependent.
+Two bugs were latent in the committed code and only surfaced on the first
+real build. Both are fixed; both are the kind that look like the image is
+broken when the problem is one line of packaging.
 
-Done already:
-- `fetcher/` — `handler.py` (Playwright renders one URL, returns text),
-  `Dockerfile` (Playwright base image + `awslambdaric`), `build.sh`
-  (docker build → ECR push).
-- `terraform/app/ecr.tf` — repo + a lifecycle rule expiring untagged
-  images, since a ~2GB image billed per GB adds up.
-- `checker/` — `check.py` split into `fetch_text` and `judge` so text can
-  come from either source; `handler.py` dispatches on `fetch_method` and
-  invokes the Fetcher for `"browser"`.
-- `planner/plan.py` — prompt now emits `fetch_method` and states the
-  Checker's real limits (one GET, no chaining, no bot-protected sites),
-  which also fixes the Phase 3 multi-step-hint gap.
-- `terraform/app` — Fetcher Lambda (`package_type = "Image"`, 2048MB),
-  its role, and the Checker's permission to invoke it.
-- `.devcontainer/devcontainer.json` — added the docker-in-docker feature.
+- **Buildx emits an OCI *index*, not an image.** Modern Buildx attaches an
+  attestation manifest by default, which makes the push a multi-platform
+  manifest list. Lambda accepts only a single-platform manifest and
+  rejects an index at function-create time with a message that blames the
+  image rather than the manifest type. Fixed with `--provenance=false`
+  in `fetcher/build.sh`.
+- **The Playwright base image has no `playwright` package.**
+  `mcr.microsoft.com/playwright/python` ships the browsers (at
+  `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`) and every system library,
+  but not the Python bindings — `import playwright` fails out of the box,
+  giving `Runtime.ImportModuleError`. Fixed by installing
+  `playwright==1.61.0` in the Dockerfile, pinned to the image tag so the
+  bindings can never drift from the browser build. No `playwright
+  install` step is needed; the browsers are already on disk.
 
-Remaining, in order:
-1. Add ECR permissions to the `schedule-ai-app-terraform` managed policy:
-   `ecr:*` on `arn:aws:ecr:us-east-1:851725214678:repository/schedule-ai-app-*`,
-   plus `ecr:GetAuthorizationToken` on `*` (docker login needs it before
-   any repo is known).
-2. Rebuild the Codespace so Docker exists.
-3. `terraform apply -target=aws_ecr_repository.fetcher -target=aws_ecr_lifecycle_policy.fetcher`
-   — the registry must exist before an image can be pushed, and the image
-   before the Lambda can be created.
-4. `fetcher/build.sh` (pulls ~2GB of base image the first time).
-5. Full `terraform apply` to create the Fetcher Lambda and rewire the
-   Checker.
-6. Test: create a watch on a Steam page, confirm the Planner marks it
-   `fetch_method: "browser"` and that the Checker gets a real price.
-   Watch the Fetcher's first cold start — if it exceeds the Checker's
-   60s timeout, raise the Checker's timeout rather than the Fetcher's.
+Two predictions from the Phase 6 design notes were confirmed:
+
+- **The currency gap closed itself.** The Codespace probe saw `779,00€`;
+  the Lambda in `us-east-1` sees `$629.00`. Geography was the whole
+  explanation, so the Phase 2 "prices are geo-dependent" gap is resolved
+  for the default case. Nothing still pins locale explicitly, so a watch
+  that *needs* a non-US price has no way to ask for one.
+- **Cold start was never the problem.** A ~2GB image inits in 1.5s,
+  because Lambda chunks and caches image blocks rather than pulling the
+  whole thing. The Checker's 60s timeout was never in danger and did not
+  need raising.
+
+One verification gotcha, since it will happen again: `aws ecr
+describe-repositories` with no arguments asks for `repository/*` and will
+return `AccessDenied` even when the policy is correct, because the policy
+is deliberately scoped to `repository/schedule-ai-app-*`. Verify with
+`aws ecr describe-repositories --repository-names schedule-ai-app-fetcher`
+instead — `RepositoryNotFoundException` is the success case.
