@@ -96,10 +96,35 @@ multi-second cold start.
   with a headless browser or a scraping API once we know which sites
   actually need it.
 
-## Known gaps, found by running Phase 2 (deferred on purpose)
+## Known gaps (deferred on purpose)
 
 Deliberately not fixed yet — the plan is to get the full product shape
-working first, then do a hardening pass.
+working first, then do a hardening pass. Ordered roughly by when they
+will start to hurt.
+
+### Blocking for Phase 4
+
+- **There are no watch lifecycle operations at all.** The only way to
+  create a watch is to invoke the Planner; the only way to list, pause,
+  cancel or delete one is manual DynamoDB and Scheduler surgery — which
+  is literally what was done to clear the Phase 2/3/6 test rows in this
+  session. A UI cannot ship without `list`, `get`, `pause`/`resume` and
+  `delete`, and `delete` in particular has to remove the target rows,
+  the watch row, *and* the EventBridge schedules, or it leaks billing.
+  This is Phase 4's real first task, ahead of any React.
+- **`user_id` is hardcoded to `"default"`.** Fine while the passcode
+  makes it single-user, but every query will need revisiting the moment
+  a second person exists. Worth keeping the field rather than removing
+  it.
+- **The Planner is slow enough to break a synchronous HTTP API.** The
+  Phase 6 run took 19.5s (web search + Sonnet + schedule creation).
+  API Gateway HTTP APIs cap at 29s. A synchronous `POST /watches` is
+  one slow web search away from timing out, and the client would have
+  no idea whether the watch was created. The `planning` status already
+  in the schema exists for exactly this: return 202 immediately, let
+  the client poll.
+
+### Correctness and robustness
 
 - **Planner JSON parsing is fragile.** `plan.py` assumes the last text
   block is clean JSON. Observed failing for real once in Lambda
@@ -107,12 +132,51 @@ working first, then do a hardening pass.
   on retry. Fix later with forced structured output (a tool call) or a
   retry-on-parse-failure loop. `checker/check.py` already uses a slightly
   sturdier outermost-`{...}` parse.
+- **The Notifier leaves stale `schedule_arn` values behind.** It deletes
+  the schedules but never clears the field, so a triggered watch's target
+  rows keep pointing at schedules that no longer exist. Confirmed on the
+  Phase 2/3 leftovers: every one carried an ARN for a deleted schedule.
+  Harmless today because nothing reads the field back, but it makes the
+  table lie about the state of the world.
+- **The Notifier's GSI query is not paginated.** `query()` returns at
+  most 1MB; a watch with enough targets would silently keep some of its
+  schedules alive forever. Not reachable with 1–3 targets per watch,
+  but it is a real correctness bug rather than a style note.
+- **There are no tests.** Not one. Every verification so far has been a
+  manual Lambda invoke against real AWS, which is slow, costs money, and
+  cannot check the paths that matter most (a malformed Planner response,
+  a Fetcher timeout, a condition that is exactly at the boundary).
+  `judge()` and `_parse_json()` are pure functions and would be trivial
+  to test offline.
+
+### Product shape
+
+- **Nothing keeps a history of what was checked.** `last_value` is
+  overwritten on every tick, so there is no way to draw "the price over
+  the last month," and no way to tell a genuinely stable price from a
+  target that has silently been failing to extract for a week.
+- **A watch cannot be edited.** No changing the threshold, the interval,
+  or a bad target URL — the only recourse is delete and re-plan, which
+  pays for a fresh Sonnet call and web search.
 - **No partial-failure handling in the Planner.** If schedule creation
   fails halfway through a multi-target plan, earlier targets keep their
   schedules and the `Watches` row is never written.
+- **No partial-failure handling in the Planner.** If schedule creation
+  fails halfway through a multi-target plan, earlier targets keep their
+  schedules and the `Watches` row is never written.
+
+### Operations and cost
+
 - **A permanently-failing Notifier retries for a day.** EventBridge
   rule targets default to ~185 retries over 24h. Nothing catches a
   notification that can never succeed. Phase 5's DLQ item.
+- **Every tick pays for a Haiku call even when the page has not
+  changed.** The dominant cost of the whole system is ~5k input tokens
+  per check, and most checks on a slow-moving price see byte-identical
+  text. Hashing the fetched text and skipping `judge()` on an unchanged
+  hash is the single highest-leverage cost fix available — plausibly
+  10–100×, far more than any model swap. Trimming `MAX_PAGE_CHARS` by
+  pre-filtering to the region around the hint is the second.
 - **Lambda zips are built for whatever machine ran `build.sh`.**
   `pip install -t` vendors platform-specific wheels — `checker/build/`
   contains `_pydantic_core.cpython-312-x86_64-linux-gnu.so`. It works
