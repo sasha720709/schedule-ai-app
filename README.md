@@ -75,10 +75,10 @@ aws ssm get-parameter --name /schedule-ai-app/passcode \
 
 ```bash
 pip install -r api/requirements-dev.txt
-pytest api/ -q
+pytest api/ shared/ -q
 ```
 
-The `api` Lambda has an offline suite that stubs `boto3` and touches no
+The `api` Lambda and the shared modules have offline suites that stubs `boto3` and touches no
 AWS — it runs in well under a second and costs nothing. It covers the
 paths a manual Lambda invoke is worst at reaching: malformed bodies,
 status conflicts, a confirm retried after a partial failure, intervals

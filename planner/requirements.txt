@@ -1,1 +1,5 @@
 anthropic
+# CSS extraction. Pure Python on purpose: lxml would be faster but ships
+# compiled wheels, and `pip install -t` vendoring platform-specific binaries
+# is already a documented fragility in this repo.
+beautifulsoup4
