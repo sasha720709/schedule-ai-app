@@ -52,6 +52,25 @@ the handler plus its pip dependencies into `dist/`. Terraform picks that zip
 up directly. `boto3` is deliberately not bundled — the Lambda Python runtime
 ships it.
 
+## Running the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev          # http://localhost:5173, allowed by the API's CORS config
+./deploy.sh          # build, sync to S3, invalidate CloudFront
+```
+
+The app asks for a passcode on first load and keeps it in `localStorage`.
+Read the current one with:
+
+```bash
+aws ssm get-parameter --name /schedule-ai-app/passcode \
+  --with-decryption --query Parameter.Value --output text
+```
+
+`terraform output frontend_url` gives the deployed URL.
+
 ## Tests
 
 ```bash

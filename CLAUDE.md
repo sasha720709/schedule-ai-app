@@ -279,18 +279,40 @@ scoped to `schedule-ai-app-*` resources.
    renders JS pages; the Planner picks `fetch_method` per target. Taken
    out of order, ahead of Phase 4, so the app would actually work on real
    sites before it got a nice interface.
-4. API + web chat UI — **in progress.** 4a (lifecycle API + authorizer)
-   done; 4b static hosting next. API Gateway + chat Lambda exposing the
-   Planner as a tool, React frontend deployed to S3 + CloudFront.
+4. API + web chat UI — **in progress.** 4a (lifecycle API) and 4b
+   (hosting + minimal React) done; 4c designed UI next. API Gateway +
+   chat Lambda, React frontend on S3 + CloudFront.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
 
-## Phase 4 — sub-phase 4a done, 4b next
+## Phase 4 — 4a and 4b done, 4c next
 
 The plan is written up in full in **`docs/phase-4-plan.md`**. **4a (the
-lifecycle API) is complete and verified over real HTTP.** 4b is static
-hosting: S3 + CloudFront + a minimal React page that lists watches.
+lifecycle API) and 4b (hosting + a minimal React app) are both complete
+and verified.** 4c is the designed chat interface.
+
+The app is live at **https://dy98z46k9nqcs.cloudfront.net** — enter the
+passcode from SSM on first load; it is kept in `localStorage`. Deploy a
+new build with `./frontend/deploy.sh`, which builds, syncs and invalidates.
+Terraform owns the bucket and distribution but *not* their contents, the
+same split as the Fetcher's container image.
+
+4b details worth not re-learning:
+
+- **The SPA fallback must rewrite 403, not just 404.** A private S3 bucket
+  returns 403 for a missing object, because it will not admit what does not
+  exist. Handle only 404 and every client-side route breaks.
+- **`deploy.sh` invalidates only `/index.html`.** Vite content-hashes asset
+  filenames, so a new build produces names CloudFront has never cached.
+  Invalidating `/*` is the common reflex and is billed per path past 1000
+  a month.
+- **CORS is now named origins, not `*`** — the CloudFront domain plus
+  `http://localhost:5173` for `npm run dev`.
+- Origin Access Control, not the older Origin Access Identity that most
+  tutorials still show.
+- `frontend/.env.production` is committed on purpose: `VITE_API_BASE` is
+  not a secret. The passcode never enters the bundle — verified.
 
 The watch status machine, as built:
 
