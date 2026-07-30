@@ -282,7 +282,8 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **4a** · Lifecycle API + authorizer | done |
 | ✅ | **4b** · Hosting + minimal React | done |
 | ✅ | **8a** · Budget guardrails | done |
-| 🔨 | **8b** · Compiled extractors | **current** — the main event |
+| ✅ | **8b pass 1** · Extraction engine | done — `shared/extract.py`, 95 tests |
+| 🔨 | **8b pass 2** · Wire Planner + Checker | **next** — start here |
 | ⬜ | **8c** · Conditional GET | after 8b |
 | ⬜ | **8d** · Tiered self-heal | after 8c |
 | ⬜ | **5** · Production hygiene | after 8, so it instruments a settled design |
@@ -330,12 +331,31 @@ Details of the finished phases:
    computed 51, the stored interval was clamped to 51 at $4.97. Confirm at
    3 min was refused and created no schedule.
 
-   **8b, 8c, 8d remain.** Two findings from 8a worth carrying into 8b: a
-   dimensioned CloudWatch metric cannot be read back without naming the
-   exact dimension set; and Haiku returned `last_value: null` for an
-   out-of-stock item because the hint told it to, where a regex would have
-   happily extracted `$629.00` and ignored availability. **An extractor
-   must handle availability, not just parse a number.**
+   **8b pass 1 is done.** `shared/extract.py` compiles a typed spec
+   (`jsonpath` / `css` / `regex` + a `parse` coercion) into a value, with
+   95 tests. Nothing is wired to it yet — the Planner still writes prose
+   and the Checker still calls Haiku every tick. Extraction has **three**
+   outcomes, `ok` / `unavailable` / `failed`, and never two: `failed` means
+   the extractor is broken and 8d escalates it, `unavailable` means there
+   is legitimately no value today and 8d must not.
+
+   **Next session starts at 8b pass 2**, itemised in
+   `docs/phase-8-cheap-checks.md`. Its first task is a blocker found while
+   testing: **the Fetcher returns `page.inner_text()`, plain text with no
+   markup, so CSS extractors cannot work on browser-rendered pages at all.**
+   It has to return `html` as well as `text`.
+
+   Three findings worth not rediscovering: a dimensioned CloudWatch metric
+   cannot be read back without naming the exact dimension set; Haiku
+   returned `last_value: null` for an out-of-stock item because the hint
+   told it to, where a naive regex would have reported `$629.00` for
+   something nobody can buy; and the extraction tests caught the same class
+   of bug in our own parser, which read `512` out of "Steam Deck 512 GB
+   OLED" as a price. `currency` now demands a symbol or a minor unit.
+
+   `beautifulsoup4` is in `checker/` and `planner/` requirements but the
+   zips were **deliberately not rebuilt** — nothing imports it yet, so the
+   deployed functions are unchanged and Terraform reports no drift.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above. Deliberately after
    Phase 8: alarms watch specific code paths and Phase 8 replaces the

@@ -153,16 +153,68 @@ The only work that protects the owner while the rest is built.
 
 ### 8b — Compiled extractors · the main event
 
-- Typed extractor kinds: `jsonpath`, `css`, `regex`, each with a `parse`
-  coercion (`float`, `currency`, `int`, `text`).
-- Pure-function executors, so this is the one part of the system that is
-  genuinely pleasant to test — write tests alongside, like the api Lambda's.
-- The Planner fetches the candidate URL, proposes a spec, **runs it**,
-  confirms a plausible value, and stores it with `verified_value`. A plan
-  that cannot be verified is never offered.
-- Prompt rewritten to prefer JSON endpoints over pages, and to emit a spec
-  rather than prose.
-- The Checker's Tier 0 path executes the spec. No model.
+Split into two passes, so the engine could be reviewed on its own before
+anything depended on it.
+
+#### 8b pass 1 — the engine · **done**
+
+`shared/extract.py` plus 95 tests. Typed kinds `jsonpath`, `css` and `regex`,
+each with a `parse` coercion (`float`, `currency`, `int`, `text`, `bool`),
+an optional `unavailable_if` predicate, and a `plausible()` check against the
+plan-time value.
+
+Decisions worth not relitigating:
+
+- **Three outcomes, not two** — `ok` / `unavailable` / `failed`. `failed`
+  means the extractor is broken and 8d must escalate it; `unavailable` means
+  there is legitimately no value today and 8d must ignore it. `unavailable_if`
+  is evaluated *before* the value is read, because an out-of-stock page
+  usually still shows a price.
+- **Money is stricter than a number.** `currency` requires a symbol or a
+  two-digit minor unit. The tests caught the permissive parser reading `512`
+  out of "Steam Deck 512 GB OLED" — a capacity that would have fired an
+  "under $600" watch instantly. `float` stays permissive for points and counts.
+- **JSONPath is deliberately minimal** — dotted keys and integer indices only.
+  No wildcards, filters or recursive descent: a path the Planner cannot verify
+  is a path that breaks quietly.
+- **beautifulsoup4 + soupsieve, not lxml.** Both are pure Python; lxml ships
+  compiled wheels and this repo already documents `pip install -t` vendoring
+  platform-specific binaries that work only because the Codespace happens to
+  match the Lambda runtime.
+
+Verified against live pages as well as fixtures: a real JSON rate endpoint,
+real Hacker News HTML where CSS and regex independently agree, and a real
+headline correctly refused as money.
+
+`beautifulsoup4` was added to `checker/requirements.txt` and
+`planner/requirements.txt`, but **the zips were deliberately not rebuilt** —
+nothing imports it yet, so the deployed functions are unchanged and Terraform
+reports no drift. Pass 2 rebuilds them.
+
+#### 8b pass 2 — wire it up · **next**
+
+1. **The Fetcher must return HTML.** It currently returns
+   `page.inner_text()`, plain text with no markup, so **CSS extractors cannot
+   work on browser-rendered pages at all.** Return both: `html` for Tier 0
+   extraction, `text` for Tier 1 repair prompts, where fewer tokens is the
+   point. Remember this is a container-image Lambda —
+   `terraform apply` will *not* redeploy it on a `:latest` push; use
+   `aws lambda update-function-code`.
+2. **Planner emits and verifies a spec.** Fetch the candidate URL, propose an
+   extractor, run it, confirm a plausible value, store `verified_value` and
+   `verified_at`. A plan that cannot be verified is never offered. This is
+   also what makes the plan card say "I read $629.00 just now" rather than
+   "I intend to read the price".
+3. **Prompt rewritten** to emit a spec rather than prose, and to prefer a JSON
+   endpoint over a page — once the model leaves the hot path the browser is
+   the dominant cost, ~80× a plain fetch.
+4. **Checker Tier 0** executes the spec with no model call. Keep `judge()`
+   for 8d's repair path; it stops being the default, not the codebase.
+5. **Schema**: add `extractor`, `verified_value`, `verified_at` to
+   `WatchTargets`. Existing rows have none, so the Checker must fall back to
+   the model path when `extractor` is absent rather than failing.
+6. Rebuild and deploy all three zips; `shared/extract.py` needs vendoring into
+   the Checker and Planner the way `cost.py` already is.
 
 ### 8c — Conditional GET · small, independent
 
