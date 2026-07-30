@@ -267,6 +267,27 @@ scoped to `schedule-ai-app-*` resources.
 
 ## Roadmap
 
+Listed in **execution order**, which is not numerical order. Phase numbers
+are stable because the docs and commit history refer to them; the order they
+get built in is a separate decision, revised as the project learns things.
+Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
+
+| | Phase | State |
+|---|---|---|
+| ✅ | **0** · Environment & IaC foundation | done |
+| ✅ | **1** · Planner, offline | done |
+| ✅ | **2** · Serverless core | done |
+| ✅ | **3** · Notifications | done |
+| ✅ | **6** · Headless browser | done — pulled ahead of 4 |
+| ✅ | **4a** · Lifecycle API + authorizer | done |
+| ✅ | **4b** · Hosting + minimal React | done |
+| 🔨 | **8** · Cheap checks | **current** — pulled ahead of 5, 4c, 7 |
+| ⬜ | **5** · Production hygiene | after 8, so it instruments a settled design |
+| ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
+| ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
+
+Details of the finished phases:
+
 0. Environment & IaC foundation — **done**
 1. Planner, offline — **done.** Prove the Planner logic works before
    touching infrastructure.
@@ -279,12 +300,25 @@ scoped to `schedule-ai-app-*` resources.
    renders JS pages; the Planner picks `fetch_method` per target. Taken
    out of order, ahead of Phase 4, so the app would actually work on real
    sites before it got a nice interface.
-4. API + web chat UI — **in progress.** 4a (lifecycle API) and 4b
-   (hosting + minimal React) done; 4c designed UI next. API Gateway +
-   chat Lambda, React frontend on S3 + CloudFront.
+4. API + web chat UI — **4a and 4b done, 4c deferred behind Phase 8.**
+   4a: lifecycle API, authorizer, HTTP API. 4b: S3 + CloudFront + a
+   minimal unstyled React app. 4c is the designed interface and is
+   deliberately last-but-one: it is better built against the data model
+   Phase 8 leaves behind than retrofitted to it.
+8. **Cheap checks — current.** See `docs/phase-8-cheap-checks.md`.
+   The Checker stops calling a language model on every tick; the Planner
+   compiles a deterministic extractor instead of describing a task in
+   English. Target: ~$0.06/month for a 3-minute watch against ~$82 today.
+   Steps 8a guardrails, 8b compiled extractors, 8c conditional GET,
+   8d tiered self-heal.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
-   logging, plus the items in "Known gaps" above.
-7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
+   logging, plus the items in "Known gaps" above. Deliberately after
+   Phase 8: alarms watch specific code paths and Phase 8 replaces the
+   hot one, so doing this first means doing it twice.
+7. Stretch — GitHub Actions CI/CD via OIDC (no static keys). Last on
+   purpose. Honest counter-argument: a pipeline would reduce the risk of
+   Phase 8's large change. But offline tests already exist where they
+   matter most, deploys are infrequent and manual, and there is one user.
 
 ## Phase 4 — 4a and 4b done, 4c next
 
