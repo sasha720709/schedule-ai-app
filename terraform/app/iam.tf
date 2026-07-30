@@ -193,6 +193,19 @@ data "aws_iam_policy_document" "checker_lambda_events" {
     actions   = ["events:PutEvents"]
     resources = [aws_cloudwatch_event_bus.main.arn]
   }
+
+  # Publishing what a check cost. PutMetricData takes no resource ARN -- the
+  # namespace is the only scope available, and it is expressed as a condition
+  # rather than a resource.
+  statement {
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["ScheduleAI"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "checker_lambda_events" {

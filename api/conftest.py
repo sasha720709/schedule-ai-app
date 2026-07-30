@@ -46,4 +46,9 @@ os.environ.setdefault("PLANNER_FUNCTION_ARN", "arn:aws:lambda:::function:planner
 os.environ.setdefault("CHECKER_FUNCTION_ARN", "arn:aws:lambda:::function:checker")
 os.environ.setdefault("SCHEDULER_ROLE_ARN", "arn:aws:iam:::role/sched")
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)
+# build.sh vendors shared/cost.py next to handler.py in the zip, so at runtime
+# `import cost` is a flat import. Reproduce that here rather than reaching for
+# a package layout the Lambda does not have.
+sys.path.insert(0, os.path.join(os.path.dirname(_here), "shared"))

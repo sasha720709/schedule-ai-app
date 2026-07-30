@@ -23,6 +23,7 @@ from decimal import Decimal
 
 import boto3
 
+import cost
 from plan import plan
 
 dynamodb = boto3.resource("dynamodb")
@@ -85,26 +86,51 @@ def lambda_handler(event, context):
                 "fetch_method": target.get("fetch_method", "http"),
             })
 
+        # The model picks check_interval_min unaided, and has been observed
+        # proposing 10, 20 and 30 minutes for near-identical requests. Nothing
+        # stops it proposing 1. Clamp it up to whatever the monthly budget
+        # actually affords -- and keep what it asked for, so the plan card can
+        # show that its suggestion was overridden and why.
+        proposed = int(result["check_interval_min"])
+        browser = any(
+            t.get("fetch_method", "http") == "browser" for t in result["targets"]
+        )
+        floor = cost.min_interval_for_budget(
+            targets=len(target_ids),
+            fetch_method="browser" if browser else "http",
+            uses_model=True,
+        )
+        interval = max(proposed, floor)
+
         # Flip to "proposed" only once the targets exist, so the status
         # never promises a plan the client cannot yet read.
         watches_table.update_item(
             Key={"watch_id": watch_id},
             UpdateExpression=(
-                "SET #s = :s, #c = :c, check_interval_min = :i, planned_at = :t "
+                "SET #s = :s, #c = :c, check_interval_min = :i, "
+                "planner_interval_min = :p, min_interval_min = :f, planned_at = :t "
                 "REMOVE plan_error"
             ),
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
             ExpressionAttributeValues={
                 ":s": "proposed",
                 ":c": _to_decimal(result["condition"]),
-                ":i": _to_decimal(result["check_interval_min"]),
+                ":i": _to_decimal(interval),
+                ":p": _to_decimal(proposed),
+                ":f": _to_decimal(floor),
                 ":t": datetime.now(timezone.utc).isoformat(),
             },
         )
     except Exception as exc:  # noqa: BLE001
         return _fail(watches_table, watch_id, exc)
 
+    clamped = " (raised from %dmin to fit the budget)" % proposed if interval > proposed else ""
     print(f"planned {watch_id}: {len(target_ids)} target(s), "
-          f"interval {result['check_interval_min']}min")
+          f"interval {interval}min{clamped}")
 
-    return {"watch_id": watch_id, "target_ids": target_ids, "status": "proposed"}
+    return {
+        "watch_id": watch_id,
+        "target_ids": target_ids,
+        "status": "proposed",
+        "check_interval_min": interval,
+    }

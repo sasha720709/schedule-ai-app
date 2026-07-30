@@ -102,7 +102,9 @@ def body_of(response):
     return json.loads(response["body"])
 
 
-def proposed(interval=10):
+def proposed(interval=60):
+    """60 minutes because a $5/month budget affords it at today's per-check
+    cost. Anything much tighter is now correctly refused."""
     return {"w_1": {"watch_id": "w_1", "status": "proposed",
                     "check_interval_min": Decimal(interval)}}
 
@@ -203,7 +205,7 @@ def test_confirm_creates_schedules_and_activates(aws):
     assert response["statusCode"] == 200
     payload = body_of(response)
     assert payload["status"] == "active"
-    assert payload["check_interval_min"] == 10
+    assert payload["check_interval_min"] == 60
     assert env.scheduler.create_schedule.call_count == 1
 
 
@@ -296,7 +298,7 @@ def test_changing_the_interval_retunes_a_live_schedule(aws):
     """Otherwise the stored interval would disagree with what is running."""
     env = aws(watches={"w_1": {"watch_id": "w_1", "status": "active"}},
               targets=one_target())
-    call("PATCH /watches/{id}", {"check_interval_min": 30}, watch_id="w_1")
+    call("PATCH /watches/{id}", {"check_interval_min": 90}, watch_id="w_1")
 
     assert env.scheduler.create_schedule.call_count == 1
 
@@ -304,7 +306,7 @@ def test_changing_the_interval_retunes_a_live_schedule(aws):
 def test_changing_the_interval_of_a_paused_watch_touches_no_schedule(aws):
     env = aws(watches={"w_1": {"watch_id": "w_1", "status": "paused"}},
               targets=one_target())
-    call("PATCH /watches/{id}", {"check_interval_min": 30}, watch_id="w_1")
+    call("PATCH /watches/{id}", {"check_interval_min": 90}, watch_id="w_1")
 
     assert env.scheduler.create_schedule.call_count == 0
 
@@ -389,3 +391,86 @@ def test_an_unexpected_error_becomes_a_500_with_no_detail(aws, monkeypatch):
 
     assert response["statusCode"] == 500
     assert body_of(response) == {"error": "internal error"}
+
+
+# --------------------------------------------------------------------------
+# Budget guardrail (Phase 8a)
+#
+# A schedule is the only thing in this system that bills indefinitely, and the
+# AWS budget alarms cannot see the Anthropic spend that dominates it. Confirm
+# and patch are the two doors to creating one, so both are gated.
+# --------------------------------------------------------------------------
+
+def test_confirming_an_unaffordable_interval_is_refused(aws):
+    aws(watches=proposed(interval=3), targets=one_target())
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert response["statusCode"] == 409
+    assert "budget" in body_of(response)["error"]
+
+
+def test_the_refusal_names_an_interval_that_would_be_accepted(aws):
+    """An error that sends you to a value also refused would be useless."""
+    aws(watches=proposed(interval=3), targets=one_target())
+    message = body_of(call("POST /watches/{id}/confirm", watch_id="w_1"))["error"]
+
+    suggested = int(message.split("Use ")[1].split(" min")[0])
+
+    aws(watches=proposed(interval=3), targets=one_target())
+    retry = call("POST /watches/{id}/confirm",
+                 {"check_interval_min": suggested}, watch_id="w_1")
+    assert retry["statusCode"] == 200
+
+
+def test_an_unaffordable_confirm_creates_no_schedule(aws):
+    """The gate has to come before the side effect, not after."""
+    env = aws(watches=proposed(interval=3), targets=one_target())
+    call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert env.scheduler.create_schedule.call_count == 0
+    assert env.watches.updates == []
+
+
+def test_patch_cannot_walk_a_watch_below_what_confirm_allowed(aws):
+    """Otherwise PATCH would be a way straight around the budget."""
+    aws(watches={"w_1": {"watch_id": "w_1", "status": "active"}},
+        targets=one_target())
+    response = call("PATCH /watches/{id}", {"check_interval_min": 3},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 409
+    assert "budget" in body_of(response)["error"]
+
+
+def test_confirm_reports_what_it_will_cost(aws):
+    aws(watches=proposed(), targets=one_target())
+    payload = body_of(call("POST /watches/{id}/confirm", watch_id="w_1"))
+
+    assert payload["cost"]["within_budget"] is True
+    assert payload["cost"]["estimated_monthly_usd"] > 0
+
+
+def test_get_reports_cost_so_the_plan_card_can_show_it(aws):
+    aws(watches=proposed(), targets=one_target())
+    payload = body_of(call("GET /watches/{id}", watch_id="w_1"))
+
+    assert payload["cost"]["interval_min"] == 60
+    assert payload["cost"]["estimated_monthly_usd"] > 0
+
+
+def test_a_watch_with_no_interval_yet_reports_no_cost(aws):
+    """A watch still in "planning" has no interval to price."""
+    aws(watches={"w_1": {"watch_id": "w_1", "status": "planning"}}, targets={})
+    assert body_of(call("GET /watches/{id}", watch_id="w_1"))["cost"] is None
+
+
+def test_a_browser_target_costs_more_than_an_http_one(aws):
+    aws(watches=proposed(), targets={"t_1": {"target_id": "t_1", "watch_id": "w_1"}})
+    http = body_of(call("GET /watches/{id}", watch_id="w_1"))["cost"]
+
+    aws(watches=proposed(),
+        targets={"t_1": {"target_id": "t_1", "watch_id": "w_1",
+                         "fetch_method": "browser"}})
+    browser = body_of(call("GET /watches/{id}", watch_id="w_1"))["cost"]
+
+    assert browser["estimated_monthly_usd"] > http["estimated_monthly_usd"]

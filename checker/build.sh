@@ -8,6 +8,9 @@ rm -rf build dist
 mkdir -p build dist
 
 cp handler.py check.py build/
+# The cost model is shared by three Lambdas. Vendored per zip rather than
+# shared as a Layer, which is still a deferred gap.
+cp ../shared/cost.py build/
 pip install -r requirements.txt -t build/ --quiet
 
 cd build

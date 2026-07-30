@@ -11,11 +11,42 @@ from decimal import Decimal
 
 import boto3
 
+import cost
 from check import fetch_text, judge
 
 dynamodb = boto3.resource("dynamodb")
 events = boto3.client("events")
 lambda_client = boto3.client("lambda")
+cloudwatch = boto3.client("cloudwatch")
+
+
+def _record_cost(fetch_method: str, used_model: bool) -> None:
+    """Publish what this check cost, so the spend is visible somewhere.
+
+    The dominant cost of this system is the Anthropic API call, and AWS budget
+    alarms cannot see it -- the alarms at $50/$100/$200 are blind to it. This
+    metric is what a CloudWatch alarm will eventually watch; creating that
+    alarm needs cloudwatch:PutMetricAlarm on the deploy user, so it is grouped
+    with Phase 5.
+
+    Deliberately never raises. A metric that fails to publish must not fail a
+    check that otherwise succeeded.
+    """
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="ScheduleAI",
+            MetricData=[{
+                "MetricName": "EstimatedCostUSD",
+                "Value": cost.cost_per_check(fetch_method, used_model),
+                "Unit": "None",
+                "Dimensions": [
+                    {"Name": "FetchMethod", "Value": fetch_method},
+                    {"Name": "UsedModel", "Value": str(used_model).lower()},
+                ],
+            }],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not publish cost metric: {type(exc).__name__}: {exc}")
 
 
 def _fetch(url: str, fetch_method: str) -> str:
@@ -74,9 +105,11 @@ def lambda_handler(event, context):
         return {"skipped": True, "status": watch["status"]}
 
     now = datetime.now(timezone.utc).isoformat()
+    # Read outside the try: the failure path reports cost by fetch method, and
+    # must not itself fail on an unbound name.
+    fetch_method = target.get("fetch_method", "http")
 
     try:
-        fetch_method = target.get("fetch_method", "http")
         page_text = _fetch(target["url"], fetch_method)
         result = judge(
             target["url"],
@@ -91,7 +124,10 @@ def lambda_handler(event, context):
             UpdateExpression="SET last_checked_at = :t, last_error = :e",
             ExpressionAttributeValues={":t": now, ":e": f"{type(exc).__name__}: {exc}"[:500]},
         )
+        _record_cost(fetch_method, used_model=False)
         return {"checked": False, "error": type(exc).__name__}
+
+    _record_cost(fetch_method, used_model=True)
 
     targets_table.update_item(
         Key={"target_id": target_id},

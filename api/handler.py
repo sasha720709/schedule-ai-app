@@ -29,6 +29,8 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
+import cost
+
 dynamodb = boto3.resource("dynamodb")
 scheduler = boto3.client("scheduler")
 lambda_client = boto3.client("lambda")
@@ -228,10 +230,29 @@ def list_watches(event) -> dict:
     return _response(200, {"watches": items})
 
 
+def _estimate_for(watch: dict, targets: list, interval=None) -> dict | None:
+    """Cost of running this watch, for the plan card to show before confirming."""
+    interval = interval if interval is not None else watch.get("check_interval_min")
+    if interval is None or not targets:
+        return None
+    browser = any(t.get("fetch_method", "http") == "browser" for t in targets)
+    return cost.estimate(
+        interval_min=int(interval),
+        targets=len(targets),
+        fetch_method="browser" if browser else "http",
+        uses_model=True,
+    )
+
+
 def get_watch(event) -> dict:
     watch_id = event["pathParameters"]["id"]
     watch = _get_watch(watch_id)
-    return _response(200, {"watch": watch, "targets": _targets_for(watch_id)})
+    targets = _targets_for(watch_id)
+    return _response(200, {
+        "watch": watch,
+        "targets": targets,
+        "cost": _estimate_for(watch, targets),
+    })
 
 
 def confirm_watch(event) -> dict:
@@ -261,6 +282,26 @@ def confirm_watch(event) -> dict:
     if not targets:
         raise HttpError(409, f"watch {watch_id} has no targets to schedule")
 
+    # Refuse to start something whose running cost exceeds the budget. This is
+    # the last gate before a schedule exists, and a schedule is the only thing
+    # here that bills indefinitely -- the AWS budget alarms cannot see the
+    # Anthropic spend that dominates it.
+    browser = any(t.get("fetch_method", "http") == "browser" for t in targets)
+    estimate = cost.estimate(
+        interval_min=interval,
+        targets=len(targets),
+        fetch_method="browser" if browser else "http",
+        uses_model=True,
+    )
+    if not estimate["within_budget"]:
+        raise HttpError(
+            409,
+            f"every {interval} min would cost about "
+            f"${estimate['estimated_monthly_usd']:.2f}/month, over the "
+            f"${estimate['monthly_budget_usd']:.2f} budget. "
+            f"Use {estimate['min_interval_min']} min or longer.",
+        )
+
     for target in targets:
         arn = _upsert_schedule(target["target_id"], interval)
         _targets().update_item(
@@ -282,12 +323,14 @@ def confirm_watch(event) -> dict:
         },
     )
 
-    print(f"confirmed {watch_id}: {len(targets)} schedule(s) at {interval}min")
+    print(f"confirmed {watch_id}: {len(targets)} schedule(s) at {interval}min, "
+          f"~${estimate['estimated_monthly_usd']:.2f}/month")
     return _response(200, {
         "watch_id": watch_id,
         "status": "active",
         "check_interval_min": interval,
         "targets_scheduled": len(targets),
+        "cost": estimate,
     })
 
 
@@ -323,9 +366,22 @@ def patch_watch(event) -> dict:
         if not 1 <= interval <= 1440:
             raise HttpError(400, "check_interval_min must be between 1 and 1440")
 
+        # The same budget gate as confirm. Without it, PATCH would be a way to
+        # walk an already-confirmed watch down to an interval confirm refused.
+        watch_targets = _targets_for(watch_id)
+        estimate = _estimate_for(watch, watch_targets, interval)
+        if estimate and not estimate["within_budget"]:
+            raise HttpError(
+                409,
+                f"every {interval} min would cost about "
+                f"${estimate['estimated_monthly_usd']:.2f}/month, over the "
+                f"${estimate['monthly_budget_usd']:.2f} budget. "
+                f"Use {estimate['min_interval_min']} min or longer.",
+            )
+
         # Retune the live schedules too, or the stored interval would lie.
         if status == "active":
-            for target in _targets_for(watch_id):
+            for target in watch_targets:
                 _upsert_schedule(target["target_id"], interval)
 
         updates.append("check_interval_min = :i")

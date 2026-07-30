@@ -16,6 +16,7 @@ resource "aws_lambda_function" "planner" {
       ANTHROPIC_API_KEY   = var.anthropic_api_key
       WATCHES_TABLE       = aws_dynamodb_table.watches.name
       WATCH_TARGETS_TABLE = aws_dynamodb_table.watch_targets.name
+      MONTHLY_BUDGET_USD  = var.monthly_budget_usd
     }
   }
 }
@@ -47,6 +48,7 @@ resource "aws_lambda_function" "checker" {
       WATCH_TARGETS_TABLE  = aws_dynamodb_table.watch_targets.name
       EVENT_BUS_NAME       = aws_cloudwatch_event_bus.main.name
       FETCHER_FUNCTION_ARN = aws_lambda_function.fetcher.arn
+      MONTHLY_BUDGET_USD   = var.monthly_budget_usd
     }
   }
 }
@@ -87,6 +89,7 @@ resource "aws_lambda_function" "api" {
       PLANNER_FUNCTION_ARN = aws_lambda_function.planner.arn
       CHECKER_FUNCTION_ARN = aws_lambda_function.checker.arn
       SCHEDULER_ROLE_ARN   = aws_iam_role.scheduler_invoke_checker.arn
+      MONTHLY_BUDGET_USD   = var.monthly_budget_usd
     }
   }
 }
