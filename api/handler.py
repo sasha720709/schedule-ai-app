@@ -243,8 +243,13 @@ def confirm_watch(event) -> dict:
     if status not in CONFIRMABLE:
         raise HttpError(409, f"watch {watch_id} is {status}, not proposed")
 
-    override = _body(event).get("check_interval_min")
-    interval = override if override is not None else watch.get("check_interval_min")
+    # "field absent" and "field present but null" are deliberately different.
+    # Silently substituting the Planner's interval for an explicit null would
+    # mean a client that sent an empty input gets billed at a rate it never
+    # chose -- which is the exact surprise this confirm step exists to stop.
+    body = _body(event)
+    interval = (body["check_interval_min"] if "check_interval_min" in body
+                else watch.get("check_interval_min"))
     try:
         interval = int(interval)
     except (TypeError, ValueError):

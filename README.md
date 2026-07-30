@@ -52,6 +52,24 @@ the handler plus its pip dependencies into `dist/`. Terraform picks that zip
 up directly. `boto3` is deliberately not bundled — the Lambda Python runtime
 ships it.
 
+## Tests
+
+```bash
+pip install -r api/requirements-dev.txt
+pytest api/ -q
+```
+
+The `api` Lambda has an offline suite that stubs `boto3` and touches no
+AWS — it runs in well under a second and costs nothing. It covers the
+paths a manual Lambda invoke is worst at reaching: malformed bodies,
+status conflicts, a confirm retried after a partial failure, intervals
+just outside the allowed range, and an unexpected exception that must not
+leak a stack trace. It found a real cost-safety bug on first run.
+
+The other Lambdas have no tests yet; that is a Phase 5 item.
+
+## Packaging
+
 The Fetcher is different: Chromium and its system libraries are far past
 Lambda's 250MB unzipped limit, so it ships as a container image. Its
 `build.sh` builds and pushes to ECR, and Terraform stores only the image

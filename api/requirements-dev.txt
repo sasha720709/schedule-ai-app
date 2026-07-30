@@ -1,0 +1,3 @@
+# Test-only dependencies. Never bundled into the Lambda zip -- build.sh
+# copies handler.py and nothing else.
+pytest
