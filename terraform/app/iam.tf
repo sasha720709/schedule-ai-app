@@ -20,15 +20,20 @@ resource "aws_iam_role_policy_attachment" "planner_lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# The Planner only ever writes new plans; it never reads or updates existing
-# rows (that's the Checker's job later), so PutItem is all it gets.
+# The Planner creates target rows, and updates the watch row the api Lambda
+# already created -- either to "proposed" with the plan on it, or to "failed"
+# with the reason. It never touches a schedule any more: since Phase 4 that
+# belongs to the api Lambda's confirm endpoint, which is why this role no
+# longer has scheduler permissions or PassRole at all.
 data "aws_iam_policy_document" "planner_lambda_dynamodb" {
   statement {
-    actions = ["dynamodb:PutItem"]
-    resources = [
-      aws_dynamodb_table.watches.arn,
-      aws_dynamodb_table.watch_targets.arn,
-    ]
+    actions   = ["dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.watch_targets.arn]
+  }
+
+  statement {
+    actions   = ["dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.watches.arn]
   }
 }
 
@@ -106,10 +111,54 @@ resource "aws_iam_role_policy" "scheduler_invoke_checker" {
   policy = data.aws_iam_policy_document.scheduler_invoke_checker.json
 }
 
-# The Planner creates those schedules at runtime, so it needs to call
-# Scheduler *and* to hand the role above to the schedules it creates.
-# PassRole is the permission that allows that handoff.
-data "aws_iam_policy_document" "planner_lambda_scheduler" {
+# ---------------------------------------------------------------------------
+# API Lambda
+#
+# Every watch lifecycle operation, and the only thing that creates or
+# destroys a schedule. This is where the Planner's old scheduler permissions
+# moved to, along with the PassRole that lets a new schedule be handed the
+# role it assumes to invoke the Checker.
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "api_lambda" {
+  name               = "schedule-ai-app-api-lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "api_lambda_basic_execution" {
+  role       = aws_iam_role.api_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "api_lambda" {
+  # Scan is what GET /watches uses. The table is keyed on watch_id and there
+  # is no index on user_id, so listing means scanning -- fine for one user
+  # with a handful of rows, and a documented gap before there are two.
+  statement {
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:Scan",
+    ]
+    resources = [aws_dynamodb_table.watches.arn]
+  }
+
+  # Querying a GSI needs the index ARN as well as the table's.
+  statement {
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:Query",
+    ]
+    resources = [
+      aws_dynamodb_table.watch_targets.arn,
+      "${aws_dynamodb_table.watch_targets.arn}/index/watch_id-index",
+    ]
+  }
+
   statement {
     actions = [
       "scheduler:CreateSchedule",
@@ -124,12 +173,18 @@ data "aws_iam_policy_document" "planner_lambda_scheduler" {
     actions   = ["iam:PassRole"]
     resources = [aws_iam_role.scheduler_invoke_checker.arn]
   }
+
+  # POST /watches hands the slow work off asynchronously and returns 202.
+  statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.planner.arn]
+  }
 }
 
-resource "aws_iam_role_policy" "planner_lambda_scheduler" {
-  name   = "create-schedules"
-  role   = aws_iam_role.planner_lambda.id
-  policy = data.aws_iam_policy_document.planner_lambda_scheduler.json
+resource "aws_iam_role_policy" "api_lambda" {
+  name   = "watch-lifecycle"
+  role   = aws_iam_role.api_lambda.id
+  policy = data.aws_iam_policy_document.api_lambda.json
 }
 
 # The Checker only announces; it needs nothing but the right to publish.
