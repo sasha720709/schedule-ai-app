@@ -1,0 +1,55 @@
+/* Legibility only. No design system, no theming -- 4c is where this gets
+   treated properly. Everything here is about being able to read the data
+   and reach the buttons. */
+:root {
+  font-family: ui-monospace, "Cascadia Code", SFMono-Regular, Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.5;
+  color-scheme: light dark;
+}
+
+body { margin: 0; }
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+}
+
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+h1 { font-size: 1.3rem; }
+h2 { font-size: 1rem; margin-top: 2rem; }
+
+textarea, input { font: inherit; }
+textarea { width: 100%; box-sizing: border-box; }
+button { font: inherit; cursor: pointer; padding: 0.2rem 0.6rem; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+a { color: inherit; }
+
+.muted { opacity: 0.65; font-size: 0.9em; margin: 0.2rem 0; }
+.error { color: #b3261e; }
+@media (prefers-color-scheme: dark) { .error { color: #f2b8b5; } }
+
+ul.watches { list-style: none; padding: 0; }
+ul.watches > li { border: 1px solid currentColor; border-radius: 4px; padding: 0.7rem; margin-bottom: 0.7rem; }
+
+.row { display: flex; gap: 0.6rem; align-items: baseline; }
+.prompt { flex: 1; }
+
+.status {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 0.35rem;
+  white-space: nowrap;
+}
+.status.planning, .status.proposed { opacity: 0.8; }
+.status.failed { color: #b3261e; }
+@media (prefers-color-scheme: dark) { .status.failed { color: #f2b8b5; } }
+
+.plan { border-top: 1px dashed currentColor; margin-top: 0.6rem; padding-top: 0.6rem; }
+.target { margin-bottom: 0.5rem; word-break: break-all; }
+ul.targets { list-style: none; padding-left: 0; font-size: 0.9em; }
+ul.targets > li { margin-top: 0.4rem; word-break: break-all; }

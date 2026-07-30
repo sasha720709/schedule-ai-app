@@ -30,10 +30,14 @@ resource "aws_apigatewayv2_api" "main" {
   # preflight would make every cross-origin request fail before the real
   # request was ever sent.
   cors_configuration {
-    # "*" until there is a CloudFront domain to name in 4b. Note this cannot
-    # be combined with allow_credentials, which is fine: auth travels in a
-    # header here, not a cookie.
-    allow_origins = ["*"]
+    # Named origins rather than "*", now that there is a real domain to name.
+    # localhost stays so `npm run dev` works; Vite's default port is 5173.
+    # Note allow_credentials is deliberately absent -- auth travels in a
+    # header here, not a cookie, so there is nothing to opt in for.
+    allow_origins = [
+      "https://${aws_cloudfront_distribution.frontend.domain_name}",
+      "http://localhost:5173",
+    ]
     allow_methods = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
     allow_headers = ["content-type", "authorization"]
     max_age       = 300
