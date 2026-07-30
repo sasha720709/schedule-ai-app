@@ -64,8 +64,12 @@ def lambda_handler(event, context):
     if watch is None:
         raise RuntimeError(f"Target {target_id} points at missing watch {watch_id}")
 
-    # Already fired (or paused by hand) -- don't pay for a Claude call.
-    if watch["status"] not in ("active", "planning"):
+    # "active" is the only status that should ever be checked. Anything else
+    # is triggered, paused, or still awaiting confirmation -- don't pay for a
+    # fetch or a Claude call. Note this used to also allow "planning", which
+    # since Phase 4 means the Planner is still running and no schedule should
+    # exist yet; a tick in that state would check a half-written watch.
+    if watch["status"] != "active":
         print(f"watch {watch_id} status={watch['status']}, skipping check")
         return {"skipped": True, "status": watch["status"]}
 

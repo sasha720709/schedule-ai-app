@@ -1,8 +1,21 @@
-"""Planner Lambda handler. Wraps plan.py's plan() with persistence and
-scheduling: writes the plan into DynamoDB, then creates one EventBridge
-Scheduler schedule per target so the Checker starts running on its own."""
+"""Planner Lambda handler: turn a plain-English request into a stored
+plan, and stop there.
 
-import json
+Since Phase 4 the Planner deliberately does NOT create schedules. It
+writes the proposed targets, moves the watch to "proposed", and leaves
+committing to the API's confirm endpoint. Two reasons:
+
+- The Planner chooses `check_interval_min` itself, and that interval is
+  the dominant cost in the whole system -- 5 minutes is roughly $50/month
+  per target, 60 minutes roughly $4. That number should be seen before it
+  starts billing, not after.
+- Planning now touches no external resource, so it cannot half-fail and
+  leak schedules that nothing points at. Every write here is to DynamoDB.
+
+Invoked asynchronously by the api Lambda, which has already written the
+watch row in "planning" status and handed a watch_id back to the client.
+"""
+
 import os
 import uuid
 from datetime import datetime, timezone
@@ -13,7 +26,6 @@ import boto3
 from plan import plan
 
 dynamodb = boto3.resource("dynamodb")
-scheduler = boto3.client("scheduler")
 
 
 def _to_decimal(value):
@@ -27,63 +39,72 @@ def _to_decimal(value):
     return value
 
 
-def _rate_expression(minutes: int) -> str:
-    """EventBridge Scheduler wants the unit singular at 1: 'rate(1 minute)'."""
-    return f"rate({minutes} minute{'s' if minutes != 1 else ''})"
+def _fail(watches_table, watch_id: str, exc: Exception) -> dict:
+    """Record why planning failed, on the watch itself.
 
-
-def _create_schedule(target_id: str, interval_min: int) -> str:
-    response = scheduler.create_schedule(
-        Name=f"schedule-ai-app-{target_id}",
-        ScheduleExpression=_rate_expression(interval_min),
-        FlexibleTimeWindow={"Mode": "OFF"},
-        Target={
-            "Arn": os.environ["CHECKER_FUNCTION_ARN"],
-            "RoleArn": os.environ["SCHEDULER_ROLE_ARN"],
-            "Input": json.dumps({"target_id": target_id}),
-        },
+    Deliberately does not re-raise. Lambda retries a failed async
+    invocation twice, and a retry here would re-run the web search and
+    write a second set of target rows. The error is also more useful on the
+    row, where the UI can show it, than as a CloudWatch error metric -- and
+    a watch stuck in "planning" forever is exactly how the orphaned rows
+    found in earlier phases came to exist.
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    print(f"planning failed for {watch_id}: {message}")
+    watches_table.update_item(
+        Key={"watch_id": watch_id},
+        UpdateExpression="SET #s = :s, plan_error = :e",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "failed", ":e": message[:500]},
     )
-    return response["ScheduleArn"]
+    return {"watch_id": watch_id, "status": "failed", "error": message}
 
 
 def lambda_handler(event, context):
+    watch_id = event["watch_id"]
     request = event["request"]
-    result = plan(request)
-
-    watch_id = f"w_{uuid.uuid4().hex[:8]}"
-    now = datetime.now(timezone.utc).isoformat()
-    interval_min = int(result["check_interval_min"])
 
     watches_table = dynamodb.Table(os.environ["WATCHES_TABLE"])
     targets_table = dynamodb.Table(os.environ["WATCH_TARGETS_TABLE"])
 
-    target_ids = []
-    for target in result["targets"]:
-        target_id = f"t_{uuid.uuid4().hex[:8]}"
-        target_ids.append(target_id)
+    try:
+        result = plan(request)
+    except Exception as exc:  # noqa: BLE001 -- record on the row, never retry
+        return _fail(watches_table, watch_id, exc)
 
-        item = {
-            "target_id": target_id,
-            "watch_id": watch_id,
-            "url": target["url"],
-            "extract_hint": target["extract_hint"],
-            "fetch_method": target.get("fetch_method", "http"),
-        }
-        # Write the row before the schedule exists, so the Checker can never
-        # fire at a target it can't read; then rewrite it with the ARN.
-        targets_table.put_item(Item=item)
+    try:
+        target_ids = []
+        for target in result["targets"]:
+            target_id = f"t_{uuid.uuid4().hex[:8]}"
+            target_ids.append(target_id)
+            targets_table.put_item(Item={
+                "target_id": target_id,
+                "watch_id": watch_id,
+                "url": target["url"],
+                "extract_hint": target["extract_hint"],
+                "fetch_method": target.get("fetch_method", "http"),
+            })
 
-        item["schedule_arn"] = _create_schedule(target_id, interval_min)
-        targets_table.put_item(Item=item)
+        # Flip to "proposed" only once the targets exist, so the status
+        # never promises a plan the client cannot yet read.
+        watches_table.update_item(
+            Key={"watch_id": watch_id},
+            UpdateExpression=(
+                "SET #s = :s, #c = :c, check_interval_min = :i, planned_at = :t "
+                "REMOVE plan_error"
+            ),
+            ExpressionAttributeNames={"#s": "status", "#c": "condition"},
+            ExpressionAttributeValues={
+                ":s": "proposed",
+                ":c": _to_decimal(result["condition"]),
+                ":i": _to_decimal(result["check_interval_min"]),
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _fail(watches_table, watch_id, exc)
 
-    watches_table.put_item(Item={
-        "watch_id": watch_id,
-        "user_id": "default",
-        "prompt": request,
-        "condition": _to_decimal(result["condition"]),
-        "status": "active",
-        "check_interval_min": _to_decimal(result["check_interval_min"]),
-        "created_at": now,
-    })
+    print(f"planned {watch_id}: {len(target_ids)} target(s), "
+          f"interval {result['check_interval_min']}min")
 
-    return {"watch_id": watch_id, "target_ids": target_ids, "status": "active"}
+    return {"watch_id": watch_id, "target_ids": target_ids, "status": "proposed"}
