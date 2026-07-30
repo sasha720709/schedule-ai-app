@@ -13,3 +13,8 @@ output "planner_lambda_name" {
 output "planner_lambda_arn" {
   value = aws_lambda_function.planner.arn
 }
+
+output "api_endpoint" {
+  description = "Base URL for the watch lifecycle API. Every request needs an Authorization header carrying the passcode from SSM at /schedule-ai-app/passcode."
+  value       = aws_apigatewayv2_stage.default.invoke_url
+}

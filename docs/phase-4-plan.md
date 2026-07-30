@@ -1,7 +1,7 @@
 # Phase 4 — API + web chat UI
 
-**Status: design agreed 2026-07-30. All five decisions are settled (see
-the bottom of this document). Implementation has not started.**
+**Status: sub-phase 4a complete 2026-07-30, verified over real HTTP.
+All five decisions settled (bottom of this document). 4b is next.**
 
 Written 2026-07-29, at the end of the session that finished Phase 6;
 decisions recorded the following day.
@@ -121,7 +121,7 @@ else touches the system. Note `user_id` is currently hardcoded to
 
 | | Deliverable | Why this order |
 |---|---|---|
-| **4a** | Lifecycle API + authorizer, curl-testable | Unblocks everything; valuable even with no UI |
+| **4a** | Lifecycle API + authorizer, curl-testable | **Done.** Unblocked everything; valuable even with no UI |
 | **4b** | S3 + CloudFront + minimal React that lists watches | Proves hosting, CORS and deploy before real UI work |
 | **4c** | Chat creation flow + plan review card | The actual product surface |
 | **4d** | *(optional)* Multi-turn clarification | "Which PS5 model?" — nice, not necessary |

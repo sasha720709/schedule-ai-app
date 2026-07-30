@@ -223,12 +223,24 @@ and the schedule list are empty.
 
 Live AWS resources: `schedule-ai-app-watches` /
 `schedule-ai-app-watch-targets` (DynamoDB); `schedule-ai-app-planner`,
-`-checker`, `-notifier`, `-fetcher` (Lambda, the last one a container
-image); `schedule-ai-app-fetcher` (ECR, with an untagged-image
-expiry rule); `schedule-ai-app-bus` +
-`schedule-ai-app-watch-triggered` rule (EventBridge); a verified SES
-identity; and five IAM roles (one per Lambda, plus
-`schedule-ai-app-scheduler-invoke-checker` that schedules assume).
+`-checker`, `-notifier`, `-fetcher`, `-api`, `-authorizer` (Lambda, the
+Fetcher a container image); `schedule-ai-app-fetcher` (ECR, with an
+untagged-image expiry rule); `schedule-ai-app-bus` +
+`schedule-ai-app-watch-triggered` rule (EventBridge); a `schedule-ai-app`
+HTTP API with a `$default` stage; a verified SES identity; and seven IAM
+roles (one per Lambda, plus `schedule-ai-app-scheduler-invoke-checker`
+that schedules assume).
+
+**The API is live** at the `api_endpoint` Terraform output
+(`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request
+needs an `Authorization` header carrying the passcode. That passcode is a
+SecureString at SSM `/schedule-ai-app/passcode`, created **outside
+Terraform on purpose** so it never enters the state file — deliberately
+unlike `ANTHROPIC_API_KEY`. Read it with
+`aws ssm get-parameter --name /schedule-ai-app/passcode --with-decryption
+--query Parameter.Value --output text`; rotate it with `put-parameter
+--overwrite` (the authorizer caches it per execution environment, so a
+rotation takes effect on the next cold start).
 
 **Measured Phase 6 numbers**, worth keeping for cost work: Fetcher cold
 start 1544ms init / 10.2s total, warm renders ~4.7s, 915MB of 2048MB
@@ -267,17 +279,44 @@ scoped to `schedule-ai-app-*` resources.
    renders JS pages; the Planner picks `fetch_method` per target. Taken
    out of order, ahead of Phase 4, so the app would actually work on real
    sites before it got a nice interface.
-4. API + web chat UI — **next.** API Gateway + chat Lambda exposing the
+4. API + web chat UI — **in progress.** 4a (lifecycle API + authorizer)
+   done; 4b static hosting next. API Gateway + chat Lambda exposing the
    Planner as a tool, React frontend deployed to S3 + CloudFront.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
 
-## Phase 4 — design agreed, implementation not started
+## Phase 4 — sub-phase 4a done, 4b next
 
-The plan is written up in full in **`docs/phase-4-plan.md`** — API
-surface, product vision, sub-phases, and what it teaches. Read that
-first.
+The plan is written up in full in **`docs/phase-4-plan.md`**. **4a (the
+lifecycle API) is complete and verified over real HTTP.** 4b is static
+hosting: S3 + CloudFront + a minimal React page that lists watches.
+
+The watch status machine, as built:
+
+```
+planning ──→ proposed ──→ active ──→ triggered
+    │                       ⇅
+    └──→ failed           paused
+```
+
+`planning` means the Planner is running; `proposed` means a plan is ready
+and awaiting confirmation; `failed` carries `plan_error`. Only `active` is
+ever checked.
+
+Things learned in 4a that are easy to trip over again:
+
+- **A rejected passcode returns 403, not 401.** API Gateway uses 401 only
+  when the identity source is absent entirely. The frontend must treat
+  both as "bad passcode".
+- **CORS preflight does not invoke the authorizer.** That is what makes a
+  browser able to call an authorized route, and it comes from the
+  `cors_configuration` block rather than an `OPTIONS` route.
+- **The Planner's interval genuinely varies run to run** — 10, then 20,
+  then 30 for near-identical requests. This is exactly why confirm exists.
+- Do not poll the API in a tight `curl` loop expecting it to pace itself;
+  round trips are ~0.2s, so 45 iterations elapse in ~9s against a ~20s
+  Planner.
 
 **All five open decisions were settled on 2026-07-30:**
 

@@ -1,0 +1,2 @@
+# No pip dependencies: this Lambda only uses boto3, which the runtime
+# already provides. build.sh still produces a zip for consistency.

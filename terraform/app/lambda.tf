@@ -91,6 +91,29 @@ resource "aws_lambda_function" "api" {
   }
 }
 
+# Called by API Gateway before any route runs. Reads the passcode from SSM at
+# runtime rather than taking it as an env var, which keeps the secret out of
+# Terraform state -- deliberately unlike ANTHROPIC_API_KEY, whose presence in
+# state is a documented gap.
+resource "aws_lambda_function" "authorizer" {
+  function_name    = "schedule-ai-app-authorizer"
+  role             = aws_iam_role.authorizer_lambda.arn
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  architectures    = ["x86_64"]
+  filename         = "${path.module}/../../authorizer/dist/authorizer.zip"
+  source_code_hash = filebase64sha256("${path.module}/../../authorizer/dist/authorizer.zip")
+  timeout          = 10
+  memory_size      = 128
+
+  environment {
+    variables = {
+      # The name only. The value is never handled by Terraform.
+      PASSCODE_PARAM = local.passcode_param_name
+    }
+  }
+}
+
 resource "aws_lambda_function" "notifier" {
   function_name    = "schedule-ai-app-notifier"
   role             = aws_iam_role.notifier_lambda.arn

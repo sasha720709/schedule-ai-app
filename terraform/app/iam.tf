@@ -232,6 +232,47 @@ resource "aws_iam_role_policy" "checker_lambda_invoke_fetcher" {
 }
 
 # ---------------------------------------------------------------------------
+# Authorizer Lambda
+#
+# Reads one SSM parameter and nothing else. The parameter is a SecureString,
+# so decrypting it needs KMS as well -- scoped by kms:ViaService so this role
+# can only ever decrypt through SSM, not against arbitrary keys directly.
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "authorizer_lambda" {
+  name               = "schedule-ai-app-authorizer-lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "authorizer_lambda_basic_execution" {
+  role       = aws_iam_role.authorizer_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "authorizer_lambda" {
+  statement {
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.passcode_param_name}"]
+  }
+
+  statement {
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "authorizer_lambda" {
+  name   = "read-passcode"
+  role   = aws_iam_role.authorizer_lambda.id
+  policy = data.aws_iam_policy_document.authorizer_lambda.json
+}
+
+# ---------------------------------------------------------------------------
 # Notifier Lambda
 # ---------------------------------------------------------------------------
 
