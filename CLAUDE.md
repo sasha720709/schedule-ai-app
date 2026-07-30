@@ -281,7 +281,10 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **6** · Headless browser | done — pulled ahead of 4 |
 | ✅ | **4a** · Lifecycle API + authorizer | done |
 | ✅ | **4b** · Hosting + minimal React | done |
-| 🔨 | **8** · Cheap checks | **current** — pulled ahead of 5, 4c, 7 |
+| ✅ | **8a** · Budget guardrails | done |
+| 🔨 | **8b** · Compiled extractors | **current** — the main event |
+| ⬜ | **8c** · Conditional GET | after 8b |
+| ⬜ | **8d** · Tiered self-heal | after 8c |
 | ⬜ | **5** · Production hygiene | after 8, so it instruments a settled design |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
@@ -309,8 +312,30 @@ Details of the finished phases:
    The Checker stops calling a language model on every tick; the Planner
    compiles a deterministic extractor instead of describing a task in
    English. Target: ~$0.06/month for a 3-minute watch against ~$82 today.
-   Steps 8a guardrails, 8b compiled extractors, 8c conditional GET,
-   8d tiered self-heal.
+
+   **8a is done.** `shared/cost.py` is the single definition of what a
+   check costs, vendored into three zips by their `build.sh`. Limits are a
+   **monthly budget per watch** (`MONTHLY_BUDGET_USD`, default $5), not an
+   interval floor — the minimum interval is *derived*, so when 8b cuts
+   per-check cost by ~1000× the same budget will permit 1-minute checks
+   with no constant to change. Three gates: the Planner clamps whatever
+   interval the model proposed (keeping `planner_interval_min` and
+   `min_interval_min` on the row), `confirm` refuses an unaffordable one
+   before creating any schedule, and `PATCH` enforces the same budget so
+   it cannot be walked around. The Checker publishes `EstimatedCostUSD` to
+   CloudWatch per check — spend was previously visible nowhere, since AWS
+   budget alarms cannot see Anthropic charges.
+
+   Verified live: the Planner proposed 30 min (~$8.45/mo), the floor
+   computed 51, the stored interval was clamped to 51 at $4.97. Confirm at
+   3 min was refused and created no schedule.
+
+   **8b, 8c, 8d remain.** Two findings from 8a worth carrying into 8b: a
+   dimensioned CloudWatch metric cannot be read back without naming the
+   exact dimension set; and Haiku returned `last_value: null` for an
+   out-of-stock item because the hint told it to, where a regex would have
+   happily extracted `$629.00` and ignored availability. **An extractor
+   must handle availability, not just parse a number.**
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above. Deliberately after
    Phase 8: alarms watch specific code paths and Phase 8 replaces the
