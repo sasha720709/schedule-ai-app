@@ -273,17 +273,23 @@ scoped to `schedule-ai-app-*` resources.
    logging, plus the items in "Known gaps" above.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys).
 
-## Picking up Phase 4 (next session starts here)
+## Phase 4 — design agreed, implementation not started
 
 The plan is written up in full in **`docs/phase-4-plan.md`** — API
 surface, product vision, sub-phases, and what it teaches. Read that
 first.
 
-**Five decisions are open and need the owner's answer before any code
-gets written.** They are listed at the bottom of that document. The
-biggest is whether the Planner should stop creating schedules itself and
-instead propose a plan the owner confirms — that one changes
-`planner/handler.py`, not just the frontend.
+**All five open decisions were settled on 2026-07-30:**
+
+1. **Plan-then-confirm.** The Planner writes rows and stops; a separate
+   `POST /watches/{id}/confirm` creates the schedules. This is the one
+   that changes `planner/handler.py` — see "The Planner split" in the
+   plan doc. It also means the Checker must stop treating `planning` as
+   checkable.
+2. **Chat + watch list hybrid** — chat creates, a list manages.
+3. **One `api` Lambda** with internal routing.
+4. **Multi-turn chat deferred** to sub-phase 4d.
+5. **CloudFront URL**, no custom domain.
 
 Two things to know before starting:
 

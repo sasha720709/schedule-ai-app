@@ -1,10 +1,10 @@
 # Phase 4 — API + web chat UI
 
-**Status: proposed, not started. Five decisions below are still open and
-need the owner's call before any code is written.**
+**Status: design agreed 2026-07-30. All five decisions are settled (see
+the bottom of this document). Implementation has not started.**
 
-Written 2026-07-29, at the end of the session that finished Phase 6. This
-is the plan as it stood then; nothing here has been implemented.
+Written 2026-07-29, at the end of the session that finished Phase 6;
+decisions recorded the following day.
 
 ## The uncomfortable discovery that starts this phase
 
@@ -87,8 +87,9 @@ The review step earns its place three times over:
   confirm creates schedules; a failure in between leaves nothing
   orphaned.
 
-This is the single biggest open question, because it changes
-`planner/handler.py`, not just the frontend.
+**Decided: plan-then-confirm.** This is the one decision that changes
+`planner/handler.py` rather than only the frontend, so it is described
+concretely under "The Planner split" below.
 
 ## Proposed API surface
 
@@ -145,20 +146,50 @@ CloudFront's perpetual free tier covers 1TB egress and 10M requests per
 month; S3 is pennies. Nothing here moves the bill — the Haiku calls
 remain the only real cost in this system.
 
-## Open decisions — need the owner's call before building
+## The Planner split (consequence of decision 1)
 
-1. **Plan-then-confirm, or keep plan-and-go?**
-   *Recommendation: confirm.* Inspectable agent, prevents costly
-   intervals, fixes the partial-failure gap. Changes `planner/handler.py`.
-2. **Chat + list hybrid, or pure chat?**
-   *Recommendation: hybrid.*
-3. **One `api` Lambda, or one per route?**
-   *Recommendation: one.*
-4. **Multi-turn chat in Phase 4, or defer?**
-   *Recommendation: defer to 4d.*
-5. **Custom domain, or the CloudFront URL?**
-   *Recommendation: CloudFront URL* — a domain adds Route 53 and ACM for
-   no learning not already covered.
+`planner/handler.py` currently does two jobs in one invocation: it calls
+`plan()`, and it creates an EventBridge schedule per target. Plan-then-
+confirm separates them.
+
+- **Plan** (async, triggered by `POST /watches`): call `plan()`, write the
+  `Watches` row with `status: "planning"` and the `WatchTargets` rows, and
+  **stop**. Create no schedules. Store the proposed
+  `check_interval_min` on the watch so the UI can show it and price it.
+- **Confirm** (`POST /watches/{id}/confirm`): read the watch and its
+  targets, create one schedule per target, write each `schedule_arn` back,
+  flip the watch to `active`. If the caller passes an adjusted interval,
+  use that instead of the Planner's.
+
+Two things fall out of this for free:
+
+- The *no partial-failure handling* gap disappears from the planning
+  path. Planning becomes pure writes with nothing external to leak; if
+  confirm fails halfway it can be retried idempotently, because
+  `create_schedule` is keyed on a deterministic name
+  (`schedule-ai-app-{target_id}`) and the already-created ones can be
+  detected rather than duplicated.
+- A watch abandoned at the `planning` stage costs nothing. It is rows in
+  DynamoDB and no schedules, so the failure mode of a bad plan is a
+  wasted Sonnet call rather than a recurring bill.
+
+Note the Checker currently treats `planning` as checkable — it runs on
+`status in ("active", "planning")`. That has to change to `active` only,
+or a confirmed-but-not-yet-flipped watch could tick early.
+
+## Decisions — settled 2026-07-30
+
+1. **Plan-then-confirm.** The Planner proposes; the owner commits. Chosen
+   for an inspectable agent, no silently-committed expensive interval, and
+   the partial-failure fix that comes with it.
+2. **Chat + watch list hybrid.** Chat creates, a list manages. Pure chat
+   was rejected because listing and cancelling read worse as a
+   transcript; a form-only dashboard was rejected because it throws away
+   the plain-English planning that is the point of the project.
+3. **One `api` Lambda** with internal routing, not one per route.
+4. **Defer multi-turn chat** to sub-phase 4d.
+5. **Use the CloudFront URL**, no custom domain — Route 53 and ACM add
+   cost and setup for no learning not already covered.
 
 ## Related note from the same session: the cost question
 
