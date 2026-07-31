@@ -106,10 +106,29 @@ condition is a count reaching one: {"metric": "matching_vacancies", "op": ">=",
 number that is already on the page. If the user is waiting for something to
 show up, it is `presence`, even if similar things are listed today.
 
+RELATIVE CONDITIONS. You do not know the current value. You are writing this
+before the page has been opened, so any number you have came from search
+results and is stale, approximate, or about a different quote entirely.
+
+**Never invent an absolute threshold for a request phrased relative to now.**
+"goes down", "drops below current", "falls 5%", "cheaper than it is today" are
+all relative. Put the change in `relative_change_pct` and leave
+`condition.value` as null -- the threshold is computed later from the value
+actually read off the page, which is the only baseline that is real.
+
+  "tell me when it goes down"        -> relative_change_pct: 0
+  "tell me when it drops 5%"         -> relative_change_pct: -5
+  "tell me when it goes 10% above"   -> relative_change_pct: 10
+  "tell me when it drops below $300" -> relative_change_pct: null, value: 300
+
+A user who says "goes down" means ANY decrease. Do not decide on their behalf
+that they meant a meaningful one and pick a percentage.
+
 After you finish searching, respond with ONLY a JSON object, no other
 text before or after it, matching this shape:
 {
   "watch_shape": "value" | "presence",
+  "relative_change_pct": number | null,
   "condition": {"metric": string, "op": string, "value": number | boolean, "currency": string | null},
   "check_interval_min": integer,
   "targets": [
@@ -501,6 +520,40 @@ def build_extractor(url: str, hint: str, condition: dict, raw: str, *,
         print(f"[attempt {attempt + 1} failed] {feedback}", file=sys.stderr)
 
     raise ValueError(f"could not compile a working extractor for {url}: {feedback}")
+
+
+def resolve_relative_condition(condition: dict, pct, baseline) -> dict:
+    """Turn "goes down from current" into a real threshold, using a real reading.
+
+    The condition is written during the search step, before any page has been
+    opened. At that moment the model has no current value -- only whatever a
+    search result claimed -- so asking it for an absolute threshold on a
+    relative request guarantees a fabricated one.
+
+    Observed exactly that: asked "tell me when Apple shares go down from the
+    current", it produced `price < 313.93`. That is 5% below $330.45, a figure
+    from search results, while the page itself said $333.43. Two inventions in
+    one number -- a baseline that was never read, and a 5% drop the user never
+    asked for. "Goes down" means any decrease.
+
+    So the threshold is computed here instead, from the value the extractor was
+    actually verified against, and the baseline is stored alongside it so the
+    plan card can say "5% below the $333.43 read just now" rather than showing
+    a bare number nobody can check.
+    """
+    if pct is None or not isinstance(baseline, (int, float)) or isinstance(baseline, bool):
+        return condition
+
+    resolved = dict(condition)
+    threshold = round(float(baseline) * (1 + float(pct) / 100), 4)
+    resolved["value"] = threshold
+    resolved["baseline"] = float(baseline)
+    resolved["relative_change_pct"] = float(pct)
+    # "goes down" is any decrease, so the threshold IS the baseline and the
+    # comparison has to be strict -- `<=` would fire on an unchanged price.
+    if not resolved.get("op"):
+        resolved["op"] = "<" if float(pct) <= 0 else ">"
+    return resolved
 
 
 def build_with_cheapest_fetch(url: str, hint: str, condition: dict, *,

@@ -470,3 +470,66 @@ def test_a_value_that_fails_the_condition_still_plans():
         "https://example.com", "the price",
         {"metric": "price", "op": "<", "value": 700}, PAGE, client=client)
     assert built["verified_value"] == 789.00
+
+
+# --- relative conditions: "goes down from the current" ------------------------
+#
+# Found by the owner. Asked "tell me when prices for Apple shares go down from
+# the current", the Planner produced `price < 313.93` while the page said
+# $333.43. That threshold is 5% below $330.45 -- a figure from search results,
+# not from the page -- and the 5% was invented outright. "Goes down" means any
+# decrease. The condition is written before the page is ever opened, so asking
+# for an absolute threshold there guarantees a fabricated one.
+
+def test_goes_down_means_any_decrease_from_what_was_actually_read():
+    resolved = plan_mod.resolve_relative_condition(
+        {"metric": "price", "op": "<", "value": None, "currency": "USD"},
+        0, 333.43)
+
+    assert resolved["value"] == 333.43
+    assert resolved["baseline"] == 333.43
+    assert resolved["op"] == "<"
+
+
+def test_a_percentage_drop_is_computed_from_the_verified_value():
+    resolved = plan_mod.resolve_relative_condition(
+        {"metric": "price", "op": "<", "value": None}, -5, 333.43)
+    assert resolved["value"] == round(333.43 * 0.95, 4)
+    assert resolved["relative_change_pct"] == -5.0
+
+
+def test_the_fabricated_threshold_is_what_this_replaces():
+    """Regression, stated as the arithmetic that gave it away."""
+    fabricated = 313.93
+    stale_search_price = round(fabricated / 0.95, 2)
+    assert stale_search_price == 330.45          # never appeared on the page
+
+    honest = plan_mod.resolve_relative_condition(
+        {"metric": "price", "op": "<", "value": fabricated}, 0, 333.43)
+    assert honest["value"] == 333.43
+    assert honest["value"] != fabricated
+
+
+def test_a_rise_gets_the_right_direction_when_no_op_was_given():
+    resolved = plan_mod.resolve_relative_condition(
+        {"metric": "price", "op": None, "value": None}, 10, 100.0)
+    assert resolved["op"] == ">"
+    assert resolved["value"] == 110.0
+
+
+def test_an_absolute_condition_is_left_completely_alone():
+    """"drops below $300" is already a real threshold and must not be rebased."""
+    original = {"metric": "price", "op": "<", "value": 300}
+    assert plan_mod.resolve_relative_condition(original, None, 333.43) == original
+
+
+def test_a_missing_baseline_cannot_produce_a_threshold():
+    """Better an unresolved condition than a confidently wrong one."""
+    original = {"metric": "price", "op": "<", "value": None}
+    assert plan_mod.resolve_relative_condition(original, -5, None) == original
+    assert plan_mod.resolve_relative_condition(original, -5, "n/a") == original
+
+
+def test_a_boolean_baseline_is_not_arithmetic():
+    original = {"metric": "in_stock", "op": "==", "value": True}
+    assert plan_mod.resolve_relative_condition(original, -5, True) == original

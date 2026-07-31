@@ -431,6 +431,24 @@ Details of the finished phases:
      pages of different sizes is not established** — the retry is a mitigation,
      not a diagnosis, and this belongs in Phase 5.
 
+   **Relative conditions, closed at last.** Found by the owner: "tell me when
+   Apple shares go down from the current" produced `price < 313.93` while the
+   page said `$333.43`. That threshold is 5% below $330.45 — a figure from
+   *search results*, never from the page — and the 5% was invented outright.
+   The condition is written during the search step, before any page is opened,
+   so asking for an absolute threshold there guarantees a fabricated one. The
+   search step now returns `relative_change_pct` and leaves `value` null;
+   `resolve_relative_condition()` computes the threshold from `verified_value`
+   after the extractor has been proven, and stores `baseline` alongside it.
+   "Goes down" is `pct: 0` — **any** decrease. This is the schema gap the plan
+   predicted before the phase started and pass 2 failed to close.
+
+   **Still open on that watch:** the extractor CNN yielded reads
+   `"Last closed at $..."` — a figure that moves once a day — while the watch
+   checks every minute, and the same page shows a live pre-market price the
+   watch cannot see. Nothing in the system currently notices that a value is
+   stale relative to the check interval. Candidate for 8d or Phase 5.
+
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above. Deliberately after
    Phase 8: alarms watch specific code paths and Phase 8 replaces the

@@ -26,7 +26,7 @@ import boto3
 
 import cost
 from fetch import fetch_raw
-from plan import build_with_cheapest_fetch, search
+from plan import build_with_cheapest_fetch, resolve_relative_condition, search
 
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
@@ -102,6 +102,10 @@ def lambda_handler(event, context):
         # there yet. The second kind cannot be verified by finding its value,
         # because not having one is its whole premise -- see build_extractor.
         shape = result.get("watch_shape", "value")
+        # "goes down from the current" has no threshold until something has
+        # actually been read. Resolved below, once a target verifies.
+        relative_pct = result.get("relative_change_pct")
+        baseline = None
         target_ids, verified, rejected = [], [], []
 
         for target in result["targets"]:
@@ -128,6 +132,9 @@ def lambda_handler(event, context):
                 rejected.append({"url": url, "reason": message[:300]})
                 continue
 
+            if baseline is None:
+                baseline = built["verified_value"]
+
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
             verified.append(fetch_method)
@@ -144,6 +151,12 @@ def lambda_handler(event, context):
                 "verified_raw": built["verified_raw"],
                 "verified_at": now,
             })
+
+        # Only now is there a real number to be relative to. Doing this before
+        # the fetch is what produced `price < 313.93` for "tell me when Apple
+        # goes down" -- 5% below a stale figure from search results, while the
+        # page said $333.43.
+        condition = resolve_relative_condition(condition, relative_pct, baseline)
 
         if not target_ids:
             raise RuntimeError(
@@ -181,7 +194,7 @@ def lambda_handler(event, context):
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
             ExpressionAttributeValues={
                 ":s": "proposed",
-                ":c": _to_decimal(result["condition"]),
+                ":c": _to_decimal(condition),
                 ":i": _to_decimal(interval),
                 ":p": _to_decimal(proposed),
                 ":f": _to_decimal(floor),
