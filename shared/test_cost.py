@@ -166,3 +166,10 @@ def test_the_model_call_still_dwarfs_everything_on_the_cheap_path():
     with_model = cost.cost_per_check("http", uses_model=True)
     without = cost.cost_per_check("http", uses_model=False)
     assert with_model / without > 500
+
+
+def test_a_repair_costs_more_than_a_check_but_less_than_a_day_of_them():
+    """Sanity on the numbers an alarm will be set against."""
+    assert cost.repair_cost() > cost.cost_per_check("http", uses_model=False)
+    assert cost.repair_cost() < cost.monthly_cost(
+        60, 1, "browser", uses_model=False)

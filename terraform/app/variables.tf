@@ -20,3 +20,24 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 5.0
 }
+
+variable "daily_spend_alarm_usd" {
+  description = <<-EOT
+    Daily estimated spend across all watches that trips the alarm. Not a
+    budget -- the per-watch $5/month budget in shared/cost.py is the budget.
+    This is the "something is looping" tripwire, so it sits well above normal
+    ($0.17/day for one watch at its full budget) and well below painful.
+  EOT
+  type    = number
+  default = 2.0
+}
+
+variable "enable_alarms" {
+  description = <<-EOT
+    Create the SNS topic and CloudWatch alarms. Off until the deploy user is
+    granted sns:* and cloudwatch:*Alarm* on schedule-ai-app-* resources -- it
+    cannot grant itself, holding iam:*Role but not iam:*Policy on purpose.
+  EOT
+  type    = bool
+  default = false
+}

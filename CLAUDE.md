@@ -287,7 +287,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **8b pass 3** · Cheap fetch by default | done — browser only where proven necessary |
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
-| 🔨 | **5** · Production hygiene | **next** — Phase 8 is complete |
+| 🔨 | **5** · Production hygiene | started — alarms written, **blocked on one IAM change** |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
 
@@ -473,10 +473,25 @@ Details of the finished phases:
    with no price at all: three ticks failed, the watch went `degraded`, the
    email was sent and the schedule was deleted.
 
-5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
-   logging, plus the items in "Known gaps" above. Deliberately after
-   Phase 8: alarms watch specific code paths and Phase 8 replaces the
-   hot one, so doing this first means doing it twice.
+5. Production hygiene — **started, see `docs/phase-5-plan.md`.** The spend
+   and Checker-error alarms are written and committed, **gated off** behind
+   `enable_alarms = false`. They are off because `schedule-ai-terraform`
+   cannot create SNS topics or CloudWatch alarms and **cannot grant itself
+   the permission** — it holds `iam:*Role` but deliberately not
+   `iam:*Policy`. The exact JSON to paste into the
+   `schedule-ai-app-terraform` policy is in the plan doc. Ungated, an
+   unrelated `terraform apply` fails on a 403 for a resource nobody touched.
+
+   The Checker now publishes `EstimatedCostUSD` **twice** — once with
+   dimensions for reading, once bare for alarming. This resolves the gotcha
+   recorded in 8a: a dimensioned metric cannot be alarmed on without naming
+   its exact dimension set, so an alarm on `{browser, false}` would have
+   ignored every HTTP check and every Tier 1 repair.
+
+   An `schedule-ai-app-alarms` SNS topic **exists in AWS but not in
+   Terraform state** — the first apply created it before failing on the
+   read-back, and it was `state rm`'d so apply would work again. Enabling
+   the alarms needs `terraform import` first, or the create will collide.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys). Last on
    purpose. Honest counter-argument: a pipeline would reduce the risk of
    Phase 8's large change. But offline tests already exist where they

@@ -68,17 +68,33 @@ def _record_cost(fetch_method: str, used_model: bool) -> None:
     check that otherwise succeeded.
     """
     try:
+        spent = cost.cost_per_check(fetch_method, used_model)
         cloudwatch.put_metric_data(
             Namespace="ScheduleAI",
-            MetricData=[{
-                "MetricName": "EstimatedCostUSD",
-                "Value": cost.cost_per_check(fetch_method, used_model),
-                "Unit": "None",
-                "Dimensions": [
-                    {"Name": "FetchMethod", "Value": fetch_method},
-                    {"Name": "UsedModel", "Value": str(used_model).lower()},
-                ],
-            }],
+            MetricData=[
+                {
+                    "MetricName": "EstimatedCostUSD",
+                    "Value": spent,
+                    "Unit": "None",
+                    "Dimensions": [
+                        {"Name": "FetchMethod", "Value": fetch_method},
+                        {"Name": "UsedModel", "Value": str(used_model).lower()},
+                    ],
+                },
+                # The same number again with no dimensions, because a
+                # dimensioned metric cannot be read back -- or alarmed on --
+                # without naming its exact dimension set. Alarming on
+                # {browser,false} would miss every HTTP check and every repair,
+                # which is precisely the spend worth catching. CloudWatch treats
+                # the dimensionless series as its own metric, so this one is the
+                # total across every watch and the only thing an alarm can
+                # usefully watch.
+                {
+                    "MetricName": "EstimatedCostUSD",
+                    "Value": spent,
+                    "Unit": "None",
+                },
+            ],
         )
     except Exception as exc:  # noqa: BLE001
         print(f"could not publish cost metric: {type(exc).__name__}: {exc}")
