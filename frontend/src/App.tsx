@@ -18,6 +18,7 @@ import {
   createWatch,
   deleteWatch,
   getWatch,
+  type CostEstimate,
   listWatches,
   monthlyCost,
   setWatchStatus,
@@ -33,6 +34,9 @@ export default function App() {
   );
   const [watches, setWatches] = useState<Watch[]>([]);
   const [targets, setTargets] = useState<Record<string, Target[]>>({});
+  // The per-check rate is the server's to know: it depends on the fetch
+  // method and on whether the target carries a compiled extractor.
+  const [costs, setCosts] = useState<Record<string, CostEstimate | null>>({});
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -76,11 +80,18 @@ export default function App() {
       const fetched = await Promise.all(
         interesting.map((w) =>
           getWatch(passcode, w.watch_id).then(
-            (r) => [w.watch_id, r.targets] as const,
+            (r) => [w.watch_id, r] as const,
           ),
         ),
       );
-      setTargets((prev) => ({ ...prev, ...Object.fromEntries(fetched) }));
+      setTargets((prev) => ({
+        ...prev,
+        ...Object.fromEntries(fetched.map(([id, r]) => [id, r.targets])),
+      }));
+      setCosts((prev) => ({
+        ...prev,
+        ...Object.fromEntries(fetched.map(([id, r]) => [id, r.cost])),
+      }));
     } catch (err) {
       handle(err);
     }
@@ -191,6 +202,7 @@ export default function App() {
             key={watch.watch_id}
             watch={watch}
             targets={targets[watch.watch_id]}
+            cost={costs[watch.watch_id]}
             busy={busy}
             onConfirm={(interval) =>
               void act(() => confirmWatch(passcode, watch.watch_id, interval))
@@ -209,6 +221,10 @@ export default function App() {
                   ...prev,
                   [watch.watch_id]: detail.targets,
                 }));
+                setCosts((prev) => ({
+                  ...prev,
+                  [watch.watch_id]: detail.cost,
+                }));
               })
             }
           />
@@ -221,6 +237,7 @@ export default function App() {
 function WatchRow({
   watch,
   targets,
+  cost,
   busy,
   onConfirm,
   onPause,
@@ -230,6 +247,7 @@ function WatchRow({
 }: {
   watch: Watch;
   targets?: Target[];
+  cost?: CostEstimate | null;
   busy: boolean;
   onConfirm: (interval: number) => void;
   onPause: () => void;
@@ -287,7 +305,25 @@ function WatchRow({
             min
           </label>{" "}
           <span className="muted">
-            ≈ ${monthlyCost(interval, targets?.length ?? 1).toFixed(2)}/month
+            {cost ? (
+              <>
+                ≈ $
+                {monthlyCost(
+                  cost.cost_per_check_usd,
+                  interval,
+                  targets?.length ?? 1,
+                ).toFixed(2)}
+                /month
+                {/* The budget-derived floor, so an interval the server will
+                    refuse is visible before the button is pressed rather than
+                    as a 409 afterwards. */}
+                {interval < cost.min_interval_min && (
+                  <> · below the {cost.min_interval_min} min this budget allows</>
+                )}
+              </>
+            ) : (
+              <>cost unknown until a target is verified</>
+            )}
             {watch.check_interval_min !== interval && (
               <> · planner suggested {watch.check_interval_min}</>
             )}

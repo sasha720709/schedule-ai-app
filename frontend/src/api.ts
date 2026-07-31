@@ -36,6 +36,22 @@ export interface Watch {
   plan_error?: string;
 }
 
+/**
+ * What the server says a check costs. Produced by `shared/cost.py`, which is
+ * the single definition of that in this project -- see the note on
+ * `monthlyCost` below for why the frontend must not have a second one.
+ */
+export interface CostEstimate {
+  interval_min: number;
+  targets: number;
+  fetch_method: string;
+  cost_per_check_usd: number;
+  estimated_monthly_usd: number;
+  monthly_budget_usd: number;
+  min_interval_min: number;
+  within_budget: boolean;
+}
+
 export interface Target {
   target_id: string;
   watch_id: string;
@@ -94,7 +110,10 @@ export const listWatches = (passcode: string) =>
   request<{ watches: Watch[] }>(passcode, "/watches");
 
 export const getWatch = (passcode: string, id: string) =>
-  request<{ watch: Watch; targets: Target[] }>(passcode, `/watches/${id}`);
+  request<{ watch: Watch; targets: Target[]; cost: CostEstimate | null }>(
+    passcode,
+    `/watches/${id}`,
+  );
 
 export const createWatch = (passcode: string, prompt: string) =>
   request<{ watch_id: string; status: Status }>(passcode, "/watches", {
@@ -132,15 +151,28 @@ export const deleteWatch = (passcode: string, id: string) =>
   });
 
 /**
- * Rough monthly cost of one target at a given interval.
+ * Monthly cost at a chosen interval, using the server's own per-check rate.
  *
- * Measured, not guessed: a browser check costs about $0.0057, ~97% of which
- * is the Haiku call. Shown next to the interval on a proposed plan because
- * the Planner picks that number itself and has been observed choosing 10, 20
- * and 30 minutes for the same request on different runs -- a $12 to $25
- * monthly swing decided by a model.
+ * This function used to carry its own constant -- `checksPerMonth * 0.0057` --
+ * a second copy of a number that `shared/cost.py` calls the single definition
+ * of what a check costs. It then went stale in the worst possible direction:
+ * $0.0057 was the price of a check when every tick paid for a Haiku call, and
+ * Phase 8b cut that to $0.0000041 for an HTTP target. The plan card was
+ * quoting **$300 a month for a watch that costs eighteen cents**, which is not
+ * a rounding error but a reason not to create the watch at all.
+ *
+ * So the rate is no longer here. `cost_per_check_usd` comes from the API,
+ * which computes it from the real fetch method and whether the target carries
+ * a compiled extractor -- neither of which the browser can know. Only the
+ * arithmetic for a not-yet-saved interval stays client-side, because the input
+ * has to respond as it is typed.
  */
-export function monthlyCost(intervalMin: number, targets = 1): number {
+export function monthlyCost(
+  costPerCheckUsd: number,
+  intervalMin: number,
+  targets = 1,
+): number {
+  if (!Number.isFinite(intervalMin) || intervalMin <= 0) return 0;
   const checksPerMonth = (60 / intervalMin) * 24 * 30;
-  return checksPerMonth * 0.0057 * targets;
+  return checksPerMonth * costPerCheckUsd * targets;
 }
