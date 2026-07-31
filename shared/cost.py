@@ -111,6 +111,42 @@ def fetch_cost(fetch_method: str) -> float:
     return 0.0  # the Checker's own invocation already covers an HTTP GET
 
 
+# One Tier 1 repair: a Haiku call that re-reads the page and re-derives the
+# spec. Bigger than a judge call in both directions -- it is shown the old
+# extractor and the error alongside the text, and it writes a spec rather than
+# a verdict.
+REPAIR_INPUT_TOKENS = 6000
+REPAIR_OUTPUT_TOKENS = 400
+
+
+def repair_cost() -> float:
+    return (
+        REPAIR_INPUT_TOKENS / 1_000_000 * HAIKU_INPUT_PER_MTOK
+        + REPAIR_OUTPUT_TOKENS / 1_000_000 * HAIKU_OUTPUT_PER_MTOK
+    )
+
+
+def can_afford_repair(interval_min: int, targets: int = 1,
+                      fetch_method: str = "http",
+                      repair_spend_usd: float = 0.0) -> bool:
+    """Is there room in this watch's monthly budget for one more repair?
+
+    Repairs are charged against the same `MONTHLY_BUDGET_USD` as checks rather
+    than getting an allowance of their own. One guarantee is easier to reason
+    about than two, and it removes the failure mode where a watch is inside its
+    check budget while quietly spending far more on repairing itself.
+
+    It also self-limits without a retry counter to tune. A watch that fails
+    every tick burns through the remaining budget quickly and is escalated to
+    `degraded`; a watch that breaks once a month repairs itself for years. The
+    number that decides this is the same $5 the owner already understands, not
+    a MAX_REPAIRS constant that ages badly -- the same reasoning that made the
+    interval floor derived rather than hardcoded.
+    """
+    checks = monthly_cost(interval_min, targets, fetch_method, uses_model=False)
+    return checks + repair_spend_usd + repair_cost() <= monthly_budget_usd()
+
+
 def cost_per_check(fetch_method: str = "http", uses_model: bool = True) -> float:
     if uses_model:
         checker_seconds = CHECKER_SECONDS_WITH_MODEL

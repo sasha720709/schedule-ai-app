@@ -286,8 +286,8 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **8b pass 2** · Wire Planner + Checker | done — verified live, 222 tests |
 | ✅ | **8b pass 3** · Cheap fetch by default | done — browser only where proven necessary |
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
-| 🔨 | **8d** · Tiered self-heal | **next** — start here |
-| ⬜ | **5** · Production hygiene | after 8, so it instruments a settled design |
+| ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
+| 🔨 | **5** · Production hygiene | **next** — Phase 8 is complete |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
 
@@ -448,6 +448,30 @@ Details of the finished phases:
    checks every minute, and the same page shows a live pre-market price the
    watch cannot see. Nothing in the system currently notices that a value is
    stale relative to the check interval. Candidate for 8d or Phase 5.
+
+8d. **Tiered self-heal — done.** `shared/repair.py` puts Haiku back, once,
+   and only on `failed`. Never on `unavailable`: repairing an extractor that
+   correctly reports "not yet" would pay a model on every tick forever, which
+   is the cost the phase exists to remove.
+
+   **Repairs share the watch's monthly budget** rather than getting an
+   allowance of their own — one guarantee instead of two, and it self-limits
+   with no MAX_REPAIRS constant to age badly. A repaired spec is verified
+   against the same page it was derived from before it is stored, exactly as
+   at plan time, and the old spec is kept in `previous_extractor`.
+
+   `DEGRADE_AFTER = 3` is a separate signal from the budget: on a long
+   interval the money bounds repairs too slowly to be useful as an alarm.
+   Degrading **deletes the schedules**, like a triggered watch — continuing to
+   check something known to be broken bills every tick to re-learn a settled
+   fact.
+
+   Verified live on watch `w_71eab15f`. Its `scope` was corrupted by hand in
+   DynamoDB; the next tick failed, Haiku recompiled the spec to
+   `[data-uri*="quotes"]`, the new spec verified at $333.43, and the tick
+   returned `ok` — total cost **$0.008**. Then the URL was pointed at a page
+   with no price at all: three ticks failed, the watch went `degraded`, the
+   email was sent and the schedule was deleted.
 
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above. Deliberately after

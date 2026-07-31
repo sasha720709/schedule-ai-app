@@ -367,3 +367,149 @@ def test_a_watch_that_is_not_active_is_never_checked(env):
 
     assert result == {"skipped": True, "status": "paused"}
     assert env.targets.updates == []
+
+
+# --- Tier 1 and Tier 2: the model returns, as repair only ---------------------
+#
+# The bargain that makes a compiled extractor safe to leave running for months:
+# a selector will eventually stop matching, and something has to notice. What
+# earns a repair is `failed` and never `unavailable` -- repairing a healthy
+# extractor that is correctly reporting "not yet" would pay a model on every
+# tick, forever, which is the cost this whole phase exists to remove.
+
+BROKEN_SPEC = {**PRICE_SPEC, "scope": "#offer_v2"}
+FIXED = {"extractor": PRICE_SPEC, "value": 429.00, "raw": "$429.00"}
+
+
+def wire_repair(env, monkeypatch, outcome=FIXED, fail=False):
+    calls = []
+
+    def fake(old_spec, error, hint, payload, baseline=None):
+        calls.append({"spec": old_spec, "error": error, "payload": payload,
+                      "baseline": baseline})
+        if fail:
+            raise ValueError("could not find the value on the page")
+        return outcome
+
+    monkeypatch.setattr(h, "repair", fake)
+    return calls
+
+
+def test_a_broken_extractor_is_repaired_and_the_tick_continues(env, monkeypatch):
+    calls = wire_repair(env, monkeypatch)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=BROKEN_SPEC, verified_value=Decimal("439.00"))
+
+    result = run(env)
+
+    assert len(calls) == 1
+    assert result["status"] == "ok"
+    assert result["condition_met"] is True
+    # The repair was derived from the page already in hand, not a second fetch.
+    assert calls[0]["payload"] == PAGE
+    stored = [u for u in env.targets.updates if "extractor = :x" in u["expression"]]
+    assert stored and stored[0]["values"][":x"] == PRICE_SPEC
+    # The old spec is kept, so a bad repair can be seen rather than guessed at.
+    assert stored[0]["values"][":p"] == BROKEN_SPEC
+
+
+def test_a_repair_resets_the_failure_count(env, monkeypatch):
+    wire_repair(env, monkeypatch)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=BROKEN_SPEC, consecutive_failures=Decimal("2"))
+
+    run(env)
+
+    assert values_of(env.targets.last_update())[":f"] == 0
+
+
+def test_an_unavailable_reading_is_never_repaired(env, monkeypatch):
+    """The single most expensive mistake available here. `unavailable` means
+    the extractor works and there is legitimately nothing today."""
+    calls = wire_repair(env, monkeypatch)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor={**PRICE_SPEC, "selector": ".flash_price"})
+
+    result = run(env)
+
+    assert result["status"] == "unavailable"
+    assert calls == []
+
+
+def test_a_failed_repair_costs_money_and_counts_towards_giving_up(env, monkeypatch):
+    wire_repair(env, monkeypatch, fail=True)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=BROKEN_SPEC)
+
+    result = run(env)
+
+    stored = values_of(env.targets.last_update())
+    assert result["status"] == "failed"
+    assert stored[":f"] == 1
+    assert float(stored[":r"]) > 0
+
+
+def test_the_third_consecutive_failure_degrades_the_watch(env, monkeypatch):
+    """Tier 2. A watch that cannot read its target has to say so -- silence is
+    indistinguishable from a condition that is simply not met."""
+    wire_repair(env, monkeypatch, fail=True)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=BROKEN_SPEC, consecutive_failures=Decimal("2"))
+
+    result = run(env)
+
+    assert result["status"] == "degraded"
+    assert env.watches.last_update()["values"][":s"] == "degraded"
+    env.module.events.put_events.assert_called_once()
+    entry = env.module.events.put_events.call_args[1]["Entries"][0]
+    assert entry["DetailType"] == "WatchDegraded"
+    assert "scope matched nothing" in json.loads(entry["Detail"])["reason"]
+
+
+def test_a_watch_that_cannot_afford_a_repair_degrades_immediately(env, monkeypatch):
+    """Repairs share the watch's monthly budget rather than getting their own,
+    so an expensive watch that breaks is escalated instead of quietly
+    overspending."""
+    calls = wire_repair(env, monkeypatch)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=BROKEN_SPEC,
+                repair_spend_usd=Decimal("4.999"))
+
+    result = run(env)
+
+    assert calls == []
+    assert result["status"] == "degraded"
+
+
+def test_a_legacy_row_without_an_extractor_is_never_repaired(env, monkeypatch):
+    """There is no spec to repair, and judge() reports its own trouble."""
+    calls = wire_repair(env, monkeypatch)
+    monkeypatch.setattr(h, "judge", MagicMock(return_value={
+        "last_value": "$429.00", "condition_met": False, "note": ""}))
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env)
+
+    run(env)
+    assert calls == []
+
+
+def test_degrading_records_why_and_what_it_cost(env, monkeypatch):
+    wire_repair(env, monkeypatch, fail=True)
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=BROKEN_SPEC, consecutive_failures=Decimal("2"),
+                repair_spend_usd=Decimal("0.016"))
+
+    run(env)
+
+    detail = json.loads(
+        env.module.events.put_events.call_args[1]["Entries"][0]["Detail"])
+    assert detail["repair_spend_usd"] > 0.016
+    assert env.watches.last_update()["values"][":r"]

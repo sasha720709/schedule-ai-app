@@ -36,11 +36,23 @@ import cost
 from condition import ConditionError, evaluate
 from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
 from check import fetch_raw, fetch_text, judge
+from repair import repair
 
 dynamodb = boto3.resource("dynamodb")
 events = boto3.client("events")
 lambda_client = boto3.client("lambda")
 cloudwatch = boto3.client("cloudwatch")
+
+
+# How many consecutive failed ticks before a watch is declared broken.
+#
+# The monthly budget already bounds *spending* on repairs, but on a long
+# interval it bounds it slowly -- at 60 minutes a watch could fail and retry
+# for most of a month before the money ran out, saying nothing. This is a
+# different signal: a repair that was attempted and could not produce a working
+# spec will usually fail the same way against the same page next tick. Three
+# says "this is not a transient network blip" without waiting for the budget.
+DEGRADE_AFTER = 3
 
 
 def _record_cost(fetch_method: str, used_model: bool) -> None:
@@ -137,6 +149,12 @@ def _tier0(target: dict, watch_condition: dict, fetch_method: str) -> dict:
     """Run the compiled extractor. No model, no network beyond one fetch."""
     spec = _from_decimal(target["extractor"])
     payload = _fetch(target["url"], fetch_method, markup=True)
+    outcome = _judge_extraction(spec, payload, target, watch_condition)
+    outcome["payload"] = payload
+    return outcome
+
+
+def _judge_extraction(spec, payload, target, watch_condition) -> dict:
     result = extract(spec, payload)
 
     if result.status == FAILED:
@@ -220,6 +238,60 @@ def _tier_model(target: dict, watch_condition: dict, fetch_method: str) -> dict:
     }
 
 
+def _degrade(watches_table, targets_table, watch: dict, target: dict,
+             result: dict, now: str, repair_spend: float) -> dict:
+    """Tier 2: stop, say why, and stop billing.
+
+    A watch that cannot read its target must say so. Silence is the failure
+    this whole phase is organised against -- a deterministic extractor that
+    quietly returns nothing looks exactly like a condition that is not met, and
+    the owner learns nothing for weeks.
+
+    Degrading **deletes the schedules**, like a triggered watch does. Continuing
+    to check something known to be broken bills EventBridge, Lambda and
+    DynamoDB every tick to re-learn a fact already established. The row keeps
+    `last_error` and `repair_spend_usd`, so re-planning is a decision the owner
+    makes with the reason in front of them.
+    """
+    watch_id = watch["watch_id"]
+    print(f"DEGRADING {watch_id}: {result['error']}")
+
+    targets_table.update_item(
+        Key={"target_id": target["target_id"]},
+        UpdateExpression=(
+            "SET last_checked_at = :t, last_error = :e, last_status = :s, "
+            "consecutive_failures = :f, repair_spend_usd = :r, degraded_at = :d"
+        ),
+        ExpressionAttributeValues={
+            ":t": now, ":e": str(result["error"])[:500], ":s": FAILED,
+            ":f": DEGRADE_AFTER, ":r": _to_decimal(repair_spend), ":d": now,
+        },
+    )
+    watches_table.update_item(
+        Key={"watch_id": watch_id},
+        UpdateExpression="SET #s = :s, degraded_at = :t, degraded_reason = :r",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":s": "degraded", ":t": now, ":r": str(result["error"])[:500],
+        },
+    )
+    events.put_events(Entries=[{
+        "Source": "schedule-ai-app.checker",
+        "DetailType": "WatchDegraded",
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Detail": json.dumps({
+            "watch_id": watch_id,
+            "target_id": target["target_id"],
+            "url": target["url"],
+            "prompt": watch.get("prompt", ""),
+            "reason": str(result["error"])[:500],
+            "repair_spend_usd": round(repair_spend, 4),
+            "degraded_at": now,
+        }),
+    }])
+    return {"checked": True, "status": "degraded", "error": result["error"]}
+
+
 def lambda_handler(event, context):
     target_id = event["target_id"]
 
@@ -276,15 +348,71 @@ def lambda_handler(event, context):
 
     _record_cost(fetch_method, used_model=used_model)
 
+    # --- Tier 1: the model comes back, but only to repair -------------------
+    repair_spend = float(_from_decimal(target.get("repair_spend_usd", 0)) or 0)
+    failures = int(_from_decimal(target.get("consecutive_failures", 0)) or 0)
+
+    if result["status"] == FAILED and not used_model and result.get("payload"):
+        failures += 1
+        interval = int(_from_decimal(watch.get("check_interval_min", 60)) or 60)
+        affordable = cost.can_afford_repair(
+            interval_min=interval, targets=1, fetch_method=fetch_method,
+            repair_spend_usd=repair_spend,
+        )
+        if affordable:
+            try:
+                fixed = repair(
+                    _from_decimal(target["extractor"]),
+                    str(result["error"]),
+                    target.get("extract_hint", ""),
+                    result["payload"],
+                    baseline=_from_decimal(target.get("verified_value")),
+                )
+            except Exception as exc:  # noqa: BLE001 -- a failed repair is data
+                repair_spend += cost.repair_cost()
+                print(f"repair failed for {target_id}: {type(exc).__name__}: {exc}")
+            else:
+                repair_spend += cost.repair_cost()
+                print(f"repaired {target_id}: {fixed['extractor']}")
+                targets_table.update_item(
+                    Key={"target_id": target_id},
+                    UpdateExpression=(
+                        "SET extractor = :x, repaired_at = :t, "
+                        "repair_spend_usd = :s, previous_extractor = :p"
+                    ),
+                    ExpressionAttributeValues={
+                        ":x": _to_decimal(fixed["extractor"]),
+                        ":t": now,
+                        ":s": _to_decimal(repair_spend),
+                        ":p": target["extractor"],
+                    },
+                )
+                # Re-judge with the repaired spec against the page already in
+                # hand. Not re-fetched: the repair was derived from this exact
+                # markup, so anything else would be judging a different page.
+                result = _judge_extraction(
+                    fixed["extractor"], result["payload"], target, watch_condition)
+                failures = 0
+        else:
+            print(f"{target_id} cannot afford a repair "
+                  f"(spent ${repair_spend:.4f}); escalating")
+            failures = DEGRADE_AFTER
+
+    if result["status"] == FAILED and failures >= DEGRADE_AFTER:
+        return _degrade(watches_table, targets_table, watch, target,
+                        result, now, repair_spend)
+
     if result["status"] == FAILED:
         print(f"target={target_id} EXTRACTION FAILED: {result['error']}")
         targets_table.update_item(
             Key={"target_id": target_id},
             UpdateExpression=(
-                "SET last_checked_at = :t, last_error = :e, last_status = :s"
+                "SET last_checked_at = :t, last_error = :e, last_status = :s, "
+                "consecutive_failures = :f, repair_spend_usd = :r"
             ),
             ExpressionAttributeValues={
                 ":t": now, ":e": str(result["error"])[:500], ":s": FAILED,
+                ":f": failures, ":r": _to_decimal(repair_spend),
             },
         )
         return {"checked": True, "status": FAILED, "error": result["error"]}
@@ -293,9 +421,11 @@ def lambda_handler(event, context):
         Key={"target_id": target_id},
         UpdateExpression=(
             "SET last_value = :v, last_raw = :r, last_checked_at = :t, "
-            "last_note = :n, last_status = :s REMOVE last_error"
+            "last_note = :n, last_status = :s, consecutive_failures = :f "
+            "REMOVE last_error"
         ),
         ExpressionAttributeValues={
+            ":f": 0,
             ":v": _to_decimal(result["value"]),
             ":r": result["raw"],
             ":t": now,

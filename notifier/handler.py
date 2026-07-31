@@ -61,11 +61,46 @@ This watch has now stopped checking.
     return subject, body
 
 
+def _format_degraded_email(detail: dict) -> tuple:
+    """A watch that broke is a different message from a watch that fired.
+
+    Conflating them would be the same mistake the extraction engine makes when
+    it collapses `unavailable` into `failed`: two states that need opposite
+    responses, reported identically. One says "the thing you wanted happened",
+    the other says "I can no longer tell you whether it happened".
+    """
+    prompt = detail.get("prompt", "(unknown request)")
+    subject = f"Watch stopped working: {prompt[:60]}"
+    body = f"""Your watch can no longer read its target, so it has been stopped.
+
+What you asked for:
+  {prompt}
+
+What went wrong:
+  {detail.get('reason', '(no reason recorded)')}
+
+Where:
+  {detail.get('url', '(unknown)')}
+
+This usually means the site was redesigned. An automatic repair was attempted
+and did not work, which cost about ${detail.get('repair_spend_usd', 0):.3f}.
+
+Checking has stopped, so this is no longer costing anything. Re-create the
+watch when you want it back -- it will read the page fresh and build a new
+extractor.
+
+Detected at {detail.get('degraded_at', 'unknown time')}.
+"""
+    return subject, body
+
+
 def lambda_handler(event, context):
     detail = event["detail"]
     watch_id = detail["watch_id"]
 
-    subject, body = _format_email(detail)
+    degraded = event.get("detail-type") == "WatchDegraded"
+    subject, body = (_format_degraded_email(detail) if degraded
+                     else _format_email(detail))
     address = os.environ["NOTIFY_EMAIL"]
 
     ses.send_email(
