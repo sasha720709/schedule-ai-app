@@ -474,3 +474,38 @@ def test_a_browser_target_costs_more_than_an_http_one(aws):
     browser = body_of(call("GET /watches/{id}", watch_id="w_1"))["cost"]
 
     assert browser["estimated_monthly_usd"] > http["estimated_monthly_usd"]
+
+
+# --- cost reflects whether a tick actually pays for a model -------------------
+#
+# Phase 8b makes a compiled extractor ~1000x cheaper than a Haiku call. If the
+# API keeps pricing every watch as though it still calls a model, the plan card
+# overstates the bill by ~35x and `confirm` refuses intervals the budget
+# comfortably affords -- the guardrail turns into an obstacle.
+
+def test_a_watch_with_compiled_extractors_is_priced_without_the_model():
+    assert handler._uses_model([{"extractor": {"kind": "css"}}]) is False
+
+
+def test_a_watch_predating_phase_8b_is_still_priced_with_the_model():
+    """Rows written before 8b carry no extractor and fall back to judge()."""
+    assert handler._uses_model([{"url": "https://example.com"}]) is True
+
+
+def test_one_target_without_an_extractor_prices_the_whole_watch_with_the_model():
+    """Deliberately pessimistic. Underestimating is the failure that bills."""
+    assert handler._uses_model([
+        {"extractor": {"kind": "css"}},
+        {"url": "https://example.com"},
+    ]) is True
+
+
+def test_a_compiled_watch_is_dramatically_cheaper_than_a_model_one():
+    watch = {"check_interval_min": 60}
+    compiled = handler._estimate_for(watch, [{"extractor": {"kind": "css"}}])
+    modelled = handler._estimate_for(watch, [{"url": "https://example.com"}])
+
+    assert compiled["estimated_monthly_usd"] < modelled["estimated_monthly_usd"] / 100
+    # And the derived floor collapses, which is the whole point of expressing
+    # the guardrail as a budget rather than a hardcoded minimum interval.
+    assert compiled["min_interval_min"] < modelled["min_interval_min"]

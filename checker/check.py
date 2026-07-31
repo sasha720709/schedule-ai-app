@@ -3,23 +3,16 @@ condition is met. No web search, no planning -- this runs on every tick,
 so it stays as small and cheap as possible."""
 
 import json
-import re
-import urllib.request
 
 from anthropic import Anthropic
 
+# Fetching moved to shared/fetch.py when the Planner needed it too -- it now
+# opens the pages it proposes, rather than recommending them sight-unseen.
+# Re-exported here so callers of check.fetch_text keep working.
+from fetch import MAX_TEXT_CHARS as MAX_PAGE_CHARS  # noqa: F401
+from fetch import fetch_raw, fetch_text, to_text  # noqa: F401
+
 MODEL = "claude-haiku-4-5-20251001"
-
-# Enough of the page for a price/status to appear, without paying to send
-# a whole megabyte of markup to the model on every single tick.
-MAX_PAGE_CHARS = 20000
-FETCH_TIMEOUT_SEC = 20
-
-# Some sites reject the default urllib agent outright.
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
 
 SYSTEM_PROMPT = """You check whether a condition is currently true on a web page.
 
@@ -36,23 +29,6 @@ Respond with ONLY a JSON object, no other text:
 If the value genuinely isn't on the page (blocked, changed layout, sold
 out), use null for last_value, false for condition_met, and explain in note.
 Never guess a value that isn't there."""
-
-_SCRIPT_STYLE = re.compile(r"<(script|style)\b.*?</\1>", re.DOTALL | re.IGNORECASE)
-_TAG = re.compile(r"<[^>]+>")
-_WHITESPACE = re.compile(r"\s+")
-
-
-def fetch_text(url: str) -> str:
-    """Plain HTTP GET, HTML crudely reduced to text. Phase 2 deliberately
-    starts here; JS-heavy and bot-protected sites are a known gap."""
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SEC) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-
-    text = _SCRIPT_STYLE.sub(" ", raw)
-    text = _TAG.sub(" ", text)
-    text = _WHITESPACE.sub(" ", text).strip()
-    return text[:MAX_PAGE_CHARS]
 
 
 def _parse_json(raw: str) -> dict:

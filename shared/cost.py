@@ -49,7 +49,20 @@ FETCHER_SECONDS = 4.7
 # The Checker itself: 256MB, and it mostly waits on something else.
 CHECKER_MEMORY_GB = 0.25
 CHECKER_SECONDS_WITH_MODEL = 2.5
-CHECKER_SECONDS_DETERMINISTIC = 0.4
+
+# Deterministic (Tier 0) checks, split by fetch method because the Checker
+# *blocks* while the browser Fetcher renders -- it is billed for that wait as
+# well as the Fetcher being billed for the work.
+#
+# The browser figure is measured: warm Tier 0 ticks on the Steam Deck page
+# reported 6545ms (156MB of 256MB used, so parsing 1.49MB of HTML with
+# BeautifulSoup is not memory-bound). The first version of this file assumed
+# 0.4s for both, which understated a browser check by about a sixth.
+CHECKER_SECONDS_DETERMINISTIC_BROWSER = 6.5
+# NOT yet measured -- a plain GET plus a BeautifulSoup parse, with no second
+# Lambda to wait on. Kept at the original estimate and flagged here so the next
+# HTTP-target watch is used to replace it rather than to confirm a guess.
+CHECKER_SECONDS_DETERMINISTIC_HTTP = 0.4
 
 CHECKS_PER_MONTH_AT_ONE_MINUTE = 60 * 24 * 30  # 43200
 
@@ -99,9 +112,12 @@ def fetch_cost(fetch_method: str) -> float:
 
 
 def cost_per_check(fetch_method: str = "http", uses_model: bool = True) -> float:
-    checker_seconds = (
-        CHECKER_SECONDS_WITH_MODEL if uses_model else CHECKER_SECONDS_DETERMINISTIC
-    )
+    if uses_model:
+        checker_seconds = CHECKER_SECONDS_WITH_MODEL
+    elif fetch_method == "browser":
+        checker_seconds = CHECKER_SECONDS_DETERMINISTIC_BROWSER
+    else:
+        checker_seconds = CHECKER_SECONDS_DETERMINISTIC_HTTP
     total = (
         _lambda_cost(CHECKER_MEMORY_GB, checker_seconds)
         + fetch_cost(fetch_method)

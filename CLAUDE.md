@@ -283,8 +283,8 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **4b** · Hosting + minimal React | done |
 | ✅ | **8a** · Budget guardrails | done |
 | ✅ | **8b pass 1** · Extraction engine | done — `shared/extract.py`, 95 tests |
-| 🔨 | **8b pass 2** · Wire Planner + Checker | **next** — start here |
-| ⬜ | **8c** · Conditional GET | after 8b |
+| ✅ | **8b pass 2** · Wire Planner + Checker | done — verified live, 222 tests |
+| 🔨 | **8c** · Conditional GET | **next** — start here |
 | ⬜ | **8d** · Tiered self-heal | after 8c |
 | ⬜ | **5** · Production hygiene | after 8, so it instruments a settled design |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
@@ -339,23 +339,62 @@ Details of the finished phases:
    the extractor is broken and 8d escalates it, `unavailable` means there
    is legitimately no value today and 8d must not.
 
-   **Next session starts at 8b pass 2**, itemised in
-   `docs/phase-8-cheap-checks.md`. Its first task is a blocker found while
-   testing: **the Fetcher returns `page.inner_text()`, plain text with no
-   markup, so CSS extractors cannot work on browser-rendered pages at all.**
-   It has to return `html` as well as `text`.
+   **8b pass 2 is done and verified end to end against the real account.**
+   The Fetcher returns `html` alongside `text`; the Planner opens every page
+   it proposes and stores only extractors it has actually run; the Checker's
+   Tier 0 executes them with no model call. `shared/condition.py` evaluates
+   conditions deterministically — nothing in this codebase ever did that
+   before, because the model used to compare in its own head.
 
-   Three findings worth not rediscovering: a dimensioned CloudWatch metric
-   cannot be read back without naming the exact dimension set; Haiku
-   returned `last_value: null` for an out-of-stock item because the hint
-   told it to, where a naive regex would have reported `$629.00` for
-   something nobody can buy; and the extraction tests caught the same class
-   of bug in our own parser, which read `512` out of "Steam Deck 512 GB
-   OLED" as a price. `currency` now demands a symbol or a minor unit.
+   Live proof on watch `w_670564e5`: the Planner rendered the Steam Deck
+   page, Haiku read `$789.00`, Sonnet compiled a scoped CSS extractor, and
+   `extract.py` verified it before the plan was offered. Scheduled ticks then
+   read `789.0` every 3 minutes with `model=False`. **Confirm at 3 minutes
+   was refused in 8a and is now accepted at $2.32/month, under the same
+   unchanged $5 budget** — which is exactly what expressing the guardrail as
+   a budget rather than an interval floor was for. Per check: $0.00587 →
+   $0.00019, about 31×.
 
-   `beautifulsoup4` is in `checker/` and `planner/` requirements but the
-   zips were **deliberately not rebuilt** — nothing imports it yet, so the
-   deployed functions are unchanged and Terraform reports no drift.
+   Findings worth not rediscovering:
+
+   - **Sonnet 5 runs adaptive thinking by default, and `max_tokens` caps
+     thinking *plus* text.** A compile call with `max_tokens=1024` returned a
+     lone `ThinkingBlock` and no text, failing as "No text in response" —
+     which reads like a malformed reply, not a token ceiling. Budgets in
+     `plan.py` are now generous and named.
+   - **A whole-document `unavailable_if` is unsound.** "Out of stock" matched
+     the Docking Station and a localised string table on the same 1.5MB page,
+     reporting an in-stock item as `unavailable` — the one outcome 8d must
+     never escalate. `scope` fixes it and doubles as a liveness anchor.
+   - **`count` exists because absence is a first-class answer.** A vacancy
+     watch is absent by definition until it fires; without `count` it read as
+     a broken extractor forever, which 8d would have answered with a Haiku
+     repair on every tick (~$237/month at 1-minute intervals).
+   - **The Checker is billed for waiting on the browser.** Warm Tier 0 ticks
+     took 6545ms, not the 0.4s `cost.py` assumed; `CHECKER_SECONDS_DETERMINISTIC`
+     is now split by fetch method. The HTTP figure is still an estimate and is
+     flagged in the file as unmeasured.
+   - **A presence watch could not be planned at all.** Found by the owner
+     running a real request: "tell me when a student cloud engineer vacancy
+     appears in Beer Sheva" failed with `nothing to watch`. The Planner
+     demanded a literal value on the page before compiling anything, so the
+     `count` kind was unreachable in exactly the case it was added for. The
+     search step now classifies `watch_shape` as `value` or `presence`; a
+     presence watch anchors on a **neighbouring listing** instead of on the
+     thing wanted, compiles a counter over the list it sits in, and treats
+     `verified_value: 0` as a passing verification. Same class of mistake the
+     engine had, one layer up — worth checking for a third time before
+     assuming absence is handled everywhere.
+   - **Verifying a count at zero proves almost nothing on its own**, so the
+     Planner re-runs the item selector with its `:-soup-contains(...)` filters
+     stripped and requires a non-zero match. A wrong item class otherwise
+     counts zero today, counts zero forever, and never reports a fault. What
+     stays unprovable is the text filter itself — nobody can verify a match
+     against a posting that does not exist yet. Storing the unfiltered count
+     as a health baseline is a good input for 8d.
+   - **Cost gates must know whether a tick uses a model.** The api Lambda
+     hardcoded `uses_model=True`, so after 8b it overstated the bill 36× and
+     would have refused intervals the budget affords.
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above. Deliberately after
    Phase 8: alarms watch specific code paths and Phase 8 replaces the

@@ -138,3 +138,31 @@ def test_estimate_accepts_its_own_suggested_floor():
 def test_estimate_is_json_safe():
     import json
     json.dumps(cost.estimate(60, 2, "http", True))
+
+
+# --- the Checker is billed for the time it waits on the browser ---------------
+
+def test_a_deterministic_browser_check_costs_more_than_a_deterministic_http_one():
+    """Not just the Fetcher's own runtime: the Checker blocks while Chromium
+    renders, so both Lambdas are billed for overlapping seconds. Measured at
+    6545ms warm, against 0.4s for a plain GET."""
+    browser = cost.cost_per_check("browser", uses_model=False)
+    http = cost.cost_per_check("http", uses_model=False)
+    assert browser > http * 10
+
+
+def test_dropping_the_model_is_still_the_dominant_saving():
+    """The whole thesis of Phase 8b, asserted as a number.
+
+    Even after correcting the Checker's browser duration upward, removing the
+    Haiku call is worth more than an order of magnitude on the expensive path.
+    """
+    with_model = cost.cost_per_check("browser", uses_model=True)
+    without = cost.cost_per_check("browser", uses_model=False)
+    assert with_model / without > 25
+
+
+def test_the_model_call_still_dwarfs_everything_on_the_cheap_path():
+    with_model = cost.cost_per_check("http", uses_model=True)
+    without = cost.cost_per_check("http", uses_model=False)
+    assert with_model / without > 500

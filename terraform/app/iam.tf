@@ -43,6 +43,24 @@ resource "aws_iam_role_policy" "planner_lambda_dynamodb" {
   policy = data.aws_iam_policy_document.planner_lambda_dynamodb.json
 }
 
+# Since Phase 8b the Planner opens the pages it proposes, and verifies that the
+# extractor it compiled really reads the value, before the plan is ever
+# offered. For a JS-rendered target that means rendering it -- so the Planner
+# needs the same Fetcher the Checker uses. Without this it could only verify
+# plain-HTTP targets, and would reject every browser one it recommended.
+data "aws_iam_policy_document" "planner_lambda_invoke_fetcher" {
+  statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.fetcher.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "planner_lambda_invoke_fetcher" {
+  name   = "invoke-fetcher"
+  role   = aws_iam_role.planner_lambda.id
+  policy = data.aws_iam_policy_document.planner_lambda_invoke_fetcher.json
+}
+
 # ---------------------------------------------------------------------------
 # Checker Lambda
 # ---------------------------------------------------------------------------

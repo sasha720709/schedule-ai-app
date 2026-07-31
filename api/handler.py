@@ -230,6 +230,21 @@ def list_watches(event) -> dict:
     return _response(200, {"watches": items})
 
 
+def _uses_model(targets: list) -> bool:
+    """Will any tick of this watch pay for a language model?
+
+    Since Phase 8b a target that carries a compiled `extractor` is read in pure
+    Python, which is roughly a thousandth of the cost of asking Haiku. Pricing
+    every watch as though it still called a model would overstate the bill by
+    ~35x and make `confirm` refuse intervals the budget comfortably affords.
+
+    Deliberately pessimistic: one target without an extractor still falls back
+    to the model path, so the whole watch is priced as if it does. A cost
+    estimate that is too low is the one that lets a surprise bill through.
+    """
+    return any("extractor" not in target for target in targets)
+
+
 def _estimate_for(watch: dict, targets: list, interval=None) -> dict | None:
     """Cost of running this watch, for the plan card to show before confirming."""
     interval = interval if interval is not None else watch.get("check_interval_min")
@@ -240,7 +255,7 @@ def _estimate_for(watch: dict, targets: list, interval=None) -> dict | None:
         interval_min=int(interval),
         targets=len(targets),
         fetch_method="browser" if browser else "http",
-        uses_model=True,
+        uses_model=_uses_model(targets),
     )
 
 
@@ -291,7 +306,7 @@ def confirm_watch(event) -> dict:
         interval_min=interval,
         targets=len(targets),
         fetch_method="browser" if browser else "http",
-        uses_model=True,
+        uses_model=_uses_model(targets),
     )
     if not estimate["within_budget"]:
         raise HttpError(

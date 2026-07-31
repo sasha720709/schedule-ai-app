@@ -1,0 +1,338 @@
+"""Tests for plan-time compilation and verification.
+
+The behaviour worth protecting: **a spec that does not reproduce the value it
+was compiled from is never stored.** Everything downstream trusts the stored
+extractor for months without a model ever looking at the page again, so a
+plausible-looking selector that was never actually run is the most expensive
+mistake this system can make.
+
+Loaded by explicit path, since `api/handler.py` and `checker/handler.py` also
+exist and a bare `import handler` would resolve to whichever came first.
+"""
+
+import importlib.util
+import json
+import os
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+
+if "anthropic" not in sys.modules:
+    _anthropic = types.ModuleType("anthropic")
+    _anthropic.Anthropic = MagicMock()
+    sys.modules["anthropic"] = _anthropic
+
+if not hasattr(sys.modules.get("boto3", object()), "resource"):
+    _boto3 = types.ModuleType("boto3")
+    _boto3.resource = MagicMock()
+    _boto3.client = MagicMock()
+    sys.modules["boto3"] = _boto3
+
+os.environ.setdefault("WATCHES_TABLE", "watches")
+os.environ.setdefault("WATCH_TARGETS_TABLE", "targets")
+os.environ.setdefault("FETCHER_FUNCTION_ARN", "arn:aws:lambda:::function:fetcher")
+
+sys.path.insert(0, os.path.join(_ROOT, "shared"))
+sys.path.insert(0, _HERE)
+
+_spec = importlib.util.spec_from_file_location(
+    "planner_plan", os.path.join(_HERE, "plan.py"))
+plan_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(plan_mod)
+
+
+PAGE = """
+<html><body>
+  <div class="sku" data-model="512">
+    <span class="title">Steam Deck 512 GB OLED</span>
+    <span class="price">$789.00</span>
+  </div>
+  <div class="sku" data-model="1tb">
+    <span class="title">Steam Deck 1TB OLED</span>
+    <span class="price">$949.00</span>
+  </div>
+</body></html>
+"""
+
+CONDITION = {"metric": "price", "op": "<", "value": 700}
+
+
+class ScriptedClient:
+    """An Anthropic client that returns a queued list of JSON replies."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.prompts = []
+        self.messages = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.prompts.append(kwargs)
+        payload = self.replies.pop(0)
+        block = SimpleNamespace(type="text", text=json.dumps(payload))
+        return SimpleNamespace(content=[block])
+
+
+GOOD_SPEC = {"scope": '[data-model="512"]', "kind": "css",
+             "selector": ".price", "parse": "currency",
+             "pattern": None, "path": None, "attribute": None,
+             "unavailable_if": None}
+
+
+def test_a_working_spec_is_verified_and_returned():
+    client = ScriptedClient(
+        {"literal": "$789.00", "note": "found it"},
+        GOOD_SPEC,
+    )
+    built = plan_mod.build_extractor(
+        "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
+
+    assert built["verified_value"] == 789.00
+    assert built["verified_raw"] == "$789.00"
+    # Nulls the model filled in are dropped rather than stored and revalidated.
+    assert "pattern" not in built["extractor"]
+    assert built["extractor"]["scope"] == '[data-model="512"]'
+
+
+def test_a_spec_that_does_not_reproduce_the_value_is_retried_with_the_reason():
+    """The first selector points at the wrong SKU's box, so it reads 949 for a
+    value the page shows as $789.00. That has to be caught here, not in
+    production three weeks later."""
+    wrong = {**GOOD_SPEC, "scope": '[data-model="1tb"]', "selector": ".title"}
+    client = ScriptedClient(
+        {"literal": "$789.00", "note": "found it"},
+        wrong,
+        GOOD_SPEC,
+    )
+    built = plan_mod.build_extractor(
+        "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
+
+    assert built["verified_value"] == 789.00
+    # The retry was told what went wrong rather than asked again blindly.
+    retry_prompt = client.prompts[-1]["messages"][0]["content"]
+    assert "A previous attempt failed" in retry_prompt
+
+
+def test_a_spec_that_never_works_is_refused_rather_than_stored():
+    broken = {**GOOD_SPEC, "scope": ".nonexistent"}
+    client = ScriptedClient(
+        {"literal": "$789.00", "note": "found it"}, broken, broken)
+
+    with pytest.raises(ValueError, match="could not compile"):
+        plan_mod.build_extractor(
+            "https://example.com", "the price", CONDITION, PAGE, client=client)
+
+
+def test_a_malformed_spec_is_fed_back_rather_than_crashing():
+    client = ScriptedClient(
+        {"literal": "$789.00", "note": "found it"},
+        {"kind": "telepathy", "selector": ".price"},
+        GOOD_SPEC,
+    )
+    built = plan_mod.build_extractor(
+        "https://example.com", "the price", CONDITION, PAGE, client=client)
+    assert built["verified_value"] == 789.00
+    assert "malformed" in client.prompts[-1]["messages"][0]["content"]
+
+
+def test_a_page_with_nothing_to_read_is_rejected_before_compiling():
+    """No compile call is made at all -- there is nothing to anchor it to."""
+    client = ScriptedClient({"literal": None, "note": "page is a login wall"})
+
+    with pytest.raises(ValueError, match="nothing to watch"):
+        plan_mod.build_extractor(
+            "https://example.com", "the price", CONDITION, PAGE, client=client)
+    assert len(client.prompts) == 1
+
+
+def test_only_the_markup_around_the_value_is_sent_to_the_compiler():
+    """The whole reason for three calls rather than one. A 1.5MB page is
+    ~375,000 tokens; the fragments that matter are a few hundred characters."""
+    big = PAGE + "<div>filler</div>" * 50000
+    client = ScriptedClient({"literal": "$789.00", "note": "ok"}, GOOD_SPEC)
+    plan_mod.build_extractor(
+        "https://example.com", "the price", CONDITION, big, client=client)
+
+    compile_prompt = client.prompts[-1]["messages"][0]["content"]
+    assert len(big) > 800_000
+    assert len(compile_prompt) < 12_000
+    assert "$789.00" in compile_prompt
+
+
+def test_a_count_spec_verifies_through_the_same_path():
+    """Vacancy-shaped watches are compiled and verified like any other."""
+    jobs = ('<div id="list"><a>Go Engineer</a><a>Rust Engineer</a></div>')
+    client = ScriptedClient(
+        {"literal": "Rust Engineer", "note": "one listing"},
+        {"scope": "#list", "kind": "count",
+         "selector": 'a:-soup-contains("Rust")', "parse": "int"},
+    )
+    built = plan_mod.build_extractor(
+        "https://jobs.example", "rust roles", {"op": ">=", "value": 1},
+        jobs, client=client)
+    assert built["verified_value"] == 1
+
+
+def test_tidy_keeps_only_recognised_keys():
+    tidied = plan_mod._tidy(
+        {"kind": "css", "selector": ".p", "confidence": 0.9, "scope": None})
+    assert tidied == {"kind": "css", "selector": ".p"}
+
+
+# --- presence watches: the thing is not there yet, and that is the point ------
+#
+# Found by the owner running a real request: "tell me when a student job vacancy
+# for cloud engineer appears in Beer Sheva" failed to plan at all. The Planner
+# demanded a literal value on the page before it would compile anything, so a
+# watch for something that has not happened yet could never be created -- and
+# the `count` kind was unreachable in exactly the case it was added for.
+
+JOBS_PAGE = """
+<html><body>
+  <table id="results">
+    <tr class="job"><td><a class="title">Senior DevOps Engineer, Tel Aviv</a></td></tr>
+    <tr class="job"><td><a class="title">QA Automation Student, Beer Sheva</a></td></tr>
+  </table>
+</body></html>
+"""
+
+VACANCY_CONDITION = {"metric": "matching_vacancies", "op": ">=", "value": 1}
+
+COUNT_SPEC = {
+    "scope": "#results", "kind": "count",
+    "selector": 'a.title:-soup-contains("Cloud Engineer")', "parse": "int",
+}
+
+
+def test_a_vacancy_that_does_not_exist_yet_still_produces_a_plan():
+    """The regression. Counting zero is a passing verification, not a failure."""
+    client = ScriptedClient(
+        {"literal": None, "sample": "QA Automation Student, Beer Sheva",
+         "note": "no cloud engineer roles listed today"},
+        COUNT_SPEC,
+    )
+    built = plan_mod.build_extractor(
+        "https://jobs.example", "student cloud engineer roles in Beer Sheva",
+        VACANCY_CONDITION, JOBS_PAGE, shape="presence", client=client)
+
+    assert built["verified_value"] == 0
+    assert built["extractor"]["kind"] == "count"
+    assert built["extractor"]["scope"] == "#results"
+
+
+def test_a_presence_watch_anchors_on_a_neighbour_not_on_the_thing_wanted():
+    """The compiler is shown another listing, and told plainly that it is not
+    what the user asked for -- otherwise it would compile a spec for the
+    neighbour."""
+    client = ScriptedClient(
+        {"literal": None, "sample": "QA Automation Student, Beer Sheva", "note": ""},
+        COUNT_SPEC,
+    )
+    plan_mod.build_extractor(
+        "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
+        JOBS_PAGE, shape="presence", client=client)
+
+    prompt = client.prompts[-1]["messages"][0]["content"]
+    assert "QA Automation Student" in prompt
+    assert "neighbour" in prompt
+    assert client.prompts[-1]["system"] is plan_mod.COUNT_PROMPT
+
+
+def test_a_presence_watch_uses_a_matching_item_as_the_anchor_when_one_exists():
+    """If a matching role happens to be posted today, its markup is just as
+    good a guide to the list -- and the spec compiled is still a count, so the
+    watch keeps working after that role is filled."""
+    client = ScriptedClient(
+        {"literal": "Cloud Engineer Student, Beer Sheva",
+         "sample": "QA Automation Student, Beer Sheva", "note": "one match"},
+        COUNT_SPEC,
+    )
+    page = JOBS_PAGE.replace("QA Automation Student, Beer Sheva",
+                             "Cloud Engineer Student, Beer Sheva")
+    built = plan_mod.build_extractor(
+        "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
+        page, shape="presence", client=client)
+
+    assert built["extractor"]["kind"] == "count"
+    assert built["verified_value"] == 1
+    assert "Cloud Engineer Student" in client.prompts[-1]["messages"][0]["content"]
+
+
+def test_a_presence_watch_is_rejected_only_when_the_page_lists_nothing_at_all():
+    client = ScriptedClient(
+        {"literal": None, "sample": None, "note": "the search returned no rows"})
+    with pytest.raises(ValueError, match="lists nothing that could be counted"):
+        plan_mod.build_extractor(
+            "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
+            JOBS_PAGE, shape="presence", client=client)
+
+
+def test_a_value_watch_with_no_value_says_what_to_do_about_it():
+    """The old message was "nothing to watch", which is wrong and unactionable
+    when the user is waiting for the thing to appear."""
+    client = ScriptedClient({"literal": None, "sample": "Some other product",
+                             "note": "out of stock"})
+    with pytest.raises(ValueError, match="presence watch"):
+        plan_mod.build_extractor(
+            "https://shop.example", "the price", CONDITION, PAGE,
+            shape="value", client=client)
+
+
+def test_a_broken_count_spec_is_retried_with_list_specific_feedback():
+    client = ScriptedClient(
+        {"literal": None, "sample": "QA Automation Student, Beer Sheva", "note": ""},
+        {**COUNT_SPEC, "scope": "#nonexistent"},
+        COUNT_SPEC,
+    )
+    built = plan_mod.build_extractor(
+        "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
+        JOBS_PAGE, shape="presence", client=client)
+
+    assert built["verified_value"] == 0
+    assert "list container" in client.prompts[-1]["messages"][0]["content"]
+
+
+def test_a_value_watch_is_unaffected_by_the_presence_path():
+    """Regression guard: the price flow still takes the original branch."""
+    client = ScriptedClient(
+        {"literal": "$789.00", "sample": None, "note": "found it"}, GOOD_SPEC)
+    built = plan_mod.build_extractor(
+        "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
+
+    assert built["verified_value"] == 789.00
+    assert client.prompts[-1]["system"] is plan_mod.COMPILE_PROMPT
+
+
+def test_a_count_selector_that_could_never_match_is_not_accepted():
+    """The failure this guards against is invisible: a wrong item class counts
+    zero today, counts zero forever, and never reports a fault."""
+    doomed = {**COUNT_SPEC, "selector": 'a.headline:-soup-contains("Cloud Engineer")'}
+    client = ScriptedClient(
+        {"literal": None, "sample": "QA Automation Student, Beer Sheva", "note": ""},
+        doomed,
+        COUNT_SPEC,
+    )
+    built = plan_mod.build_extractor(
+        "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
+        JOBS_PAGE, shape="presence", client=client)
+
+    assert built["extractor"] == COUNT_SPEC
+    assert "can never match" in client.prompts[-1]["messages"][0]["content"]
+
+
+def test_the_text_filter_is_what_gets_stripped_to_probe():
+    assert plan_mod.unfiltered('a.title:-soup-contains("Cloud")') == "a.title"
+    assert plan_mod.unfiltered('div:contains("x") > a') == "div > a"
+    assert plan_mod.unfiltered("a.title") == "a.title"
+
+
+def test_an_unfiltered_count_needs_no_probe():
+    """Counting every row in a list is its own proof -- there is no filter that
+    could silently exclude everything."""
+    spec = {"scope": "#results", "kind": "count", "selector": "tr.job"}
+    assert plan_mod.prove_the_item_selector(spec, JOBS_PAGE) is None

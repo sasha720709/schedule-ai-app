@@ -6,17 +6,30 @@ resource "aws_lambda_function" "planner" {
   architectures    = ["x86_64"]
   filename         = "${path.module}/../../planner/dist/planner.zip"
   source_code_hash = filebase64sha256("${path.module}/../../planner/dist/planner.zip")
-  timeout          = 60
-  memory_size      = 256
+
+  # Phase 8b made planning much heavier on purpose: a web search, then per
+  # target a fetch (a browser render is ~5-10s), a Haiku read and up to two
+  # Sonnet compile-and-verify rounds. Three targets can plausibly reach two
+  # minutes. This is invoked asynchronously so no API Gateway ceiling applies,
+  # and it runs once per watch rather than once per tick -- the cost of the
+  # headroom is nil, and the cost of timing out is a watch that never plans.
+  timeout = 300
+
+  # Raised with it, for CPU rather than for RAM: Lambda scales CPU with memory,
+  # and this now parses ~1.5MB of HTML with BeautifulSoup. At once-per-watch
+  # frequency the extra memory is worth well under a cent a month.
+  memory_size = 1024
 
   # No CHECKER_FUNCTION_ARN or SCHEDULER_ROLE_ARN any more: the Planner
   # stopped creating schedules in Phase 4 and has no reason to know either.
+  # FETCHER_FUNCTION_ARN is new: it verifies browser targets by rendering them.
   environment {
     variables = {
-      ANTHROPIC_API_KEY   = var.anthropic_api_key
-      WATCHES_TABLE       = aws_dynamodb_table.watches.name
-      WATCH_TARGETS_TABLE = aws_dynamodb_table.watch_targets.name
-      MONTHLY_BUDGET_USD  = var.monthly_budget_usd
+      ANTHROPIC_API_KEY    = var.anthropic_api_key
+      WATCHES_TABLE        = aws_dynamodb_table.watches.name
+      WATCH_TARGETS_TABLE  = aws_dynamodb_table.watch_targets.name
+      MONTHLY_BUDGET_USD   = var.monthly_budget_usd
+      FETCHER_FUNCTION_ARN = aws_lambda_function.fetcher.arn
     }
   }
 }

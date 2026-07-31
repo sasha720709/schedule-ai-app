@@ -191,7 +191,29 @@ headline correctly refused as money.
 nothing imports it yet, so the deployed functions are unchanged and Terraform
 reports no drift. Pass 2 rebuilds them.
 
-#### 8b pass 2 — wire it up · **next**
+#### 8b pass 2 — wire it up · **done**
+
+All six items below are built, deployed and verified live. Two things were
+found on the way that changed the engine rather than merely consuming it:
+
+- **`scope`**, an optional CSS selector that narrows the document *and* acts
+  as a liveness anchor. A whole-document `unavailable_if` is unsound — on the
+  real 1.49MB Steam Deck page, "Out of stock" matched the Docking Station and
+  a localised string table, reporting an in-stock item as `unavailable`, the
+  one outcome 8d must never escalate. Inside a proven scope, a miss is
+  legitimate absence; without one it stays `failed`.
+- **`count`**, because absence is a first-class answer for most watches that
+  are not about a price. A vacancy watch is absent by definition until it
+  fires; on a real HN jobs page, asking for a Rust role returned `failed`,
+  which under 8d would have paid for a Haiku repair on every tick forever.
+
+Also added: `shared/condition.py`. Nothing in this codebase had ever
+*evaluated* a condition — the model compared in its own head — so Tier 0
+needed a real comparator. An op it cannot understand raises rather than
+answering "not met", because a silent False is a watch that is alive, billed,
+checked on schedule and structurally incapable of ever firing.
+
+
 
 1. **The Fetcher must return HTML.** It currently returns
    `page.inner_text()`, plain text with no markup, so **CSS extractors cannot

@@ -1,8 +1,29 @@
 """Checker Lambda handler. One invocation = one scheduled tick for one
 target: read the target, check it, write the result back.
 
-Emitting an event on a match (and the Notifier that reacts to it) is
-Phase 3 -- for now a match just flips the watch's status to "triggered"."""
+## Tier 0
+
+Since Phase 8b this runs the extractor the Planner compiled, in Python, for
+roughly four millionths of a dollar -- instead of sending 20,000 characters to
+Haiku and paying it to re-solve, on every tick, a problem that was solved once
+at planning time.
+
+The model has not been deleted; it has been moved out of the hot path. A
+target row with no `extractor` still goes through `judge()`, because rows
+written before this change exist and must keep working rather than start
+failing. Phase 8d brings the model back deliberately, as *repair* rather than
+as *reading*.
+
+## What a tick can conclude
+
+    ok            a value was read -- evaluate the condition against it
+    unavailable   there is legitimately no value today -- not met, not broken
+    failed        the extractor did not work -- record it for 8d to escalate
+
+`unavailable` and `failed` are written to different fields on purpose. A watch
+that has quietly stopped being able to read its target must be distinguishable
+from one that is patiently waiting, or it will wait forever.
+"""
 
 import json
 import os
@@ -12,7 +33,9 @@ from decimal import Decimal
 import boto3
 
 import cost
-from check import fetch_text, judge
+from condition import ConditionError, evaluate
+from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
+from check import fetch_raw, fetch_text, judge
 
 dynamodb = boto3.resource("dynamodb")
 events = boto3.client("events")
@@ -23,9 +46,9 @@ cloudwatch = boto3.client("cloudwatch")
 def _record_cost(fetch_method: str, used_model: bool) -> None:
     """Publish what this check cost, so the spend is visible somewhere.
 
-    The dominant cost of this system is the Anthropic API call, and AWS budget
-    alarms cannot see it -- the alarms at $50/$100/$200 are blind to it. This
-    metric is what a CloudWatch alarm will eventually watch; creating that
+    AWS budget alarms cannot see Anthropic charges -- the alarms at
+    $50/$100/$200 are blind to what has been the dominant cost of this system.
+    This metric is what a CloudWatch alarm will eventually watch; creating that
     alarm needs cloudwatch:PutMetricAlarm on the deploy user, so it is grouped
     with Phase 5.
 
@@ -49,12 +72,16 @@ def _record_cost(fetch_method: str, used_model: bool) -> None:
         print(f"could not publish cost metric: {type(exc).__name__}: {exc}")
 
 
-def _fetch(url: str, fetch_method: str) -> str:
-    """Plain GET by default. The Planner marks a target "browser" when the
-    page needs JavaScript to render, which costs a second Lambda and a few
-    seconds -- so it's opt-in per target, not the default."""
+def _fetch(url: str, fetch_method: str, *, markup: bool) -> str:
+    """Plain GET by default. The Planner marks a target "browser" when the page
+    needs JavaScript to render, which costs a second Lambda and a few seconds --
+    so it's opt-in per target, not the default.
+
+    `markup=True` returns HTML for a compiled extractor; `markup=False` returns
+    reduced text for the model, where every character is billed.
+    """
     if fetch_method != "browser":
-        return fetch_text(url)
+        return fetch_raw(url) if markup else fetch_text(url)
 
     response = lambda_client.invoke(
         FunctionName=os.environ["FETCHER_FUNCTION_ARN"],
@@ -64,13 +91,24 @@ def _fetch(url: str, fetch_method: str) -> str:
 
     if "FunctionError" in response:
         raise RuntimeError(f"browser fetch failed: {payload}")
-    return payload["text"]
+
+    if not markup:
+        return payload["text"]
+
+    # Refuse to silently substitute text for markup. Feeding stripped text to a
+    # CSS extractor is precisely the bug that blocked this phase, and it fails
+    # as "selector matched nothing" -- which reads as a broken plan.
+    if "html" not in payload:
+        raise RuntimeError(
+            "browser fetch returned no `html`; the Fetcher image is older than "
+            "the Checker. Redeploy it with aws lambda update-function-code."
+        )
+    return payload["html"]
 
 
 def _from_decimal(value):
     """DynamoDB hands back every number as Decimal, which json.dumps can't
-    serialize. Undo it at the read boundary -- the inverse of the Planner's
-    _to_decimal on write."""
+    serialize. Undo it at the read boundary -- the inverse of _to_decimal."""
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, dict):
@@ -78,6 +116,108 @@ def _from_decimal(value):
     if isinstance(value, list):
         return [_from_decimal(v) for v in value]
     return value
+
+
+def _to_decimal(value):
+    """DynamoDB's resource API rejects native floats. Tier 0 produces real
+    numbers where the model path only ever produced strings, so this is newly
+    needed on the write side of the Checker."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _to_decimal(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_decimal(v) for v in value]
+    return value
+
+
+def _tier0(target: dict, watch_condition: dict, fetch_method: str) -> dict:
+    """Run the compiled extractor. No model, no network beyond one fetch."""
+    spec = _from_decimal(target["extractor"])
+    payload = _fetch(target["url"], fetch_method, markup=True)
+    result = extract(spec, payload)
+
+    if result.status == FAILED:
+        return {
+            "status": FAILED,
+            "value": None,
+            "raw": result.raw,
+            "note": "",
+            "error": result.error,
+            "condition_met": False,
+        }
+
+    if result.status == UNAVAILABLE:
+        # Not met, and not broken. 8d must leave this alone.
+        return {
+            "status": UNAVAILABLE,
+            "value": None,
+            "raw": None,
+            "note": "; ".join(result.notes) or "no value available right now",
+            "error": None,
+            "condition_met": False,
+        }
+
+    # A selector can survive a redesign and start pointing at a different
+    # number -- a shipping cost, a review count. Comparing against the value
+    # verified at plan time is the cheap defence. Skipped for `count`, where a
+    # legitimate reading of 0 against a baseline of 3 is the normal case and
+    # would look wildly implausible.
+    baseline = _from_decimal(target.get("verified_value"))
+    if spec.get("kind") != "count" and not plausible(result.value, baseline):
+        return {
+            "status": FAILED,
+            "value": None,
+            "raw": result.raw,
+            "note": "",
+            "error": (
+                f"implausible reading {result.value!r} against the plan-time "
+                f"value {baseline!r} -- the extractor is probably reading the "
+                f"wrong element"
+            ),
+            "condition_met": False,
+        }
+
+    try:
+        met = evaluate(watch_condition, result.value)
+    except ConditionError as exc:
+        # An op nobody can evaluate is a broken plan, not an unmet condition.
+        return {
+            "status": FAILED,
+            "value": result.value,
+            "raw": result.raw,
+            "note": "",
+            "error": f"condition is not evaluable: {exc}",
+            "condition_met": False,
+        }
+
+    return {
+        "status": OK,
+        "value": result.value,
+        "raw": result.raw,
+        "note": "",
+        "error": None,
+        "condition_met": met,
+    }
+
+
+def _tier_model(target: dict, watch_condition: dict, fetch_method: str) -> dict:
+    """The pre-Phase-8 path, kept for target rows that carry no extractor."""
+    page_text = _fetch(target["url"], fetch_method, markup=False)
+    verdict = judge(
+        target["url"], target["extract_hint"], watch_condition, page_text
+    )
+    value = verdict.get("last_value")
+    return {
+        "status": OK if value is not None else UNAVAILABLE,
+        "value": value,
+        "raw": value,
+        "note": verdict.get("note", ""),
+        "error": None,
+        "condition_met": bool(verdict.get("condition_met")),
+    }
 
 
 def lambda_handler(event, context):
@@ -95,11 +235,11 @@ def lambda_handler(event, context):
     if watch is None:
         raise RuntimeError(f"Target {target_id} points at missing watch {watch_id}")
 
-    # "active" is the only status that should ever be checked. Anything else
-    # is triggered, paused, or still awaiting confirmation -- don't pay for a
-    # fetch or a Claude call. Note this used to also allow "planning", which
-    # since Phase 4 means the Planner is still running and no schedule should
-    # exist yet; a tick in that state would check a half-written watch.
+    # "active" is the only status that should ever be checked. Anything else is
+    # triggered, paused, or still awaiting confirmation -- don't pay for a fetch
+    # or a Claude call. Note this used to also allow "planning", which since
+    # Phase 4 means the Planner is still running and no schedule should exist
+    # yet; a tick in that state would check a half-written watch.
     if watch["status"] != "active":
         print(f"watch {watch_id} status={watch['status']}, skipping check")
         return {"skipped": True, "status": watch["status"]}
@@ -108,44 +248,66 @@ def lambda_handler(event, context):
     # Read outside the try: the failure path reports cost by fetch method, and
     # must not itself fail on an unbound name.
     fetch_method = target.get("fetch_method", "http")
+    used_model = "extractor" not in target
+    watch_condition = _from_decimal(watch["condition"])
 
     try:
-        page_text = _fetch(target["url"], fetch_method)
-        result = judge(
-            target["url"],
-            target["extract_hint"],
-            _from_decimal(watch["condition"]),
-            page_text,
-        )
+        runner = _tier_model if used_model else _tier0
+        result = runner(target, watch_condition, fetch_method)
+    except SpecError as exc:
+        # A malformed spec is a planning bug and will fail identically forever.
+        result = {"status": FAILED, "value": None, "raw": None, "note": "",
+                  "error": f"invalid extractor spec: {exc}", "condition_met": False}
     except Exception as exc:  # noqa: BLE001 -- record it, don't crash the tick
         print(f"check failed for {target_id}: {type(exc).__name__}: {exc}")
         targets_table.update_item(
             Key={"target_id": target_id},
-            UpdateExpression="SET last_checked_at = :t, last_error = :e",
-            ExpressionAttributeValues={":t": now, ":e": f"{type(exc).__name__}: {exc}"[:500]},
+            UpdateExpression=(
+                "SET last_checked_at = :t, last_error = :e, last_status = :s"
+            ),
+            ExpressionAttributeValues={
+                ":t": now,
+                ":e": f"{type(exc).__name__}: {exc}"[:500],
+                ":s": FAILED,
+            },
         )
         _record_cost(fetch_method, used_model=False)
         return {"checked": False, "error": type(exc).__name__}
 
-    _record_cost(fetch_method, used_model=True)
+    _record_cost(fetch_method, used_model=used_model)
+
+    if result["status"] == FAILED:
+        print(f"target={target_id} EXTRACTION FAILED: {result['error']}")
+        targets_table.update_item(
+            Key={"target_id": target_id},
+            UpdateExpression=(
+                "SET last_checked_at = :t, last_error = :e, last_status = :s"
+            ),
+            ExpressionAttributeValues={
+                ":t": now, ":e": str(result["error"])[:500], ":s": FAILED,
+            },
+        )
+        return {"checked": True, "status": FAILED, "error": result["error"]}
 
     targets_table.update_item(
         Key={"target_id": target_id},
         UpdateExpression=(
-            "SET last_value = :v, last_checked_at = :t, last_note = :n "
-            "REMOVE last_error"
+            "SET last_value = :v, last_raw = :r, last_checked_at = :t, "
+            "last_note = :n, last_status = :s REMOVE last_error"
         ),
         ExpressionAttributeValues={
-            ":v": result.get("last_value"),
+            ":v": _to_decimal(result["value"]),
+            ":r": result["raw"],
             ":t": now,
-            ":n": result.get("note", ""),
+            ":n": result["note"],
+            ":s": result["status"],
         },
     )
 
-    condition_met = bool(result.get("condition_met"))
+    condition_met = bool(result["condition_met"])
     print(
-        f"target={target_id} value={result.get('last_value')!r} "
-        f"met={condition_met} note={result.get('note')!r}"
+        f"target={target_id} status={result['status']} value={result['value']!r} "
+        f"met={condition_met} model={used_model}"
     )
 
     if condition_met:
@@ -166,8 +328,9 @@ def lambda_handler(event, context):
                 "target_id": target_id,
                 "url": target["url"],
                 "prompt": watch.get("prompt", ""),
-                "last_value": result.get("last_value"),
-                "note": result.get("note", ""),
+                "last_value": result["raw"] if result["raw"] is not None
+                else result["value"],
+                "note": result["note"],
                 "triggered_at": now,
             }),
         }])
@@ -175,6 +338,7 @@ def lambda_handler(event, context):
 
     return {
         "checked": True,
+        "status": result["status"],
         "condition_met": condition_met,
-        "last_value": result.get("last_value"),
+        "last_value": result["value"],
     }

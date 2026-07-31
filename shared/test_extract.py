@@ -371,3 +371,205 @@ def test_ok_is_a_convenience_for_the_common_check():
     assert Extraction(OK, value=1).ok
     assert not Extraction(FAILED, error="x").ok
     assert not Extraction(UNAVAILABLE).ok
+
+
+# --- scope: the anchor that tells absence apart from breakage -----------------
+#
+# The bug these cover was found live, not imagined. Against the real 1.49MB
+# Steam Deck page, an `unavailable_if` of "Out of stock|Sold Out" reported the
+# in-stock Steam Deck as UNAVAILABLE, because the phrase appears elsewhere on
+# the page -- attached to the Docking Station, and inside a table of localised
+# strings. UNAVAILABLE is the outcome 8d is designed never to escalate, so the
+# watch would have sat silent forever.
+
+JOBS_HTML = """
+<html><body>
+  <nav><a href="/about">Careers at Rust Foundation</a></nav>
+  <table id="joblist">
+    <tr class="athing"><td><span class="titleline">
+      <a href="1">Mbodi AI (YC P25) Is Hiring Robotics Engineers</a></span></td></tr>
+    <tr class="athing"><td><span class="titleline">
+      <a href="2">Sardine (YC S19) Is Hiring a Senior Golang Engineer</a></span></td></tr>
+  </table>
+  <footer>No positions in Kazakhstan at this time</footer>
+</body></html>
+"""
+
+LD_JSON_HTML = """
+<html><head>
+  <script type="application/ld+json">
+  {"@type": "Product", "offers": {"price": "629.00", "priceCurrency": "USD"}}
+  </script>
+</head><body><div class="noise">$1.99 shipping</div></body></html>
+"""
+
+
+def test_scope_picks_one_of_several_products_on_a_page():
+    """Without scope, select_one returns whichever comes first in the document.
+
+    That makes "watch the 1TB one" inexpressible except through a build-hashed
+    class name, which is exactly the kind of selector that churns.
+    """
+    first = extract(spec(), STEAM_HTML)
+    assert first.value == 629.00
+
+    second = extract(spec(scope='[data-sku="1tb-oled"]'), STEAM_HTML)
+    assert second.status == OK
+    assert second.value == 759.00
+
+
+def test_an_unscoped_predicate_is_poisoned_by_a_sibling():
+    """Documents why scope had to exist. The 1TB item is in stock; the phrase
+    "Out of Stock" belongs to its neighbour, and a whole-document predicate
+    cannot tell."""
+    poisoned = extract(
+        spec(
+            selector='[data-sku="1tb-oled"] .discount_final_price',
+            unavailable_if={"kind": "regex", "pattern": "Out of Stock"},
+        ),
+        STEAM_HTML,
+    )
+    assert poisoned.status == UNAVAILABLE  # wrong, and silently so
+
+
+def test_scoping_the_predicate_fixes_it():
+    fixed = extract(
+        spec(
+            scope='[data-sku="1tb-oled"]',
+            unavailable_if={"kind": "regex", "pattern": "Out of Stock"},
+        ),
+        STEAM_HTML,
+    )
+    assert fixed.status == OK
+    assert fixed.value == 759.00
+
+
+def test_scope_still_reports_a_genuinely_unavailable_item():
+    """The fix must not go the other way and lose real unavailability."""
+    result = extract(
+        spec(
+            scope='[data-sku="512-oled"]',
+            unavailable_if={"kind": "regex", "pattern": "Out of Stock"},
+        ),
+        STEAM_HTML,
+    )
+    assert result.status == UNAVAILABLE
+
+
+def test_a_scope_that_matches_nothing_is_failed():
+    """The anchor is the liveness test. If it is gone, the page was rebuilt."""
+    result = extract(spec(scope=".sale_item_v2"), STEAM_HTML)
+    assert result.status == FAILED
+    assert "scope matched nothing" in result.error
+
+
+def test_a_miss_inside_a_proven_scope_is_unavailable_not_failed():
+    result = extract(
+        spec(scope='[data-sku="1tb-oled"]', selector=".flash_sale_price"),
+        STEAM_HTML,
+    )
+    assert result.status == UNAVAILABLE
+    assert result.error is None
+
+
+def test_a_miss_without_a_scope_stays_failed():
+    """Unanchored, absence and breakage are the same observation. Stay
+    conservative: FAILED is the one 8d investigates."""
+    result = extract(spec(selector=".flash_sale_price"), STEAM_HTML)
+    assert result.status == FAILED
+
+
+def test_scope_can_reach_into_embedded_json():
+    """script[type=ld+json] plus a path is often the cheapest stable source on
+    an HTML page, which is what the Planner is told to prefer."""
+    result = extract(
+        {
+            "scope": 'script[type="application/ld+json"]',
+            "kind": "jsonpath",
+            "path": "$.offers.price",
+            "parse": "currency",
+        },
+        LD_JSON_HTML,
+    )
+    assert result.status == OK
+    assert result.value == 629.00
+
+
+# --- count: watches for things that do not exist yet --------------------------
+
+def test_count_of_nothing_is_zero_not_a_failure():
+    """The whole point. A vacancy watch is absent by definition until it fires;
+    reporting that as a broken extractor would have 8d pay for a repair on
+    every tick, forever."""
+    result = extract(
+        {"scope": "#joblist", "kind": "count",
+         "selector": 'a:-soup-contains("Rust")'},
+        JOBS_HTML,
+    )
+    assert result.status == OK
+    assert result.value == 0
+
+
+def test_count_finds_matching_vacancies():
+    result = extract(
+        {"scope": "#joblist", "kind": "count",
+         "selector": 'a:-soup-contains("Engineer")'},
+        JOBS_HTML,
+    )
+    assert result.status == OK
+    assert result.value == 2
+
+
+def test_count_scoping_excludes_the_chrome_around_the_list():
+    """"Rust" appears in the nav and "Kazakhstan" in the footer. An unscoped
+    count would answer a question nobody asked."""
+    unscoped = extract(
+        {"kind": "count", "selector": 'a:-soup-contains("Rust")'}, JOBS_HTML)
+    assert unscoped.value == 1  # the nav link, not a job
+
+    scoped = extract(
+        {"scope": "#joblist", "kind": "count",
+         "selector": 'a:-soup-contains("Rust")'}, JOBS_HTML)
+    assert scoped.value == 0
+
+
+def test_count_as_a_boolean():
+    result = extract(
+        {"scope": "#joblist", "kind": "count", "parse": "bool",
+         "selector": 'a:-soup-contains("Golang")'},
+        JOBS_HTML,
+    )
+    assert result.status == OK
+    assert result.value is True
+
+
+def test_count_needs_its_anchor_most_of_all():
+    """Zero being a valid answer is why a rebuilt page must not read as zero.
+
+    Without the scope check, a vacancy watch whose list was renamed would
+    report "no jobs" every tick and never be investigated -- the exact silent
+    rot the three-way outcome exists to prevent.
+    """
+    result = extract(
+        {"scope": "#joblist", "kind": "count",
+         "selector": 'a:-soup-contains("Engineer")'},
+        JOBS_HTML.replace('id="joblist"', 'id="positions"'),
+    )
+    assert result.status == FAILED
+    assert "scope matched nothing" in result.error
+
+
+def test_count_rejects_parsers_that_make_no_sense_for_it():
+    with pytest.raises(SpecError):
+        validate_spec({"kind": "count", "selector": "a", "parse": "currency"})
+
+
+def test_scope_must_be_a_usable_selector():
+    with pytest.raises(SpecError):
+        validate_spec(spec(scope=""))
+
+
+def test_scope_belongs_on_the_outer_spec_only():
+    with pytest.raises(SpecError):
+        validate_spec(spec(unavailable_if={
+            "kind": "regex", "pattern": "x", "scope": ".inner"}))

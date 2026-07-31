@@ -16,6 +16,7 @@ Invoked asynchronously by the api Lambda, which has already written the
 watch row in "planning" status and handed a watch_id back to the client.
 """
 
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -24,9 +25,11 @@ from decimal import Decimal
 import boto3
 
 import cost
-from plan import plan
+from fetch import fetch_raw
+from plan import build_extractor, search
 
 dynamodb = boto3.resource("dynamodb")
+lambda_client = boto3.client("lambda")
 
 
 def _to_decimal(value):
@@ -38,6 +41,28 @@ def _to_decimal(value):
     if isinstance(value, list):
         return [_to_decimal(v) for v in value]
     return value
+
+
+def _fetch(url: str, fetch_method: str) -> str:
+    """Open the page, the way the Checker will. Markup, not text.
+
+    The Planner had no fetching at all before Phase 8b: it recommended URLs it
+    had never opened, which is exactly how Amazon and Best Buy became runtime
+    failures rather than plan-time ones.
+    """
+    if fetch_method != "browser":
+        return fetch_raw(url)
+
+    response = lambda_client.invoke(
+        FunctionName=os.environ["FETCHER_FUNCTION_ARN"],
+        Payload=json.dumps({"url": url}),
+    )
+    payload = json.loads(response["Payload"].read())
+    if "FunctionError" in response:
+        raise RuntimeError(f"browser fetch failed: {payload}")
+    if "html" not in payload:
+        raise RuntimeError("browser fetch returned no `html`; redeploy the Fetcher")
+    return payload["html"]
 
 
 def _fail(watches_table, watch_id: str, exc: Exception) -> dict:
@@ -69,36 +94,75 @@ def lambda_handler(event, context):
     targets_table = dynamodb.Table(os.environ["WATCH_TARGETS_TABLE"])
 
     try:
-        result = plan(request)
+        result = search(request)
     except Exception as exc:  # noqa: BLE001 -- record on the row, never retry
         return _fail(watches_table, watch_id, exc)
 
     try:
-        target_ids = []
+        condition = result["condition"]
+        # "value" watches read something already on the page and wait for it to
+        # change; "presence" watches wait for something to appear that is not
+        # there yet. The second kind cannot be verified by finding its value,
+        # because not having one is its whole premise -- see build_extractor.
+        shape = result.get("watch_shape", "value")
+        target_ids, verified, rejected = [], [], []
+
         for target in result["targets"]:
+            url = target["url"]
+            fetch_method = target.get("fetch_method", "http")
+            now = datetime.now(timezone.utc).isoformat()
+
+            # Verify before storing. A target whose value cannot be read today
+            # will not start being readable later, and offering it would mean
+            # the plan card promising a reading nobody has ever seen.
+            try:
+                raw = _fetch(url, fetch_method)
+                built = build_extractor(
+                    url, target["extract_hint"], condition, raw, shape=shape)
+            except Exception as exc:  # noqa: BLE001
+                message = f"{type(exc).__name__}: {exc}"
+                print(f"rejected target {url}: {message}")
+                rejected.append({"url": url, "reason": message[:300]})
+                continue
+
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
+            verified.append(fetch_method)
             targets_table.put_item(Item={
                 "target_id": target_id,
                 "watch_id": watch_id,
-                "url": target["url"],
+                "url": url,
+                # The hint stops being the reading instruction and becomes the
+                # repair instruction. That is the whole change, in one line.
                 "extract_hint": target["extract_hint"],
-                "fetch_method": target.get("fetch_method", "http"),
+                "fetch_method": fetch_method,
+                "extractor": _to_decimal(built["extractor"]),
+                "verified_value": _to_decimal(built["verified_value"]),
+                "verified_raw": built["verified_raw"],
+                "verified_at": now,
             })
+
+        if not target_ids:
+            raise RuntimeError(
+                "no target could be verified: "
+                + "; ".join(f"{r['url']} ({r['reason']})" for r in rejected)
+            )
 
         # The model picks check_interval_min unaided, and has been observed
         # proposing 10, 20 and 30 minutes for near-identical requests. Nothing
         # stops it proposing 1. Clamp it up to whatever the monthly budget
         # actually affords -- and keep what it asked for, so the plan card can
         # show that its suggestion was overridden and why.
+        #
+        # uses_model is now False: this is what makes Phase 8b visible in the
+        # bill. The same $5 budget that forced ~51-minute intervals when every
+        # tick paid for Haiku now permits the floor, with no constant changed.
         proposed = int(result["check_interval_min"])
-        browser = any(
-            t.get("fetch_method", "http") == "browser" for t in result["targets"]
-        )
+        browser = any(method == "browser" for method in verified)
         floor = cost.min_interval_for_budget(
             targets=len(target_ids),
             fetch_method="browser" if browser else "http",
-            uses_model=True,
+            uses_model=False,
         )
         interval = max(proposed, floor)
 

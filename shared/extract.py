@@ -23,6 +23,37 @@ returns nothing, nothing reads as "condition not met", and a watch that died
 weeks ago keeps reassuring you. Phase 8d escalates `failed` to a repair; it
 must never escalate `unavailable`, which is a normal Tuesday.
 
+## `scope`, and why absence needs an anchor
+
+Telling those two apart is impossible from a miss alone. "This selector found
+nothing" is the same observation whether the page was rebuilt or the job you
+are waiting for simply has not been posted. `scope` is what resolves it: an
+optional CSS selector that narrows the document first, and doubles as a
+liveness test for the page's shape.
+
+    scope matches nothing            -> FAILED. The page changed. Repair it.
+    scope matches, target does not   -> UNAVAILABLE. Not yet. Leave it alone.
+
+Without a scope nothing is anchored, so every miss stays FAILED -- the
+conservative reading, and the behaviour this module had before scope existed.
+
+Scoping is not a storefront concern. It was found on a 1.5MB product page
+where "Out of stock" matched a *different product* and a table of localised
+strings, but it matters at least as much for a vacancy board, where the
+question is "is there a role in this country" and the page is a list of
+hundreds of things that are not it.
+
+## Why `count` exists
+
+A price is always on the page; you are waiting for it to change. A vacancy, a
+restock, an appointment slot or a new release is *absent by definition* until
+the moment the watch is meant to fire. An engine that can only read values
+that already exist cannot express that class of watch at all -- and worse,
+reports it as a broken extractor forever, which 8d would answer by paying for
+a repair on every single tick.
+
+`count` makes zero an answer instead of a failure.
+
 This distinction came from a real observation. Asked to read a Steam Deck
 price, Haiku returned `null` and noted the item showed "Out of stock" -- while
 a naive regex would have cheerfully extracted `$629.00` and reported a
@@ -53,12 +84,24 @@ OK = "ok"
 UNAVAILABLE = "unavailable"
 FAILED = "failed"
 
-KINDS = ("jsonpath", "css", "regex")
+KINDS = ("jsonpath", "css", "regex", "count")
 PARSERS = ("float", "currency", "int", "text", "bool")
+# A count is a number of elements, so the only sensible coercions are the
+# number itself or "is it more than none".
+COUNT_PARSERS = ("int", "bool")
 
 
 class SpecError(ValueError):
     """The extractor spec itself is malformed -- a planning bug, not a page bug."""
+
+
+class _Missed(str):
+    """An error meaning "the target was not present", not "this extractor broke".
+
+    The difference is the whole point of `scope`. Inside a proven anchor, a
+    target that is simply not there is a legitimate absence; outside one it is
+    indistinguishable from a redesign, and stays FAILED.
+    """
 
 
 @dataclass
@@ -86,7 +129,16 @@ class Extraction:
 # Spec validation
 # ---------------------------------------------------------------------------
 
-_REQUIRED_FIELD = {"jsonpath": "path", "css": "selector", "regex": "pattern"}
+_REQUIRED_FIELD = {
+    "jsonpath": "path",
+    "css": "selector",
+    "regex": "pattern",
+    "count": "selector",
+}
+
+
+def default_parse(kind: str) -> str:
+    return "int" if kind == "count" else "text"
 
 
 def validate_spec(spec, *, _nested: bool = False) -> None:
@@ -113,9 +165,20 @@ def validate_spec(spec, *, _nested: bool = False) -> None:
         if compiled.groups > 1:
             raise SpecError("regex may have at most one capture group")
 
-    parse = spec.get("parse", "text")
-    if parse not in PARSERS:
-        raise SpecError(f"parse must be one of {', '.join(PARSERS)}, got {parse!r}")
+    parse = spec.get("parse", default_parse(kind))
+    allowed = COUNT_PARSERS if kind == "count" else PARSERS
+    if parse not in allowed:
+        raise SpecError(f"parse must be one of {', '.join(allowed)}, got {parse!r}")
+
+    scope = spec.get("scope")
+    if scope is not None:
+        if _nested:
+            raise SpecError(
+                "scope belongs on the outer spec -- unavailable_if is already "
+                "evaluated inside it"
+            )
+        if not isinstance(scope, str) or not scope.strip():
+            raise SpecError("scope must be a non-empty CSS selector")
 
     unavailable = spec.get("unavailable_if")
     if unavailable is not None:
@@ -265,6 +328,13 @@ def _walk_json(path: str, document):
     return cursor, None
 
 
+def _soup(payload: str):
+    """Imported lazily so a JSON-only deployment need not carry beautifulsoup4."""
+    from bs4 import BeautifulSoup
+
+    return BeautifulSoup(payload, "html.parser")
+
+
 def _run_jsonpath(spec: dict, payload: str):
     try:
         document = json.loads(payload)
@@ -273,9 +343,12 @@ def _run_jsonpath(spec: dict, payload: str):
 
     value, error = _walk_json(spec["path"], document)
     if error:
-        return None, error
+        # A key that is not there, or an index past the end, is the JSON
+        # equivalent of a selector matching nothing: possibly a redesign,
+        # possibly just a field that is absent today.
+        return None, _Missed(error)
     if value is None:
-        return None, "path resolved to null"
+        return None, _Missed("path resolved to null")
     if isinstance(value, (dict, list)):
         return None, "path resolved to a container, not a value"
     return str(value), None
@@ -283,21 +356,22 @@ def _run_jsonpath(spec: dict, payload: str):
 
 def _run_css(spec: dict, payload: str):
     try:
-        from bs4 import BeautifulSoup
+        soup = _soup(payload)
     except ImportError:  # pragma: no cover
         return None, "beautifulsoup4 is not installed"
 
-    soup = BeautifulSoup(payload, "html.parser")
     try:
         node = soup.select_one(spec["selector"])
     except Exception as exc:  # noqa: BLE001 -- soupsieve raises its own types
         raise SpecError(f"invalid CSS selector: {exc}") from exc
 
     if node is None:
-        return None, f"selector matched nothing: {spec['selector']!r}"
+        return None, _Missed(f"selector matched nothing: {spec['selector']!r}")
 
     # An attribute is often the honest source -- <meta content="629.00"> or
     # <span data-price="629.00"> beat the rendered text, which may be decorated.
+    # A matched element that lacks the attribute is breakage, not absence: the
+    # spec was written against markup that no longer looks like this.
     attribute = spec.get("attribute")
     if attribute:
         if not node.has_attr(attribute):
@@ -311,20 +385,87 @@ def _run_regex(spec: dict, payload: str):
     compiled = re.compile(spec["pattern"], re.IGNORECASE | re.DOTALL)
     match = compiled.search(payload)
     if match is None:
-        return None, f"pattern matched nothing: {spec['pattern']!r}"
+        return None, _Missed(f"pattern matched nothing: {spec['pattern']!r}")
     return (match.group(1) if compiled.groups else match.group(0)), None
 
 
-_RUNNERS = {"jsonpath": _run_jsonpath, "css": _run_css, "regex": _run_regex}
+def _run_count(spec: dict, payload: str):
+    """How many elements match. Zero is an answer, not a failure.
+
+    This is the shape of most watches that are not about a price: is there a
+    vacancy, has a slot opened, did a new release appear. Those things are
+    absent by definition until the moment the watch is supposed to fire, and an
+    engine that can only read values that already exist cannot express them.
+
+    Zero being a legitimate value is exactly why `count` needs `scope` more
+    than the other kinds do, not less: without an anchor, a selector counting
+    nothing because the page was rebuilt is indistinguishable from one counting
+    nothing because the job has not been posted yet -- and the second is
+    reported forever, silently.
+    """
+    try:
+        soup = _soup(payload)
+    except ImportError:  # pragma: no cover
+        return None, "beautifulsoup4 is not installed"
+
+    try:
+        matches = soup.select(spec["selector"])
+    except Exception as exc:  # noqa: BLE001
+        raise SpecError(f"invalid CSS selector: {exc}") from exc
+
+    return str(len(matches)), None
+
+
+_RUNNERS = {
+    "jsonpath": _run_jsonpath,
+    "css": _run_css,
+    "regex": _run_regex,
+    "count": _run_count,
+}
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _apply_scope(selector: str, payload: str):
+    """Narrow the document to one element. Returns (node, error).
+
+    This is the anchor test for the whole spec. A scope that matches nothing
+    means the page no longer has the shape the plan was written against -- the
+    one honest signal available that an extractor is broken rather than early.
+    """
+    try:
+        soup = _soup(payload)
+    except ImportError:  # pragma: no cover
+        return None, "beautifulsoup4 is not installed"
+
+    try:
+        node = soup.select_one(selector)
+    except Exception as exc:  # noqa: BLE001
+        raise SpecError(f"invalid CSS selector in scope: {exc}") from exc
+
+    if node is None:
+        return None, f"scope matched nothing: {selector!r}"
+    return node, None
+
+
+def _scoped_payload(node, kind: str) -> str:
+    """Markup for the selector-shaped kinds; text for jsonpath.
+
+    The jsonpath case is deliberate rather than incidental. Scoping to
+    `script[type="application/ld+json"]` and then reading a path out of it is
+    frequently the cheapest and most stable source of a fact on an HTML page,
+    and preferring exactly that kind of source is the Planner's new job.
+    """
+    return node.get_text() if kind == "jsonpath" else str(node)
+
+
 def _matches(spec: dict, payload: str) -> bool:
     """Did this predicate find anything? Used for unavailable_if."""
     raw, error = _RUNNERS[spec["kind"]](spec, payload)
+    if spec["kind"] == "count":
+        return error is None and int(raw) > 0
     return error is None and raw is not None
 
 
@@ -333,26 +474,59 @@ def extract(spec: dict, payload: str) -> Extraction:
 
     A malformed *spec* raises SpecError, because that is a planning bug that
     should surface loudly. A page that does not match is a normal runtime
-    outcome and comes back as a FAILED result instead.
+    outcome and comes back as a FAILED or UNAVAILABLE result instead.
     """
     validate_spec(spec)
 
     if payload is None or payload == "":
         return Extraction(FAILED, error="empty response body")
 
-    # Availability is checked first. An out-of-stock page often still shows a
-    # price, so reading the value and then asking "but is it real" would report
-    # a number for something that cannot be bought.
-    unavailable = spec.get("unavailable_if")
-    if unavailable is not None and _matches(unavailable, payload):
-        return Extraction(UNAVAILABLE, notes=["unavailable_if matched"])
+    kind = spec["kind"]
+    parse = spec.get("parse", default_parse(kind))
 
-    raw, error = _RUNNERS[spec["kind"]](spec, payload)
+    # --- the anchor ------------------------------------------------------
+    # Everything below runs against the scoped fragment when there is one.
+    # Without a scope, `body` is the whole document and nothing is anchored,
+    # so every miss stays FAILED -- the pre-scope behaviour, unchanged.
+    scope = spec.get("scope")
+    node, body = None, payload
+    if scope is not None:
+        node, error = _apply_scope(scope, payload)
+        if error is not None:
+            return Extraction(FAILED, error=error)
+        body = _scoped_payload(node, kind)
+
+    # --- availability ----------------------------------------------------
+    # Checked first: an out-of-stock page usually still shows a price, so
+    # reading the value and then asking "but is it real" would report a number
+    # for something nobody can buy. Evaluated inside the scope, because on a
+    # real page "Out of stock" is nearly always somewhere -- another product,
+    # a hidden template, a localised string table.
+    unavailable = spec.get("unavailable_if")
+    if unavailable is not None:
+        predicate_body = (
+            _scoped_payload(node, unavailable["kind"]) if node is not None else payload
+        )
+        if _matches(unavailable, predicate_body):
+            return Extraction(UNAVAILABLE, notes=["unavailable_if matched"])
+
+    raw, error = _RUNNERS[kind](spec, body)
     if error is not None:
+        # Inside a proven anchor, "not there" means not there *yet*. Outside
+        # one it is indistinguishable from a redesign and must stay FAILED,
+        # because 8d escalates FAILED and deliberately ignores UNAVAILABLE.
+        if node is not None and isinstance(error, _Missed):
+            return Extraction(
+                UNAVAILABLE, notes=[f"nothing to read inside {scope!r}: {error}"]
+            )
         return Extraction(FAILED, error=error)
 
+    if kind == "count":
+        count = int(raw)
+        return Extraction(OK, value=(count > 0) if parse == "bool" else count, raw=raw)
+
     try:
-        value = coerce(raw, spec.get("parse", "text"))
+        value = coerce(raw, parse)
     except ValueError as exc:
         return Extraction(FAILED, raw=raw, error=f"could not parse {raw[:60]!r}: {exc}")
 
