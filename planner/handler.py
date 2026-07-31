@@ -25,6 +25,8 @@ from decimal import Decimal
 import boto3
 
 import cost
+import sources
+from extract import extract
 from fetch import fetch_raw
 from plan import build_with_cheapest_fetch, resolve_relative_condition, search
 
@@ -109,27 +111,47 @@ def lambda_handler(event, context):
         target_ids, verified, rejected = [], [], []
 
         for target in result["targets"]:
-            url = target["url"]
             now = datetime.now(timezone.utc).isoformat()
 
-            # Verify before storing. A target whose value cannot be read today
-            # will not start being readable later, and offering it would mean
-            # the plan card promising a reading nobody has ever seen.
             try:
-                # The model's fetch_method is a hint, not a decision. A plain
-                # GET is 45x cheaper, so it gets tried first regardless and
-                # the browser is used only where it is demonstrably needed.
-                built, fetch_method, why = build_with_cheapest_fetch(
-                    url, target["extract_hint"], condition,
-                    fetch_http=lambda u=url: fetch_raw(u),
-                    fetch_browser=lambda u=url: _browser_fetch(u),
-                    shape=shape,
-                )
+                if "known_source" in target:
+                    # The deliberately stupid path. No web search chose this
+                    # and no model compiles for it: the registry supplies the
+                    # URL and a canned extractor, and the model's only
+                    # contribution was resolving a name to a symbol. All that
+                    # remains is proving the canned spec against the live
+                    # endpoint, exactly as any other plan is proved.
+                    target = sources.expand(
+                        target["known_source"], target.get("symbol", ""))
+                    url = target["url"]
+                    outcome = extract(target["extractor"], fetch_raw(url))
+                    if not outcome.ok:
+                        raise ValueError(
+                            f"canned extractor gave {outcome.status}"
+                            f"{': ' + outcome.error if outcome.error else ''}"
+                        )
+                    built = {"extractor": target["extractor"],
+                             "verified_value": outcome.value,
+                             "verified_raw": outcome.raw}
+                    fetch_method = "http"
+                    why = "known source; nothing searched, nothing compiled"
+                else:
+                    # The model's fetch_method is a hint, not a decision. A
+                    # plain GET is 45x cheaper, so it gets tried first and the
+                    # browser is used only where demonstrably needed.
+                    url = target["url"]
+                    built, fetch_method, why = build_with_cheapest_fetch(
+                        url, target["extract_hint"], condition,
+                        fetch_http=lambda u=url: fetch_raw(u),
+                        fetch_browser=lambda u=url: _browser_fetch(u),
+                        shape=shape,
+                    )
                 print(f"{url} -> {fetch_method}: {why}")
             except Exception as exc:  # noqa: BLE001
                 message = f"{type(exc).__name__}: {exc}"
-                print(f"rejected target {url}: {message}")
-                rejected.append({"url": url, "reason": message[:300]})
+                name = target.get("url") or target.get("symbol", "known source")
+                print(f"rejected target {name}: {message}")
+                rejected.append({"url": name, "reason": message[:300]})
                 continue
 
             if baseline is None:

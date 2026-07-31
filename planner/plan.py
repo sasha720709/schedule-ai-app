@@ -106,6 +106,20 @@ condition is a count reaching one: {"metric": "matching_vacancies", "op": ">=",
 number that is already on the page. If the user is waiting for something to
 show up, it is `presence`, even if similar things are listed today.
 
+KNOWN SOURCES. Some facts have one right place to look, and searching for
+them again is how the same request lands on a different site every time.
+For a MARKET QUOTE -- a stock, an index, a future -- do NOT search the web
+and do NOT pick a news site. Resolve the company or instrument name to its
+ticker symbol (that part is your job: "Apple" -> "AAPL") and return the
+target as:
+
+  {"known_source": "stock_quote", "symbol": "AAPL"}
+
+The system owns a canned quote API and a canned extractor for these; your
+symbol is the only input it needs. One such target is enough. This applies
+ONLY to exchange-traded quotes. A product price, a crypto price on a specific
+exchange, or anything with a "where" in it still needs the normal search.
+
 RELATIVE CONDITIONS. You do not know the current value. You are writing this
 before the page has been opened, so any number you have came from search
 results and is stale, approximate, or about a different quote entirely.
@@ -133,6 +147,7 @@ text before or after it, matching this shape:
   "check_interval_min": integer,
   "targets": [
     {"url": string, "extract_hint": string, "fetch_method": "http" | "browser"}
+    | {"known_source": "stock_quote", "symbol": string}
   ]
 }
 """

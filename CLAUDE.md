@@ -473,6 +473,18 @@ Details of the finished phases:
    with no price at all: three ticks failed, the watch went `degraded`, the
    email was sent and the schedule was deleted.
 
+   **Known sources (2026-07-31).** Market quotes stopped being re-reasoned:
+   the same "watch the Apple price" request had produced four different sites
+   in four runs (CNN reading a once-a-day "Last closed at" for a per-minute
+   watch, two sites that block datacenter IPs). `shared/sources.py` is a
+   registry — the model only resolves "Apple" → AAPL, and the URL (CNBC's
+   keyless quote JSON; Yahoo 429s and stooq 404s from Lambda) plus a canned
+   jsonpath come from the file. Still verified live before the plan is
+   offered; two consecutive runs produce identical targets. Deliberately
+   narrow: product prices and anything with a "where" keep the searching
+   path. Full review of every architectural decision to date:
+   `docs/architecture-review-2026-07-31.md`.
+
 5. Production hygiene — **started, see `docs/phase-5-plan.md`.** The spend
    and Checker-error alarms are written and committed, **gated off** behind
    `enable_alarms = false`. They are off because `schedule-ai-terraform`
