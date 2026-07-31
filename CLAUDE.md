@@ -284,8 +284,9 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **8a** · Budget guardrails | done |
 | ✅ | **8b pass 1** · Extraction engine | done — `shared/extract.py`, 95 tests |
 | ✅ | **8b pass 2** · Wire Planner + Checker | done — verified live, 222 tests |
-| 🔨 | **8c** · Conditional GET | **next** — start here |
-| ⬜ | **8d** · Tiered self-heal | after 8c |
+| ✅ | **8b pass 3** · Cheap fetch by default | done — browser only where proven necessary |
+| ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
+| 🔨 | **8d** · Tiered self-heal | **next** — start here |
 | ⬜ | **5** · Production hygiene | after 8, so it instruments a settled design |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
@@ -395,6 +396,41 @@ Details of the finished phases:
    - **Cost gates must know whether a tick uses a model.** The api Lambda
      hardcoded `uses_model=True`, so after 8b it overstated the bill 36× and
      would have refused intervals the budget affords.
+   **8b pass 3 — cheap fetch by default.** The Planner no longer trusts the
+   model's `fetch_method`. It tries a plain GET first, compiles and verifies
+   against the raw HTML, and renders in Chromium only when that fails. A
+   browser check is **45x** an HTTP one — $0.000186 against $0.0000041, or
+   $8.05/month against $0.18 at one-minute intervals — so the choice was too
+   expensive to leave to a prompt. Escalation runs both ways: a target marked
+   `http` that turns out to need rendering used to be rejected and is now
+   retried and kept. Verified live: Steam Deck correctly stays `browser`
+   (its price genuinely is not in the raw HTML), the Israeli job boards stay
+   `http`.
+
+   **8c is deferred, with numbers.** Conditional GET saves ~$0.05/month at
+   100% `304` hit rate, and is **unsound on browser targets** — the value
+   there comes from an API the page's JavaScript calls, so the HTML can be
+   byte-identical while the price moves. It can only be applied to the half
+   that is already nearly free. Revisit if the HTTP share of targets grows.
+
+   Two more failures found by running the product rather than the tests:
+
+   - **The read step was judging, not reading.** Haiku returned
+     `literal: null` with the note "priced at $949.00, which does not meet the
+     condition of price < $700" — refusing to report a value because the
+     condition was unmet. Every watch is created while its condition is unmet,
+     so this made planning nearly impossible. `READ_PROMPT` now says so in
+     capitals. Reading and judging were one model call before 8b; separating
+     them in code is not enough, the prompt has to separate them too.
+   - **The Fetcher dies when called in quick succession.** Three renders in
+     one warm container reported 1207MB, 1249MB, then 1304MB before Chromium
+     died with `TargetClosedError`. Pass 3 made this visible by calling the
+     Fetcher in bursts at plan time rather than once per tick. Page, context
+     and browser are now closed explicitly and a failed render is retried once
+     in a fresh browser. **Whether the growth is a real leak or just three
+     pages of different sizes is not established** — the retry is a mitigation,
+     not a diagnosis, and this belongs in Phase 5.
+
 5. Production hygiene — CloudWatch alarms, retries/DLQ, structured
    logging, plus the items in "Known gaps" above. Deliberately after
    Phase 8: alarms watch specific code paths and Phase 8 replaces the

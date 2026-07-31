@@ -336,3 +336,137 @@ def test_an_unfiltered_count_needs_no_probe():
     could silently exclude everything."""
     spec = {"scope": "#results", "kind": "count", "selector": "tr.job"}
     assert plan_mod.prove_the_item_selector(spec, JOBS_PAGE) is None
+
+
+# --- the fetch method is decided by trying, not by asking --------------------
+#
+# A browser check costs 45x a plain GET ($8.05/month against $0.18 at one-minute
+# intervals). The prompt asks the model to prefer http; these tests make it a
+# guarantee instead, in both directions.
+
+JS_SHELL = '<html><body><div id="root"></div><script src="/app.js"></script></body></html>'
+
+
+def test_a_page_readable_without_javascript_never_reaches_the_browser():
+    """The saving. If a spec verifies against raw HTML the page did not need
+    rendering, whatever the model believed."""
+    client = ScriptedClient({"literal": "$789.00", "sample": None, "note": ""},
+                            GOOD_SPEC)
+    browser_calls = []
+
+    built, method, why = plan_mod.build_with_cheapest_fetch(
+        "https://example.com", "the price", CONDITION,
+        fetch_http=lambda: PAGE,
+        fetch_browser=lambda: browser_calls.append(1) or PAGE,
+        client=client,
+    )
+
+    assert method == "http"
+    assert browser_calls == []
+    assert built["verified_value"] == 789.00
+    assert "no browser needed" in why
+
+
+def test_a_javascript_rendered_page_escalates_and_is_kept():
+    """The other direction: a target the model marked `http` that turns out to
+    need rendering used to be rejected outright. Now it is retried and kept."""
+    client = ScriptedClient(
+        {"literal": None, "sample": None, "note": "page is an empty shell"},
+        {"literal": "$789.00", "sample": None, "note": "found after render"},
+        GOOD_SPEC,
+    )
+
+    built, method, why = plan_mod.build_with_cheapest_fetch(
+        "https://example.com", "the price", CONDITION,
+        fetch_http=lambda: JS_SHELL,
+        fetch_browser=lambda: PAGE,
+        client=client,
+    )
+
+    assert method == "browser"
+    assert built["verified_value"] == 789.00
+    assert "needed rendering" in why
+
+
+def test_a_blocked_plain_get_escalates_rather_than_failing_the_target():
+    """403s and TLS errors are a reason to render, not to give up."""
+    client = ScriptedClient({"literal": "$789.00", "sample": None, "note": ""},
+                            GOOD_SPEC)
+
+    def blocked():
+        raise OSError("HTTP Error 403: Forbidden")
+
+    built, method, why = plan_mod.build_with_cheapest_fetch(
+        "https://example.com", "the price", CONDITION,
+        fetch_http=blocked, fetch_browser=lambda: PAGE, client=client,
+    )
+
+    assert method == "browser"
+    assert "403" in why
+
+
+def test_only_one_cheap_model_call_is_wasted_when_rendering_is_needed():
+    """The cost of always trying http first. build_extractor gives up before
+    compiling when the value is not in the text at all -- which is the shape of
+    a JS-rendered page -- so the waste is one Haiku read, not a Sonnet compile."""
+    client = ScriptedClient(
+        {"literal": None, "sample": None, "note": "empty shell"},
+        {"literal": "$789.00", "sample": None, "note": "found"},
+        GOOD_SPEC,
+    )
+    plan_mod.build_with_cheapest_fetch(
+        "https://example.com", "the price", CONDITION,
+        fetch_http=lambda: JS_SHELL, fetch_browser=lambda: PAGE, client=client)
+
+    # read(http) + read(browser) + compile(browser) -- no compile was attempted
+    # against the shell.
+    assert len(client.prompts) == 3
+
+
+def test_a_presence_watch_escalates_the_same_way():
+    client = ScriptedClient(
+        {"literal": None, "sample": None, "note": "no listings rendered yet"},
+        {"literal": None, "sample": "QA Automation Student, Beer Sheva", "note": ""},
+        COUNT_SPEC,
+    )
+    built, method, _ = plan_mod.build_with_cheapest_fetch(
+        "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
+        fetch_http=lambda: JS_SHELL, fetch_browser=lambda: JOBS_PAGE,
+        shape="presence", client=client)
+
+    assert method == "browser"
+    assert built["verified_value"] == 0
+
+
+def test_a_target_that_works_in_neither_mode_still_raises():
+    client = ScriptedClient(
+        {"literal": None, "sample": None, "note": "login wall"},
+        {"literal": None, "sample": None, "note": "login wall after render too"},
+    )
+    with pytest.raises(ValueError):
+        plan_mod.build_with_cheapest_fetch(
+            "https://example.com", "the price", CONDITION,
+            fetch_http=lambda: JS_SHELL, fetch_browser=lambda: JS_SHELL,
+            client=client)
+
+
+def test_the_read_step_is_told_not_to_judge():
+    """A real failure: Haiku returned `literal: null` with the note "priced at
+    $949.00, which does not meet the condition of price < $700", so the watch
+    could not be planned at all. Reading and judging were conflated -- a
+    leftover of the pre-8b design where one model call did both. Judging now
+    happens in Python, for free, on every tick.
+    """
+    assert "NOT JUDGING" in plan_mod.READ_PROMPT
+    assert "Never withhold a value because it fails the condition" in plan_mod.READ_PROMPT
+
+
+def test_a_value_that_fails_the_condition_still_plans():
+    """$789 against "under $700" is the normal state of a new watch: the whole
+    point is that the condition is not satisfied yet."""
+    client = ScriptedClient({"literal": "$789.00", "sample": None, "note": ""},
+                            GOOD_SPEC)
+    built = plan_mod.build_extractor(
+        "https://example.com", "the price",
+        {"metric": "price", "op": "<", "value": 700}, PAGE, client=client)
+    assert built["verified_value"] == 789.00

@@ -120,8 +120,19 @@ text before or after it, matching this shape:
 
 READ_PROMPT = """You read a web page so an extractor can be compiled against it.
 
+YOU ARE READING, NOT JUDGING. You are shown the condition only so you know
+WHICH value to find -- "price < 700" tells you to look for a price, not for a
+rating. It is NOT a filter on what you may report.
+
+**Never withhold a value because it fails the condition.** A price of $949
+against a condition of "under $700" is exactly the situation a watch exists
+for: the user is waiting for it to change. Reporting "the price does not meet
+the condition" instead of "$949.00" makes the watch impossible to create at
+all. Whether the condition holds is decided later, in Python, for free, on
+every check. Your only job is to say what the page says right now.
+
 You are given page text, a hint about what to watch, and the condition the
-watch will be judged against. Report two things.
+value will later be compared against. Report two things.
 
 Respond with ONLY a JSON object:
 {
@@ -490,6 +501,54 @@ def build_extractor(url: str, hint: str, condition: dict, raw: str, *,
         print(f"[attempt {attempt + 1} failed] {feedback}", file=sys.stderr)
 
     raise ValueError(f"could not compile a working extractor for {url}: {feedback}")
+
+
+def build_with_cheapest_fetch(url: str, hint: str, condition: dict, *,
+                              fetch_http, fetch_browser, shape: str = "value",
+                              client=None):
+    """Verify against a plain GET first; render only if that cannot be done.
+
+    Returns `(built, fetch_method, note)`.
+
+    ## Why this is mechanical rather than asked for
+
+    A browser check costs $0.000186 against $0.0000041 for a plain GET -- **45
+    times more**, and at one-minute intervals that is $8.05/month against
+    $0.18. Since the model left the hot path the browser is the single most
+    expensive thing left in a check.
+
+    The Planner's prompt already asks the model to prefer `http`. That is a
+    request, not a guarantee, and the cost of it guessing wrong is 45x in the
+    expensive direction and a rejected target in the cheap one. So the choice
+    is settled by trying: if a spec compiles and verifies against the raw HTML,
+    the page did not need JavaScript, whatever anyone believed.
+
+    The wasted work when a page genuinely needs rendering is one Haiku read --
+    `build_extractor` gives up before compiling when the value is not in the
+    text at all, which is exactly the shape of a JS-rendered page. Roughly
+    $0.0001, once, against $7.87/month saved every time the guess would have
+    been wrong.
+
+    Escalation also runs the other way. A target the model marked `http` that
+    turns out to need rendering used to be rejected outright; now it is
+    retried in the browser and kept.
+    """
+    try:
+        raw = fetch_http()
+    except Exception as exc:  # noqa: BLE001 -- blocked, 403, timeout, TLS
+        cheap_error = f"plain GET failed: {type(exc).__name__}: {exc}"
+    else:
+        try:
+            built = build_extractor(url, hint, condition, raw,
+                                    shape=shape, client=client)
+            return built, "http", "verified against raw HTML; no browser needed"
+        except Exception as exc:  # noqa: BLE001
+            cheap_error = f"could not verify against raw HTML: {exc}"
+
+    print(f"[escalating to browser] {url}: {cheap_error}", file=sys.stderr)
+    raw = fetch_browser()
+    built = build_extractor(url, hint, condition, raw, shape=shape, client=client)
+    return built, "browser", f"needed rendering -- {cheap_error}"
 
 
 def plan(request: str) -> dict:

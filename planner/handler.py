@@ -26,7 +26,7 @@ import boto3
 
 import cost
 from fetch import fetch_raw
-from plan import build_extractor, search
+from plan import build_with_cheapest_fetch, search
 
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
@@ -43,16 +43,13 @@ def _to_decimal(value):
     return value
 
 
-def _fetch(url: str, fetch_method: str) -> str:
-    """Open the page, the way the Checker will. Markup, not text.
+def _browser_fetch(url: str) -> str:
+    """Render the page in the Fetcher Lambda and return its markup.
 
     The Planner had no fetching at all before Phase 8b: it recommended URLs it
     had never opened, which is exactly how Amazon and Best Buy became runtime
     failures rather than plan-time ones.
     """
-    if fetch_method != "browser":
-        return fetch_raw(url)
-
     response = lambda_client.invoke(
         FunctionName=os.environ["FETCHER_FUNCTION_ARN"],
         Payload=json.dumps({"url": url}),
@@ -109,16 +106,22 @@ def lambda_handler(event, context):
 
         for target in result["targets"]:
             url = target["url"]
-            fetch_method = target.get("fetch_method", "http")
             now = datetime.now(timezone.utc).isoformat()
 
             # Verify before storing. A target whose value cannot be read today
             # will not start being readable later, and offering it would mean
             # the plan card promising a reading nobody has ever seen.
             try:
-                raw = _fetch(url, fetch_method)
-                built = build_extractor(
-                    url, target["extract_hint"], condition, raw, shape=shape)
+                # The model's fetch_method is a hint, not a decision. A plain
+                # GET is 45x cheaper, so it gets tried first regardless and
+                # the browser is used only where it is demonstrably needed.
+                built, fetch_method, why = build_with_cheapest_fetch(
+                    url, target["extract_hint"], condition,
+                    fetch_http=lambda u=url: fetch_raw(u),
+                    fetch_browser=lambda u=url: _browser_fetch(u),
+                    shape=shape,
+                )
+                print(f"{url} -> {fetch_method}: {why}")
             except Exception as exc:  # noqa: BLE001
                 message = f"{type(exc).__name__}: {exc}"
                 print(f"rejected target {url}: {message}")

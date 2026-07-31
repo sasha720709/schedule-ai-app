@@ -78,9 +78,13 @@ def fit_to_budget(html: str, budget: int = MAX_HTML_JSON_BYTES):
     return html[:keep], True
 
 
-def lambda_handler(event, context):
-    url = event["url"]
+def _render(url: str) -> dict:
+    """One render, in a browser that is created and destroyed here.
 
+    Everything is torn down explicitly rather than relying on the context
+    manager alone. Lambda freezes a container between invocations instead of
+    exiting it, so anything Chromium leaves behind survives to the next call.
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -88,6 +92,7 @@ def lambda_handler(event, context):
             # doesn't permit Chromium's sandbox.
             args=["--no-sandbox", "--disable-dev-shm-usage", "--single-process"],
         )
+        context_ = page = None
         try:
             context_ = browser.new_context(
                 user_agent=UA,
@@ -103,7 +108,12 @@ def lambda_handler(event, context):
             text = _WHITESPACE.sub(" ", page.inner_text("body")).strip()
             status = response.status if response else None
         finally:
-            browser.close()
+            for closeable in (page, context_, browser):
+                try:
+                    if closeable is not None:
+                        closeable.close()
+                except Exception:  # noqa: BLE001 -- already dead is fine
+                    pass
 
     # Report truncation and true size rather than hiding them. An extractor
     # that misses because its element sat past the cut looks identical to an
@@ -121,3 +131,27 @@ def lambda_handler(event, context):
         "text": text[:MAX_TEXT_CHARS],
         "text_truncated": len(text) > MAX_TEXT_CHARS,
     }
+
+
+def lambda_handler(event, context):
+    """Render once, and retry once on a browser-level failure.
+
+    Chromium dies occasionally under `--single-process`, and a dead browser
+    surfaces as `TargetClosedError: Target page, context or browser has been
+    closed` -- which reads like a problem with the page rather than with the
+    process. Observed when the Planner called this three times in quick
+    succession and the same warm container reported 1207MB, then 1249MB, then
+    1304MB before the third render died.
+
+    Whether that growth is a genuine leak or just three pages of different
+    sizes is **not yet established** -- do not treat this retry as a diagnosis.
+    It is a second attempt in a completely fresh browser, which is correct
+    either way, and cheap: a render costs ~$0.00016 and a failed plan costs the
+    user a watch.
+    """
+    url = event["url"]
+    try:
+        return _render(url)
+    except Exception as exc:  # noqa: BLE001
+        print(f"render failed ({type(exc).__name__}: {exc}); retrying once")
+        return _render(url)
