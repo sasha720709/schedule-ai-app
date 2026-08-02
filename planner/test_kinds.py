@@ -200,3 +200,80 @@ def test_a_quote_does_not_self_heal():
     assert QUOTE.self_heals is False
     assert kinds.get("value").self_heals is True
     assert kinds.get("presence").self_heals is True
+
+
+# --------------------------------------------------------------------------
+# Planning a quote: condition and cadence only, and no web search
+# --------------------------------------------------------------------------
+
+class Scripted:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+        self.messages = types.SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(type="text",
+                                           text=json.dumps(self.payload))])
+
+
+def quote_plan(payload, request="tell me when Apple goes down"):
+    client = Scripted(payload)
+    return QUOTE.plan(request, "AAPL", client=client), client
+
+
+def test_planning_a_quote_never_reaches_the_web_search():
+    """The saving that made classification worth doing on its own. A quote used
+    to pay for Sonnet *with* web search before anyone noticed the answer was a
+    registry lookup."""
+    _, client = quote_plan({"condition": {"metric": "price", "op": "<"},
+                            "relative_change_pct": 0,
+                            "check_interval_min": 5})
+
+    assert len(client.calls) == 1
+    assert "tools" not in client.calls[0]
+    assert client.calls[0]["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_the_target_is_the_symbol_and_nothing_else_is_chosen():
+    result, _ = quote_plan({"condition": {}, "relative_change_pct": None,
+                            "check_interval_min": 5})
+    assert result["targets"] == [{"known_source": "stock_quote",
+                                  "symbol": "AAPL"}]
+
+
+def test_a_relative_request_leaves_the_threshold_unset():
+    """Same rule as the searching path, and for the same reason: the model has
+    no current price, so any absolute threshold it writes is invented."""
+    result, _ = quote_plan({"condition": {"metric": "price", "op": "<",
+                                          "value": None},
+                            "relative_change_pct": 0,
+                            "check_interval_min": 1})
+    assert result["relative_change_pct"] == 0
+    assert result["condition"]["value"] is None
+
+
+@pytest.mark.parametrize("proposed,expected", [(1, 1), (30, 30), (59, 59),
+                                               (60, 59), (240, 59), (1440, 59)])
+def test_the_interval_is_clamped_below_an_hour(proposed, expected):
+    """A windowed schedule is a cron step inside the hour, so `*/60` would
+    silently fire hourly on the hour. Clamped rather than refused -- the model
+    picked a cadence, not a contract."""
+    result, _ = quote_plan({"condition": {}, "relative_change_pct": None,
+                            "check_interval_min": proposed})
+    assert result["check_interval_min"] == expected
+
+
+def test_a_missing_interval_gets_a_usable_default():
+    result, _ = quote_plan({"condition": {}, "relative_change_pct": None})
+    assert 1 <= result["check_interval_min"] <= 59
+
+
+def test_the_planned_interval_is_expressible_as_a_windowed_schedule():
+    """Ties the clamp to the thing it protects: whatever the model proposes,
+    shared/schedules.py must be able to build a cron for it."""
+    import schedules
+    result, _ = quote_plan({"condition": {}, "check_interval_min": 720})
+    schedules.expression(result["check_interval_min"], QUOTE.window)

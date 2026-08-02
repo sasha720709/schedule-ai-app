@@ -61,15 +61,23 @@ import llm
 from prompts import SEARCH_PROMPT
 
 
-def search(request: str, *, client=None) -> dict:
-    """Step 1: what should be watched, where, and how often."""
+def search(request: str, *, shape: str = "value", client=None) -> dict:
+    """Step 1: what should be watched, where, and how often.
+
+    `shape` is decided beforehand, by `classify`, and handed in rather than
+    asked for. It used to be one of three request-type judgements crammed into
+    this one prompt, and two shipped bugs came from those judgements
+    interfering -- a presence watch that could not be planned at all, and a
+    threshold invented from search results.
+    """
     client = client or Anthropic()
     response = client.messages.create(
         model=llm.PLAN_MODEL,
         max_tokens=llm.PLAN_MAX_TOKENS,
         system=SEARCH_PROMPT,
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-        messages=[{"role": "user", "content": request}],
+        messages=[{"role": "user",
+                   "content": f"watch_shape: {shape}\n\n{request}"}],
     )
     for block in response.content:
         if block.type == "server_tool_use":

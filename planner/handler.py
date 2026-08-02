@@ -24,10 +24,11 @@ from decimal import Decimal
 
 import boto3
 
+import classify as classify_mod
 import cost
 import kinds
 from fetch import fetch_raw
-from plan import resolve_relative_condition, search
+from plan import resolve_relative_condition
 
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
@@ -92,17 +93,18 @@ def lambda_handler(event, context):
     targets_table = dynamodb.Table(os.environ["WATCH_TARGETS_TABLE"])
 
     try:
-        result = search(request)
+        # Which kind this is, decided once and cheaply, before anything
+        # expensive runs. A quote never reaches the web search at all -- the
+        # answer is a registry lookup, and paying Sonnet with search to
+        # discover that was the single clearest waste in planning.
+        decision = classify_mod.classify(request, kinds.names())
+        kind = kinds.get(decision["kind"])
+        result = kind.plan(request, decision.get("symbol"))
     except Exception as exc:  # noqa: BLE001 -- record on the row, never retry
         return _fail(watches_table, watch_id, exc)
 
     try:
         condition = result["condition"]
-        # "value" watches read something already on the page and wait for it to
-        # change; "presence" watches wait for something to appear that is not
-        # there yet. The second kind cannot be verified by finding its value,
-        # because not having one is its whole premise -- see build_extractor.
-        shape = result.get("watch_shape", "value")
         # "goes down from the current" has no threshold until something has
         # actually been read. Resolved below, once a target verifies.
         relative_pct = result.get("relative_change_pct")
@@ -113,13 +115,6 @@ def lambda_handler(event, context):
             now = datetime.now(timezone.utc).isoformat()
 
             try:
-                # Which kind resolves this target. `known_source` on the target
-                # still comes from the search prompt -- step 2b replaces it with
-                # a classify step -- but the branch it used to trigger is gone:
-                # a kind decides how a target becomes trustworthy, and there is
-                # no longer an if-statement here that has to be extended every
-                # time a new one appears.
-                kind = kinds.get("quote" if "known_source" in target else shape)
                 url = target.get("url")
                 resolved = kind.resolve(
                     target, condition,
@@ -202,12 +197,16 @@ def lambda_handler(event, context):
             Key={"watch_id": watch_id},
             UpdateExpression=(
                 "SET #s = :s, #c = :c, check_interval_min = :i, "
-                "planner_interval_min = :p, min_interval_min = :f, planned_at = :t "
+                "planner_interval_min = :p, min_interval_min = :f, "
+                # Stored so a wrong fork is visible on the plan card before the
+                # user confirms, rather than discovered weeks later.
+                "watch_kind = :k, planned_at = :t "
                 "REMOVE plan_error"
             ),
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
             ExpressionAttributeValues={
                 ":s": "proposed",
+                ":k": kind.name,
                 ":c": _to_decimal(condition),
                 ":i": _to_decimal(interval),
                 ":p": _to_decimal(proposed),

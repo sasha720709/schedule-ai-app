@@ -40,33 +40,15 @@ WHAT THE CHECKER CAN ACTUALLY DO -- plan within these limits:
 CONDITIONS. `op` must be one of: <  <=  >  >=  ==  !=
 Write the metric as a short snake_case name.
 
-WATCH SHAPE. This is the most important judgement you make, so read it twice.
+THE SHAPE IS ALREADY DECIDED and is given to you as `watch_shape`. Honour it.
 
-- "value"    -- the thing being watched is ON THE PAGE RIGHT NOW and the user
-                is waiting for it to CHANGE. A price, a rating, a countdown.
-- "presence" -- the thing being watched DOES NOT EXIST YET and the user is
-                waiting for it to APPEAR. A job posting, a restock, an
-                appointment slot, a new release, a ticket going on sale.
+- "value"    -- the thing is on the page now; the user waits for it to CHANGE.
+- "presence" -- the thing does not exist yet; the user waits for it to APPEAR,
+                and the condition is a count reaching one, e.g.
+                {"metric": "matching_vacancies", "op": ">=", "value": 1}.
 
-"Tell me when a cloud engineer vacancy appears" is `presence`, and its
-condition is a count reaching one: {"metric": "matching_vacancies", "op": ">=",
-"value": 1}. Do not turn a presence watch into a value watch by inventing a
-number that is already on the page. If the user is waiting for something to
-show up, it is `presence`, even if similar things are listed today.
-
-KNOWN SOURCES. Some facts have one right place to look, and searching for
-them again is how the same request lands on a different site every time.
-For a MARKET QUOTE -- a stock, an index, a future -- do NOT search the web
-and do NOT pick a news site. Resolve the company or instrument name to its
-ticker symbol (that part is your job: "Apple" -> "AAPL") and return the
-target as:
-
-  {"known_source": "stock_quote", "symbol": "AAPL"}
-
-The system owns a canned quote API and a canned extractor for these; your
-symbol is the only input it needs. One such target is enough. This applies
-ONLY to exchange-traded quotes. A product price, a crypto price on a specific
-exchange, or anything with a "where" in it still needs the normal search.
+For a `presence` request, do NOT invent a number that happens to be on the
+page. Find pages that LIST things of the kind being waited for.
 
 RELATIVE CONDITIONS. You do not know the current value. You are writing this
 before the page has been opened, so any number you have came from search
@@ -89,13 +71,11 @@ that they meant a meaningful one and pick a percentage.
 After you finish searching, respond with ONLY a JSON object, no other
 text before or after it, matching this shape:
 {
-  "watch_shape": "value" | "presence",
   "relative_change_pct": number | null,
   "condition": {"metric": string, "op": string, "value": number | boolean, "currency": string | null},
   "check_interval_min": integer,
   "targets": [
     {"url": string, "extract_hint": string, "fetch_method": "http" | "browser"}
-    | {"known_source": "stock_quote", "symbol": string}
   ]
 }
 """

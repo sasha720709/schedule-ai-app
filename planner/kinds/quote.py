@@ -34,7 +34,50 @@ import sources
 from extract import extract
 from fetch import fetch_raw
 
+import llm
 from kinds.base import Kind
+
+QUOTE_PROMPT = """You plan a watch on a market quote. The source is already
+decided -- you are NOT choosing where to look and you have no web search.
+
+You are given a request and the ticker symbol it was resolved to. Produce the
+condition and how often to check.
+
+CONDITIONS. `op` must be one of: <  <=  >  >=  ==  !=
+Write the metric as a short snake_case name, usually "price".
+
+RELATIVE CONDITIONS. You do not know the current price, and any figure you
+half-remember is stale. **Never invent an absolute threshold for a request
+phrased relative to now.** "goes down", "drops below current", "falls 5%" are
+all relative: put the change in `relative_change_pct` and leave
+`condition.value` null. The threshold is computed later from the price
+actually read off the wire, which is the only baseline that is real.
+
+  "tell me when it goes down"        -> relative_change_pct: 0
+  "tell me when it drops 5%"         -> relative_change_pct: -5
+  "tell me when it goes 10% above"   -> relative_change_pct: 10
+  "tell me when it drops below $300" -> relative_change_pct: null, value: 300
+
+"Goes down" means ANY decrease. Do not decide on the user's behalf that they
+meant a meaningful one and pick a percentage.
+
+INTERVAL. Minutes, between 1 and 59. A quote watch only runs during market
+hours, and the schedule is a cron step within the hour, so 60 or more is not
+expressible. 1-5 minutes suits "tell me when it moves"; 15-30 suits a
+threshold that is far away.
+
+Respond with ONLY a JSON object:
+{
+  "relative_change_pct": number | null,
+  "condition": {"metric": string, "op": string, "value": number | null,
+                "currency": string | null},
+  "check_interval_min": integer
+}"""
+
+# A windowed schedule is a cron step inside the hour, so anything at or above
+# 60 would silently fire hourly. Clamped rather than refused: the model picked
+# a cadence, not a contract, and refusing a plan over it would be absurd.
+MAX_WINDOWED_INTERVAL_MIN = 59
 
 
 class QuoteKind(Kind):
@@ -49,6 +92,32 @@ class QuoteKind(Kind):
     # third-party endpoint we do not own and cannot afford to lose -- see the
     # honest accounting in shared/schedules.py.
     window = "us_market_hours"
+
+    def plan(self, request: str, symbol=None, *, client=None) -> dict:
+        """Condition and cadence only. No web search, because there is nothing
+        to choose: `sources.py` owns the URL and the extractor, and the symbol
+        was already resolved by the classifier.
+
+        This is the saving that made classification worth doing on its own.
+        A quote request used to pay for Sonnet *with web search* before anyone
+        noticed the answer was a registry lookup.
+        """
+        from anthropic import Anthropic
+
+        result = llm.ask(
+            client or Anthropic(),
+            model=llm.READ_MODEL,
+            max_tokens=llm.READ_MAX_TOKENS,
+            system=QUOTE_PROMPT,
+            content=f"symbol: {symbol}\n\n{request}",
+        )
+        interval = int(result.get("check_interval_min") or 5)
+        return {
+            "condition": result.get("condition") or {},
+            "relative_change_pct": result.get("relative_change_pct"),
+            "check_interval_min": min(interval, MAX_WINDOWED_INTERVAL_MIN),
+            "targets": [{"known_source": "stock_quote", "symbol": symbol}],
+        }
 
     def resolve(self, target: dict, condition: dict, *,
                 fetch_http=None, fetch_browser=None, client=None) -> dict:

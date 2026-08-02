@@ -95,6 +95,16 @@ class Kind:
     # right for a shop's price and wrong for anything with a calendar.
     window = None
 
+    def plan(self, request: str, symbol=None, *, client=None) -> dict:
+        """Turn the request into targets, a condition and an interval.
+
+        The default is the web search, which is what every kind did before
+        `quote` existed. Keys: targets, condition, check_interval_min,
+        relative_change_pct.
+        """
+        from plan import search
+        return search(request, shape=self.name, client=client)
+
     def resolve(self, target: dict, condition: dict, *,
                 fetch_http, fetch_browser, client=None) -> dict:
         """Return everything the target row needs, or raise.

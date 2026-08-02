@@ -27,6 +27,9 @@ READ_MODEL = "claude-haiku-4-5-20251001"
 PLAN_MAX_TOKENS = 8192
 COMPILE_MAX_TOKENS = 4096
 READ_MAX_TOKENS = 1024
+# Classification answers with two short fields. Small on purpose: this call is
+# on the path of every request, including the ones it decides nothing about.
+CLASSIFY_MAX_TOKENS = 512
 
 
 def parse_json(raw: str) -> dict:

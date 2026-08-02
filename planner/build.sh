@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 rm -rf build dist
 mkdir -p build dist
 
-cp handler.py plan.py llm.py prompts.py build/
+cp handler.py plan.py llm.py prompts.py classify.py build/
 # Phase 9: the kind-specific half of the Planner is a package, not a flat file.
 # It is imported as `import kinds` / `from kinds.value import ...`, so it has to
 # land as a directory beside handler.py -- the same flat layout the other

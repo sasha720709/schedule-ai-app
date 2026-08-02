@@ -248,9 +248,15 @@ The risk with a "classify the request" step is that it becomes a new
 single point of failure — the same wrong fork as today, moved one layer up.
 The mitigations:
 
-- **Rules first, model second.** A `quote` is recognised by a rule (a company
-  or ticker, no "where", no price-of-a-product phrasing). A `reminder` is
-  recognised by a rule (an explicit time, no thing-to-observe).
+- ~~**Rules first, model second.**~~ **Revised on contact with the problem.**
+  There is no honest lexical rule separating "how much is Apple" (a quote)
+  from "how much is an Apple pencil at Best Buy" (a product): both name a
+  company, and the distinguishing signal is meaning. A keyword heuristic
+  would fight the model and lose. So the rules became **gates around the
+  answer** rather than a substitute for it — the kind must be in the
+  registry, and a `quote` must carry a symbol the registry will accept, or
+  the whole thing degrades to `value`. A hallucinated ticker becomes a web
+  search instead of a URL.
 - **The default is the existing path.** Anything unmatched goes to `value` /
   the searching Planner, which is what happens today. An unknown request must
   degrade to current behaviour, never to a refusal.
@@ -307,13 +313,19 @@ phase starts editing them, it has gone wrong.
    `shared/kinds.py` would land beside the `kinds/` package directory and
    collide. If declarative kind facts need to be shared with `api`/`checker`,
    call that module something else — `watch_kinds.py`.
-2. **`quote` as a kind.** **2a done** — `Kind` split into `Kind` /
-   `CompiledKind`, `QuoteKind` extends the former and never sees the four
-   compile methods, and the `known_source` if-statement in `handler.py` is
-   gone. **2b still to do:** a classify step, so routing stops living inside
-   `SEARCH_PROMPT`. Until then the search prompt still names `known_source`
-   and the prompt has not yet shrunk — the success criterion of §1 is
-   therefore **not yet met**.
+2. ~~**`quote` as a kind.**~~ **Done 2026-08-02, both halves.** 2a split
+   `Kind` / `CompiledKind` and removed the `known_source` if-statement. 2b
+   added `planner/classify.py`, so routing no longer lives in a prompt
+   paragraph: a small Haiku call picks the kind before anything expensive
+   runs, and `Kind.plan()` is how each kind turns a request into targets.
+
+   **The §1 success criterion is met.** `SEARCH_PROMPT` went from 4,686 to
+   3,545 characters — it lost both the KNOWN SOURCES paragraph and the WATCH
+   SHAPE paragraph, and is now handed `watch_shape` rather than deciding it.
+
+   A quote also stops paying for the expensive call entirely: it never runs
+   Sonnet-with-web-search, because there is nothing to choose. `QuoteKind.plan`
+   is one small Haiku call for the condition and the cadence.
 3. **Schedule shapes.** **Window done** — `shared/schedules.py` builds
    `rate(...)` or `cron(...)`+timezone, `cost.py` prices from real
    checks-per-month rather than assuming 43,200, and a quote target carries
