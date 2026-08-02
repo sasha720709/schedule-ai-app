@@ -20,6 +20,19 @@ resource "aws_cloudwatch_event_rule" "watch_triggered" {
 resource "aws_cloudwatch_event_target" "notifier" {
   rule           = aws_cloudwatch_event_rule.watch_triggered.name
   event_bus_name = aws_cloudwatch_event_bus.main.name
+
+  # EventBridge's default is ~185 retries over 24 hours. For a notification
+  # that can never succeed (SES identity revoked, template bug) that is a full
+  # day of invoking a Lambda to re-learn the same failure. Eight attempts over
+  # an hour covers every transient SES wobble worth surviving; anything still
+  # failing after that is structural, and the Notifier-errors alarm -- not the
+  # retry queue -- is the mechanism that reports it. A real DLQ would keep the
+  # event itself, but needs SQS permissions the deploy user does not have; see
+  # docs/phase-5-plan.md.
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 8
+  }
   arn            = aws_lambda_function.notifier.arn
 }
 
@@ -52,6 +65,11 @@ resource "aws_cloudwatch_event_rule" "watch_degraded" {
 resource "aws_cloudwatch_event_target" "notifier_degraded" {
   rule           = aws_cloudwatch_event_rule.watch_degraded.name
   event_bus_name = aws_cloudwatch_event_bus.main.name
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 8
+  }
   target_id      = "notifier"
   arn            = aws_lambda_function.notifier.arn
 }

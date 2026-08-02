@@ -98,3 +98,30 @@ resource "aws_cloudwatch_metric_alarm" "checker_errors" {
 
   alarm_actions = [aws_sns_topic.alarms[0].arn]
 }
+
+# The retry cap above (events.tf) means a permanently-failing notification is
+# dropped after 8 attempts instead of retried for a day. This alarm is the
+# other half of that trade: dropping is only acceptable if somebody hears
+# about it. One Notifier error is worth an email -- it means a triggered or
+# degraded watch may not have reached the owner.
+resource "aws_cloudwatch_metric_alarm" "notifier_errors" {
+  count = var.enable_alarms ? 1 : 0
+
+  alarm_name        = "schedule-ai-app-notifier-errors"
+  alarm_description = "The Notifier is failing. A fired or degraded watch may not have reached the owner."
+
+  namespace   = "AWS/Lambda"
+  metric_name = "Errors"
+  statistic   = "Sum"
+  period      = 900
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.notifier.function_name
+  }
+
+  alarm_actions = [aws_sns_topic.alarms[0].arn]
+}

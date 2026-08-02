@@ -37,7 +37,8 @@ variable "enable_alarms" {
     Create the SNS topic and CloudWatch alarms. Off until the deploy user is
     granted sns:* and cloudwatch:*Alarm* on schedule-ai-app-* resources -- it
     cannot grant itself, holding iam:*Role but not iam:*Policy on purpose.
+    Granted 2026-07-31; on by default since.
   EOT
   type    = bool
-  default = false
+  default = true
 }
