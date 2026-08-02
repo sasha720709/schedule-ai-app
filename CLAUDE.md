@@ -301,7 +301,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
-| 📐 | **9** · Watch kinds, schedules, delivery | designed, agreed; **one decision open** — `docs/phase-9-watch-kinds.md` |
+| 🔨 | **9** · Watch kinds, schedules, delivery | step 1 of 5 done — the seam exists; `docs/phase-9-watch-kinds.md` |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
@@ -317,6 +317,22 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
    in the Checker learns what a stock market is**. Note the honest correction
    recorded in the doc: windows are a *correctness* fix worth ~$0.14/month,
    not a cost fix — the $5 budget was never binding for HTTP targets.
+
+   **Step 1 of 5 is done.** `plan.py` is 219 lines instead of 634;
+   `planner/kinds/` holds `base.py` (a four-method `Kind`), `value.py` and
+   `presence.py` behind a registry, with `llm.py` for model plumbing and
+   `prompts.py` for the kind-agnostic prompts. Behaviour is unchanged and the
+   33 Planner tests were only re-pointed at the moved symbols, not rewritten.
+   Deployed and smoke-tested. Two things to know before step 2:
+
+   - **Schedules belong to the watch, decided 2026-08-02.** A reminder stores
+     `targets: []` and its schedule invokes with `{"watch_id": ...}`;
+     condition-triggered watches keep `{"target_id": ...}`. The cheap
+     alternative — a synthetic target row — was refused because it makes the
+     table describe something that does not exist, the same class of lie
+     removed from the Notifier in Phase 5.
+   - **The zip is flat, so `shared/kinds.py` would collide** with the
+     `kinds/` package directory. Name any shared kind module `watch_kinds.py`.
 
 Details of the finished phases:
 

@@ -46,6 +46,15 @@ _spec = importlib.util.spec_from_file_location(
 plan_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(plan_mod)
 
+# Phase 9 moved the kind-specific half of the Planner into `kinds/`. These are
+# imported from their real homes rather than re-exported through plan.py: a
+# facade that keeps every old name would hide whether anything actually moved,
+# and the point of the split is that adding a kind stops touching plan.py.
+import kinds  # noqa: E402
+from kinds.base import tidy  # noqa: E402
+from kinds.presence import COUNT_PROMPT, prove_the_item_selector, unfiltered  # noqa: E402
+from kinds.value import COMPILE_PROMPT  # noqa: E402
+
 
 PAGE = """
 <html><body>
@@ -179,7 +188,7 @@ def test_a_count_spec_verifies_through_the_same_path():
 
 
 def test_tidy_keeps_only_recognised_keys():
-    tidied = plan_mod._tidy(
+    tidied = tidy(
         {"kind": "css", "selector": ".p", "confidence": 0.9, "scope": None})
     assert tidied == {"kind": "css", "selector": ".p"}
 
@@ -240,7 +249,7 @@ def test_a_presence_watch_anchors_on_a_neighbour_not_on_the_thing_wanted():
     prompt = client.prompts[-1]["messages"][0]["content"]
     assert "QA Automation Student" in prompt
     assert "neighbour" in prompt
-    assert client.prompts[-1]["system"] is plan_mod.COUNT_PROMPT
+    assert client.prompts[-1]["system"] is COUNT_PROMPT
 
 
 def test_a_presence_watch_uses_a_matching_item_as_the_anchor_when_one_exists():
@@ -305,7 +314,7 @@ def test_a_value_watch_is_unaffected_by_the_presence_path():
         "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
 
     assert built["verified_value"] == 789.00
-    assert client.prompts[-1]["system"] is plan_mod.COMPILE_PROMPT
+    assert client.prompts[-1]["system"] is COMPILE_PROMPT
 
 
 def test_a_count_selector_that_could_never_match_is_not_accepted():
@@ -326,16 +335,16 @@ def test_a_count_selector_that_could_never_match_is_not_accepted():
 
 
 def test_the_text_filter_is_what_gets_stripped_to_probe():
-    assert plan_mod.unfiltered('a.title:-soup-contains("Cloud")') == "a.title"
-    assert plan_mod.unfiltered('div:contains("x") > a') == "div > a"
-    assert plan_mod.unfiltered("a.title") == "a.title"
+    assert unfiltered('a.title:-soup-contains("Cloud")') == "a.title"
+    assert unfiltered('div:contains("x") > a') == "div > a"
+    assert unfiltered("a.title") == "a.title"
 
 
 def test_an_unfiltered_count_needs_no_probe():
     """Counting every row in a list is its own proof -- there is no filter that
     could silently exclude everything."""
     spec = {"scope": "#results", "kind": "count", "selector": "tr.job"}
-    assert plan_mod.prove_the_item_selector(spec, JOBS_PAGE) is None
+    assert prove_the_item_selector(spec, JOBS_PAGE) is None
 
 
 # --- the fetch method is decided by trying, not by asking --------------------

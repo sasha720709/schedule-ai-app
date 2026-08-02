@@ -214,12 +214,12 @@ The mitigations:
   prompt. `SEARCH_PROMPT` shrinks; it stops being the dumping ground, which
   is the actual point of §1.
 
-## 8. The open decision — who owns the schedule
-
-**Not yet agreed. This is the one thing blocking implementation.**
+## 8. Who owns the schedule — decided: the watch
 
 Today a schedule is created per *target*: named `schedule-ai-app-{target_id}`,
 and the Checker is invoked with a `target_id`. A reminder has no target.
+
+The two options were:
 
 - **(a) Schedules move to the watch for time-triggered kinds.** Honest, and
   right long-term. Costs edits in the Checker's entry point, the Notifier's
@@ -228,9 +228,14 @@ and the Checker is invoked with a `target_id`. A reminder has no target.
   Cheap — and it makes the table describe a target that does not exist, which
   is precisely the class of lie removed from the Notifier in Phase 5.
 
-Recommendation: **(a)**. The reason (b) is tempting is that it is a two-hour
-job, and the reason to refuse it is that this phase exists because small
-exceptions accumulated into a file nobody wants to edit.
+**Agreed 2026-08-02: (a).** A reminder stores `targets: []` and its schedule
+invokes with `{"watch_id": ...}`; condition-triggered watches keep
+`{"target_id": ...}` and are otherwise untouched. The dispatcher branches on
+which key is present.
+
+The reason (b) was tempting is that it is a two-hour job. The reason it was
+refused is that this whole phase exists because small exceptions accumulated
+into a file nobody wants to edit, and (b) is one more of them.
 
 ## 9. What not to touch
 
@@ -240,9 +245,21 @@ phase starts editing them, it has gone wrong.
 
 ## 10. Order of work
 
-1. **The seam, with no new kinds.** Extract `value` and `presence` out of
-   `plan.py` into modules behind a registry; prove the suite still passes.
-   Nothing user-visible changes. This is the risky step and it is first, alone.
+1. ~~**The seam, with no new kinds.**~~ **Done 2026-08-02.** `plan.py` went
+   from 634 lines to 219; the kind-specific half is `planner/kinds/`
+   (`base.py`, `value.py`, `presence.py`) behind a registry, model plumbing is
+   `planner/llm.py`, and the shared prompts are `planner/prompts.py`. Prompt
+   texts were moved by script rather than retyped — every paragraph in them
+   was added after a real failure, so a reworded prompt would be undoing
+   evidence. 305 tests pass, the built zip imports in its vendored layout, and
+   the deployed Lambda answers `KeyError: 'watch_id'` rather than
+   `Runtime.ImportModuleError` on an empty payload, which is a free proof that
+   every module loads in the real runtime.
+
+   **Naming trap for step 2:** the Lambda zip is flat, so a future
+   `shared/kinds.py` would land beside the `kinds/` package directory and
+   collide. If declarative kind facts need to be shared with `api`/`checker`,
+   call that module something else — `watch_kinds.py`.
 2. **`quote` as a kind**, moving `sources.py` routing out of `SEARCH_PROMPT`
    and adding the market-hours window. First user-visible win, and it fixes
    the frozen-close defect.
