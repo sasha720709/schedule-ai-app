@@ -46,7 +46,8 @@ ul.watches > li { border: 1px solid currentColor; border-radius: 4px; padding: 0
   white-space: nowrap;
 }
 .status.planning, .status.proposed { opacity: 0.8; }
-.status.failed { color: #b3261e; }
+.status.failed,
+.status.degraded { color: #b3261e; }
 @media (prefers-color-scheme: dark) { .status.failed { color: #f2b8b5; } }
 
 .plan { border-top: 1px dashed currentColor; margin-top: 0.6rem; padding-top: 0.6rem; }

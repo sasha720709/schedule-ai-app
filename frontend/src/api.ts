@@ -15,7 +15,11 @@ export type Status =
   | "active"
   | "paused"
   | "triggered"
-  | "failed";
+  | "failed"
+  // 8d: the watch could no longer read its target, repair did not help, and
+  // checking was stopped so it bills nothing. Not an error status of ours --
+  // the page changed underneath the extractor.
+  | "degraded";
 
 export interface Watch {
   watch_id: string;
@@ -29,11 +33,19 @@ export interface Watch {
     op: string;
     value: number;
     currency: string | null;
+    // Present on relative watches ("goes down from the current"): the value
+    // that was actually read at plan time, which the threshold was computed
+    // from. Shown so the number on screen can be checked against reality.
+    baseline?: number;
+    relative_change_pct?: number;
   };
   planned_at?: string;
   confirmed_at?: string;
   triggered_at?: string;
   plan_error?: string;
+  degraded_at?: string;
+  degraded_reason?: string;
+  condition_baseline?: never; // baseline lives inside condition, see below
 }
 
 /**
@@ -58,10 +70,17 @@ export interface Target {
   url: string;
   extract_hint: string;
   fetch_method: "http" | "browser";
-  last_value?: string | null;
+  // Tier 0 writes real numbers where the model path wrote strings.
+  last_value?: string | number | null;
   last_checked_at?: string;
   last_note?: string;
   last_error?: string;
+  last_status?: string;
+  // Phase 8b: what the compiled extractor read at plan time, verbatim. This
+  // is the difference between "I intend to read the price" and "I read
+  // $333.43 just now" on the plan card.
+  verified_raw?: string | number;
+  verified_at?: string;
 }
 
 /** Thrown for any non-2xx. `unauthorized` means the passcode needs re-entering. */

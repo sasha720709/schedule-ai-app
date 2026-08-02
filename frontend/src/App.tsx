@@ -268,6 +268,18 @@ function WatchRow({
         <p className="muted">
           trigger when {watch.condition.metric} {watch.condition.op}{" "}
           {watch.condition.value} {watch.condition.currency ?? ""}
+          {/* A relative watch shows where its threshold came from, so the
+              number can be checked against the page it was read off. */}
+          {watch.condition.baseline != null && (
+            <>
+              {" "}
+              (
+              {watch.condition.relative_change_pct
+                ? `${watch.condition.relative_change_pct}% from`
+                : "any move below"}{" "}
+              the {watch.condition.baseline} read at planning)
+            </>
+          )}
           {watch.check_interval_min != null && watch.status !== "proposed" && (
             <> · every {watch.check_interval_min} min</>
           )}
@@ -276,6 +288,15 @@ function WatchRow({
 
       {watch.plan_error && (
         <p className="error">planning failed: {watch.plan_error}</p>
+      )}
+
+      {watch.status === "degraded" && (
+        <p className="error">
+          stopped: the site changed and automatic repair did not help —{" "}
+          {watch.degraded_reason ?? "no reason recorded"}. Checking has
+          stopped, so this costs nothing; delete it and describe it again to
+          rebuild against the new page.
+        </p>
       )}
 
       {/* The point of plan-then-confirm: nothing is scheduled yet, and the
@@ -288,6 +309,12 @@ function WatchRow({
                 {t.url}
               </a>
               <span className="muted"> · {t.fetch_method}</span>
+              {t.verified_raw != null && (
+                <p>
+                  read <strong>{String(t.verified_raw)}</strong> just now —
+                  this is what will be watched
+                </p>
+              )}
               <p className="muted">{t.extract_hint}</p>
             </div>
           ))}
