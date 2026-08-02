@@ -17,7 +17,7 @@ import re
 
 from extract import extract
 
-from kinds.base import Kind
+from kinds.base import CompiledKind
 
 COUNT_PROMPT = """You compile a deterministic counter for a list on a web page.
 
@@ -105,7 +105,7 @@ def prove_the_item_selector(spec: dict, raw: str) -> str | None:
     )
 
 
-class PresenceKind(Kind):
+class PresenceKind(CompiledKind):
     name = "presence"
     compile_prompt = COUNT_PROMPT
 

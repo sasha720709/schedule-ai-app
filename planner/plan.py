@@ -38,14 +38,18 @@ Then the spec is *run*. If it does not reproduce the value, it is not stored.
 ## What changed in Phase 9
 
 This file used to be 634 lines and hold all of the above plus the rules for
-every kind of watch. The kind-specific parts -- how to pick an anchor, which
-prompt compiles it, what counts as proof -- now live in `kinds/`, one module
-each. What is left here is the pipeline that does not vary: search, read,
-locate, and the escalation from a plain GET to a browser.
+every kind of watch. Steps 2-4 now belong to whichever kind is resolving the
+target (`kinds/`), and a kind that does not compile anything -- `quote`, whose
+URL and extractor come from a registry -- skips them entirely.
 
-The test of the split is `SEARCH_PROMPT`. It carries the rules for three
+What is left here is the request-level pipeline that no kind varies: the web
+search, and turning a relative condition into a real threshold once something
+has actually been read.
+
+The test of the split is `SEARCH_PROMPT`. It still carries the rules for three
 request types at once, and two shipped bugs came from those rules interfering.
-It should shrink as kinds move out. If it grows, this refactor failed.
+It should shrink as kinds move out; step 2b is what shrinks it. If it grows,
+this refactor failed.
 """
 
 import json
@@ -53,15 +57,8 @@ import sys
 
 from anthropic import Anthropic
 
-from fetch import to_text, windows_around
-
-import kinds
 import llm
-from prompts import READ_PROMPT, SEARCH_PROMPT
-
-# The page text handed to the reading model. Longer costs money for no gain --
-# the anchor it returns only has to be findable in the markup afterwards.
-MAX_READ_CHARS = 20000
+from prompts import SEARCH_PROMPT
 
 
 def search(request: str, *, client=None) -> dict:
@@ -78,52 +75,6 @@ def search(request: str, *, client=None) -> dict:
         if block.type == "server_tool_use":
             print(f"[searched] {block.input.get('query')}", file=sys.stderr)
     return llm.parse_json(llm.text_of(response))
-
-
-def read_value(url: str, hint: str, condition: dict, text: str, *, client=None) -> dict:
-    """Step 2: what does the page actually say, verbatim?
-
-    Haiku, on text -- the same job the Checker used to do on every tick, now
-    done once. Its answer is not the watch's reading; it is the anchor that
-    makes step 3 affordable.
-    """
-    client = client or Anthropic()
-    return llm.ask(
-        client,
-        model=llm.READ_MODEL,
-        max_tokens=llm.READ_MAX_TOKENS,
-        system=READ_PROMPT,
-        content=(
-            f"Condition: {json.dumps(condition)}\n"
-            f"What to look for: {hint}\n"
-            f"URL: {url}\n\nPage text:\n{text}"
-        ),
-    )
-
-
-def build_extractor(url: str, hint: str, condition: dict, raw: str, *,
-                    shape: str = "value", client=None) -> dict:
-    """Steps 2-4 for one target. Returns a verified spec, or raises.
-
-    `shape` selects the kind. The read is shared; everything after it -- which
-    string to anchor on, which prompt compiles it, what counts as proof -- is
-    the kind's decision, in `kinds/`.
-    """
-    kind = kinds.get(shape)
-
-    text = to_text(raw)[:MAX_READ_CHARS]
-    reading = read_value(url, hint, condition, text, client=client)
-    anchor = kind.anchor(reading, url)
-
-    fragments = windows_around(raw, anchor)
-    if not fragments:
-        # The anchor is in the visible text but not verbatim in the markup --
-        # split across tags, or entity-escaped. Give the model the text window
-        # instead of nothing; a regex over text may still be compilable.
-        fragments = windows_around(text, anchor) or [text[:4000]]
-
-    return kinds.compile_and_verify(
-        kind, url, hint, anchor, fragments, raw, client=client)
 
 
 def resolve_relative_condition(condition: dict, pct, baseline) -> dict:
@@ -158,54 +109,6 @@ def resolve_relative_condition(condition: dict, pct, baseline) -> dict:
     if not resolved.get("op"):
         resolved["op"] = "<" if float(pct) <= 0 else ">"
     return resolved
-
-
-def build_with_cheapest_fetch(url: str, hint: str, condition: dict, *,
-                              fetch_http, fetch_browser, shape: str = "value",
-                              client=None):
-    """Verify against a plain GET first; render only if that cannot be done.
-
-    Returns `(built, fetch_method, note)`.
-
-    ## Why this is mechanical rather than asked for
-
-    A browser check costs $0.000186 against $0.0000041 for a plain GET -- **45
-    times more**, and at one-minute intervals that is $8.05/month against
-    $0.18. Since the model left the hot path the browser is the single most
-    expensive thing left in a check.
-
-    The Planner's prompt already asks the model to prefer `http`. That is a
-    request, not a guarantee, and the cost of it guessing wrong is 45x in the
-    expensive direction and a rejected target in the cheap one. So the choice
-    is settled by trying: if a spec compiles and verifies against the raw HTML,
-    the page did not need JavaScript, whatever anyone believed.
-
-    The wasted work when a page genuinely needs rendering is one Haiku read --
-    `build_extractor` gives up before compiling when the value is not in the
-    text at all, which is exactly the shape of a JS-rendered page. Roughly
-    $0.0001, once, against $7.87/month saved every time the guess would have
-    been wrong.
-
-    Escalation also runs the other way. A target the model marked `http` that
-    turns out to need rendering used to be rejected outright; now it is
-    retried in the browser and kept.
-    """
-    try:
-        raw = fetch_http()
-    except Exception as exc:  # noqa: BLE001 -- blocked, 403, timeout, TLS
-        cheap_error = f"plain GET failed: {type(exc).__name__}: {exc}"
-    else:
-        try:
-            built = build_extractor(url, hint, condition, raw,
-                                    shape=shape, client=client)
-            return built, "http", "verified against raw HTML; no browser needed"
-        except Exception as exc:  # noqa: BLE001
-            cheap_error = f"could not verify against raw HTML: {exc}"
-
-    print(f"[escalating to browser] {url}: {cheap_error}", file=sys.stderr)
-    raw = fetch_browser()
-    built = build_extractor(url, hint, condition, raw, shape=shape, client=client)
-    return built, "browser", f"needed rendering -- {cheap_error}"
 
 
 def plan(request: str) -> dict:

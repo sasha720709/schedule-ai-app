@@ -6,7 +6,7 @@ the reading itself, which makes verification unusually strong: the spec must
 reproduce a value that was demonstrably there a second ago.
 """
 
-from kinds.base import Kind
+from kinds.base import CompiledKind
 
 COMPILE_PROMPT = """You compile a deterministic extractor for a web page.
 
@@ -50,7 +50,7 @@ RULES THAT MATTER:
   most stable option on an HTML page. Look for it."""
 
 
-class ValueKind(Kind):
+class ValueKind(CompiledKind):
     name = "value"
     compile_prompt = COMPILE_PROMPT
 

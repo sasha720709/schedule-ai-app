@@ -10,18 +10,22 @@ the newest and least-proven part of this design, and a wrong guess should cost
 a suboptimal plan, not a rejected request.
 """
 
-from kinds.base import Kind, compile_and_verify, tidy
+from kinds.base import (Kind, CompiledKind, build_with_cheapest_fetch,
+                        compile_and_verify, read_value, tidy)
 from kinds.presence import PresenceKind
+from kinds.quote import QuoteKind
 from kinds.value import ValueKind
 
 REGISTRY = {
     "value": ValueKind(),
     "presence": PresenceKind(),
+    "quote": QuoteKind(),
 }
 
 DEFAULT = REGISTRY["value"]
 
-__all__ = ["Kind", "REGISTRY", "compile_and_verify", "get", "names", "tidy"]
+__all__ = ["CompiledKind", "Kind", "REGISTRY", "build_with_cheapest_fetch",
+           "compile_and_verify", "get", "names", "read_value", "tidy"]
 
 
 def get(name: str | None) -> Kind:

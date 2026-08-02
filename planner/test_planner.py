@@ -54,6 +54,22 @@ import kinds  # noqa: E402
 from kinds.base import tidy  # noqa: E402
 from kinds.presence import COUNT_PROMPT, prove_the_item_selector, unfiltered  # noqa: E402
 from kinds.value import COMPILE_PROMPT  # noqa: E402
+from prompts import READ_PROMPT  # noqa: E402
+
+
+def build_extractor(url, hint, condition, raw, *, shape="value", client=None):
+    """Compile-and-verify for one page, through whichever kind owns the shape.
+
+    Phase 9 moved this off `plan.py` and onto the kind. The wrapper keeps the
+    call sites below readable -- `shape` is what these tests are varying, so
+    resolving it to a kind is noise at every one of them.
+    """
+    return kinds.get(shape).build(url, hint, condition, raw, client=client)
+
+
+def build_with_cheapest_fetch(url, hint, condition, *, shape="value", **kw):
+    return kinds.build_with_cheapest_fetch(
+        kinds.get(shape), url, hint, condition, **kw)
 
 
 PAGE = """
@@ -98,7 +114,7 @@ def test_a_working_spec_is_verified_and_returned():
         {"literal": "$789.00", "note": "found it"},
         GOOD_SPEC,
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
 
     assert built["verified_value"] == 789.00
@@ -118,7 +134,7 @@ def test_a_spec_that_does_not_reproduce_the_value_is_retried_with_the_reason():
         wrong,
         GOOD_SPEC,
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
 
     assert built["verified_value"] == 789.00
@@ -133,7 +149,7 @@ def test_a_spec_that_never_works_is_refused_rather_than_stored():
         {"literal": "$789.00", "note": "found it"}, broken, broken)
 
     with pytest.raises(ValueError, match="could not compile"):
-        plan_mod.build_extractor(
+        build_extractor(
             "https://example.com", "the price", CONDITION, PAGE, client=client)
 
 
@@ -143,7 +159,7 @@ def test_a_malformed_spec_is_fed_back_rather_than_crashing():
         {"kind": "telepathy", "selector": ".price"},
         GOOD_SPEC,
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://example.com", "the price", CONDITION, PAGE, client=client)
     assert built["verified_value"] == 789.00
     assert "malformed" in client.prompts[-1]["messages"][0]["content"]
@@ -154,7 +170,7 @@ def test_a_page_with_nothing_to_read_is_rejected_before_compiling():
     client = ScriptedClient({"literal": None, "note": "page is a login wall"})
 
     with pytest.raises(ValueError, match="nothing to watch"):
-        plan_mod.build_extractor(
+        build_extractor(
             "https://example.com", "the price", CONDITION, PAGE, client=client)
     assert len(client.prompts) == 1
 
@@ -164,7 +180,7 @@ def test_only_the_markup_around_the_value_is_sent_to_the_compiler():
     ~375,000 tokens; the fragments that matter are a few hundred characters."""
     big = PAGE + "<div>filler</div>" * 50000
     client = ScriptedClient({"literal": "$789.00", "note": "ok"}, GOOD_SPEC)
-    plan_mod.build_extractor(
+    build_extractor(
         "https://example.com", "the price", CONDITION, big, client=client)
 
     compile_prompt = client.prompts[-1]["messages"][0]["content"]
@@ -181,7 +197,7 @@ def test_a_count_spec_verifies_through_the_same_path():
         {"scope": "#list", "kind": "count",
          "selector": 'a:-soup-contains("Rust")', "parse": "int"},
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://jobs.example", "rust roles", {"op": ">=", "value": 1},
         jobs, client=client)
     assert built["verified_value"] == 1
@@ -225,7 +241,7 @@ def test_a_vacancy_that_does_not_exist_yet_still_produces_a_plan():
          "note": "no cloud engineer roles listed today"},
         COUNT_SPEC,
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://jobs.example", "student cloud engineer roles in Beer Sheva",
         VACANCY_CONDITION, JOBS_PAGE, shape="presence", client=client)
 
@@ -242,7 +258,7 @@ def test_a_presence_watch_anchors_on_a_neighbour_not_on_the_thing_wanted():
         {"literal": None, "sample": "QA Automation Student, Beer Sheva", "note": ""},
         COUNT_SPEC,
     )
-    plan_mod.build_extractor(
+    build_extractor(
         "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
         JOBS_PAGE, shape="presence", client=client)
 
@@ -263,7 +279,7 @@ def test_a_presence_watch_uses_a_matching_item_as_the_anchor_when_one_exists():
     )
     page = JOBS_PAGE.replace("QA Automation Student, Beer Sheva",
                              "Cloud Engineer Student, Beer Sheva")
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
         page, shape="presence", client=client)
 
@@ -276,7 +292,7 @@ def test_a_presence_watch_is_rejected_only_when_the_page_lists_nothing_at_all():
     client = ScriptedClient(
         {"literal": None, "sample": None, "note": "the search returned no rows"})
     with pytest.raises(ValueError, match="lists nothing that could be counted"):
-        plan_mod.build_extractor(
+        build_extractor(
             "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
             JOBS_PAGE, shape="presence", client=client)
 
@@ -287,7 +303,7 @@ def test_a_value_watch_with_no_value_says_what_to_do_about_it():
     client = ScriptedClient({"literal": None, "sample": "Some other product",
                              "note": "out of stock"})
     with pytest.raises(ValueError, match="presence watch"):
-        plan_mod.build_extractor(
+        build_extractor(
             "https://shop.example", "the price", CONDITION, PAGE,
             shape="value", client=client)
 
@@ -298,7 +314,7 @@ def test_a_broken_count_spec_is_retried_with_list_specific_feedback():
         {**COUNT_SPEC, "scope": "#nonexistent"},
         COUNT_SPEC,
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
         JOBS_PAGE, shape="presence", client=client)
 
@@ -310,7 +326,7 @@ def test_a_value_watch_is_unaffected_by_the_presence_path():
     """Regression guard: the price flow still takes the original branch."""
     client = ScriptedClient(
         {"literal": "$789.00", "sample": None, "note": "found it"}, GOOD_SPEC)
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://example.com", "the 512GB price", CONDITION, PAGE, client=client)
 
     assert built["verified_value"] == 789.00
@@ -326,7 +342,7 @@ def test_a_count_selector_that_could_never_match_is_not_accepted():
         doomed,
         COUNT_SPEC,
     )
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
         JOBS_PAGE, shape="presence", client=client)
 
@@ -363,7 +379,7 @@ def test_a_page_readable_without_javascript_never_reaches_the_browser():
                             GOOD_SPEC)
     browser_calls = []
 
-    built, method, why = plan_mod.build_with_cheapest_fetch(
+    built, method, why = build_with_cheapest_fetch(
         "https://example.com", "the price", CONDITION,
         fetch_http=lambda: PAGE,
         fetch_browser=lambda: browser_calls.append(1) or PAGE,
@@ -385,7 +401,7 @@ def test_a_javascript_rendered_page_escalates_and_is_kept():
         GOOD_SPEC,
     )
 
-    built, method, why = plan_mod.build_with_cheapest_fetch(
+    built, method, why = build_with_cheapest_fetch(
         "https://example.com", "the price", CONDITION,
         fetch_http=lambda: JS_SHELL,
         fetch_browser=lambda: PAGE,
@@ -405,7 +421,7 @@ def test_a_blocked_plain_get_escalates_rather_than_failing_the_target():
     def blocked():
         raise OSError("HTTP Error 403: Forbidden")
 
-    built, method, why = plan_mod.build_with_cheapest_fetch(
+    built, method, why = build_with_cheapest_fetch(
         "https://example.com", "the price", CONDITION,
         fetch_http=blocked, fetch_browser=lambda: PAGE, client=client,
     )
@@ -423,7 +439,7 @@ def test_only_one_cheap_model_call_is_wasted_when_rendering_is_needed():
         {"literal": "$789.00", "sample": None, "note": "found"},
         GOOD_SPEC,
     )
-    plan_mod.build_with_cheapest_fetch(
+    build_with_cheapest_fetch(
         "https://example.com", "the price", CONDITION,
         fetch_http=lambda: JS_SHELL, fetch_browser=lambda: PAGE, client=client)
 
@@ -438,7 +454,7 @@ def test_a_presence_watch_escalates_the_same_way():
         {"literal": None, "sample": "QA Automation Student, Beer Sheva", "note": ""},
         COUNT_SPEC,
     )
-    built, method, _ = plan_mod.build_with_cheapest_fetch(
+    built, method, _ = build_with_cheapest_fetch(
         "https://jobs.example", "cloud engineer roles", VACANCY_CONDITION,
         fetch_http=lambda: JS_SHELL, fetch_browser=lambda: JOBS_PAGE,
         shape="presence", client=client)
@@ -453,7 +469,7 @@ def test_a_target_that_works_in_neither_mode_still_raises():
         {"literal": None, "sample": None, "note": "login wall after render too"},
     )
     with pytest.raises(ValueError):
-        plan_mod.build_with_cheapest_fetch(
+        build_with_cheapest_fetch(
             "https://example.com", "the price", CONDITION,
             fetch_http=lambda: JS_SHELL, fetch_browser=lambda: JS_SHELL,
             client=client)
@@ -466,8 +482,8 @@ def test_the_read_step_is_told_not_to_judge():
     leftover of the pre-8b design where one model call did both. Judging now
     happens in Python, for free, on every tick.
     """
-    assert "NOT JUDGING" in plan_mod.READ_PROMPT
-    assert "Never withhold a value because it fails the condition" in plan_mod.READ_PROMPT
+    assert "NOT JUDGING" in READ_PROMPT
+    assert "Never withhold a value because it fails the condition" in READ_PROMPT
 
 
 def test_a_value_that_fails_the_condition_still_plans():
@@ -475,7 +491,7 @@ def test_a_value_that_fails_the_condition_still_plans():
     point is that the condition is not satisfied yet."""
     client = ScriptedClient({"literal": "$789.00", "sample": None, "note": ""},
                             GOOD_SPEC)
-    built = plan_mod.build_extractor(
+    built = build_extractor(
         "https://example.com", "the price",
         {"metric": "price", "op": "<", "value": 700}, PAGE, client=client)
     assert built["verified_value"] == 789.00

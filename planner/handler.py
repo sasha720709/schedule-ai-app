@@ -25,10 +25,9 @@ from decimal import Decimal
 import boto3
 
 import cost
-import sources
-from extract import extract
+import kinds
 from fetch import fetch_raw
-from plan import build_with_cheapest_fetch, resolve_relative_condition, search
+from plan import resolve_relative_condition, search
 
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
@@ -114,39 +113,21 @@ def lambda_handler(event, context):
             now = datetime.now(timezone.utc).isoformat()
 
             try:
-                if "known_source" in target:
-                    # The deliberately stupid path. No web search chose this
-                    # and no model compiles for it: the registry supplies the
-                    # URL and a canned extractor, and the model's only
-                    # contribution was resolving a name to a symbol. All that
-                    # remains is proving the canned spec against the live
-                    # endpoint, exactly as any other plan is proved.
-                    target = sources.expand(
-                        target["known_source"], target.get("symbol", ""))
-                    url = target["url"]
-                    outcome = extract(target["extractor"], fetch_raw(url))
-                    if not outcome.ok:
-                        raise ValueError(
-                            f"canned extractor gave {outcome.status}"
-                            f"{': ' + outcome.error if outcome.error else ''}"
-                        )
-                    built = {"extractor": target["extractor"],
-                             "verified_value": outcome.value,
-                             "verified_raw": outcome.raw}
-                    fetch_method = "http"
-                    why = "known source; nothing searched, nothing compiled"
-                else:
-                    # The model's fetch_method is a hint, not a decision. A
-                    # plain GET is 45x cheaper, so it gets tried first and the
-                    # browser is used only where demonstrably needed.
-                    url = target["url"]
-                    built, fetch_method, why = build_with_cheapest_fetch(
-                        url, target["extract_hint"], condition,
-                        fetch_http=lambda u=url: fetch_raw(u),
-                        fetch_browser=lambda u=url: _browser_fetch(u),
-                        shape=shape,
-                    )
-                print(f"{url} -> {fetch_method}: {why}")
+                # Which kind resolves this target. `known_source` on the target
+                # still comes from the search prompt -- step 2b replaces it with
+                # a classify step -- but the branch it used to trigger is gone:
+                # a kind decides how a target becomes trustworthy, and there is
+                # no longer an if-statement here that has to be extended every
+                # time a new one appears.
+                kind = kinds.get("quote" if "known_source" in target else shape)
+                url = target.get("url")
+                resolved = kind.resolve(
+                    target, condition,
+                    fetch_http=lambda u=url: fetch_raw(u),
+                    fetch_browser=lambda u=url: _browser_fetch(u),
+                )
+                url = resolved["url"]
+                print(f"{url} -> {resolved['fetch_method']}: {resolved['why']}")
             except Exception as exc:  # noqa: BLE001
                 message = f"{type(exc).__name__}: {exc}"
                 name = target.get("url") or target.get("symbol", "known source")
@@ -155,22 +136,22 @@ def lambda_handler(event, context):
                 continue
 
             if baseline is None:
-                baseline = built["verified_value"]
+                baseline = resolved["verified_value"]
 
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
-            verified.append(fetch_method)
+            verified.append(resolved["fetch_method"])
             targets_table.put_item(Item={
                 "target_id": target_id,
                 "watch_id": watch_id,
                 "url": url,
                 # The hint stops being the reading instruction and becomes the
                 # repair instruction. That is the whole change, in one line.
-                "extract_hint": target["extract_hint"],
-                "fetch_method": fetch_method,
-                "extractor": _to_decimal(built["extractor"]),
-                "verified_value": _to_decimal(built["verified_value"]),
-                "verified_raw": built["verified_raw"],
+                "extract_hint": resolved["extract_hint"],
+                "fetch_method": resolved["fetch_method"],
+                "extractor": _to_decimal(resolved["extractor"]),
+                "verified_value": _to_decimal(resolved["verified_value"]),
+                "verified_raw": resolved["verified_raw"],
                 "verified_at": now,
             })
 
