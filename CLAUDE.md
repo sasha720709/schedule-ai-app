@@ -371,6 +371,32 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
    anything failing a gate degrades to `value`. A misclassification must cost
    a suboptimal plan, never a rejected request.
 
+   **Proven end to end on 2026-08-02, and the live run earned its keep.** Two
+   watches: `w_b9b8efab` (value) planned a browser target, verified $789.00,
+   confirmed at 2 min, checked with `model=False`, met its condition, emailed
+   and tore its schedule down — the full loop in 43 seconds. `w_fbd02db8`
+   (quote) classified as `quote`, resolved AAPL through the registry, verified
+   $308.91 on the wire, computed its relative threshold from that reading, and
+   got `cron(*/5 9-16 ? * MON-FRI *)` in `America/New_York` — the window, live.
+
+   **Two bugs that 378 offline tests could not see, both from this session:**
+
+   - `AttributeError: 'NoneType' object has no attribute 'messages'` on every
+     non-quote plan. Moving the compile step out of `plan.py` dropped a
+     `client or Anthropic()`. No test caught it because **every test passes a
+     scripted client — the one argument that is never None in a test and
+     always None in the Lambda.** The default now lives in `llm.ask` alone.
+   - The Phase 5 `schedule_arn` cleanup needed a `dynamodb:UpdateItem` the
+     Notifier's role did not have. The email had already gone out, so the
+     AccessDenied failed the invocation *after* the side effect that matters,
+     and EventBridge retried: **three duplicate emails to a real inbox.** Both
+     halves are fixed — the permission is granted, *and* the tidy-up is now
+     swallowed, because nothing after the email may re-notify a human.
+
+   The lesson worth keeping: a suite where every test injects its
+   collaborators cannot see a wiring bug, and a Lambda whose IAM is scoped
+   per-action will fail on the action you added last, at the worst moment.
+
 Details of the finished phases:
 
 0. Environment & IaC foundation — **done**

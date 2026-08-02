@@ -56,11 +56,23 @@ def _delete_schedules(watch_id: str) -> list:
         # behind, so every triggered watch's rows pointed at schedules that no
         # longer existed -- harmless while nothing read it back, but a table
         # that lies about the world is a debugging tax on everything after it.
-        # Confirmed on the Phase 2/3 leftovers, in the gap list since.
-        targets_table.update_item(
-            Key={"target_id": target["target_id"]},
-            UpdateExpression="REMOVE schedule_arn",
-        )
+        #
+        # Swallowed on purpose, and this was learned the hard way. Adding this
+        # call in Phase 5 introduced a dynamodb:UpdateItem the Notifier's role
+        # did not have. The email had already gone out, so the AccessDenied
+        # failed the whole invocation *after* the side effect that matters --
+        # and EventBridge dutifully retried, which means a second email, and a
+        # third, up to the retry cap. Tidying a field is cosmetic; it must
+        # never be able to re-notify a human. Anything after the email is
+        # best-effort by construction, not by permission.
+        try:
+            targets_table.update_item(
+                Key={"target_id": target["target_id"]},
+                UpdateExpression="REMOVE schedule_arn",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not clear schedule_arn on {target['target_id']}: "
+                  f"{type(exc).__name__}: {exc}")
     return deleted
 
 

@@ -102,10 +102,8 @@ class QuoteKind(Kind):
         A quote request used to pay for Sonnet *with web search* before anyone
         noticed the answer was a registry lookup.
         """
-        from anthropic import Anthropic
-
         result = llm.ask(
-            client or Anthropic(),
+            client,
             model=llm.READ_MODEL,
             max_tokens=llm.READ_MAX_TOKENS,
             system=QUOTE_PROMPT,

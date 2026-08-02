@@ -34,7 +34,6 @@ different axes and folding them in would rebuild the tangle this replaces.
 import json
 import sys
 
-from anthropic import Anthropic
 from extract import SpecError, extract, validate_spec
 from fetch import to_text, windows_around
 
@@ -65,7 +64,8 @@ def read_value(url: str, hint: str, condition: dict, text: str, *, client=None) 
     makes compiling affordable, because a 1.5MB page is ~375,000 tokens and the
     fragments that matter are a few hundred characters.
     """
-    client = client or Anthropic()
+    # No `client or Anthropic()` here: llm.ask owns that default, so there is
+    # exactly one place it can be forgotten. See the note in llm.ask.
     return llm.ask(
         client,
         model=llm.READ_MODEL,

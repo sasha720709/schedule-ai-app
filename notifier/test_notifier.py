@@ -75,10 +75,11 @@ class FakeTargets:
     so the surplus schedules were never deleted and billed forever.
     """
 
-    def __init__(self, pages):
+    def __init__(self, pages, update_raises=None):
         self.pages = pages
         self.queries = []
         self.updates = []
+        self.update_raises = update_raises
 
     def query(self, **kwargs):
         self.queries.append(kwargs)
@@ -90,6 +91,8 @@ class FakeTargets:
 
     def update_item(self, **kwargs):
         self.updates.append(kwargs)
+        if self.update_raises:
+            raise self.update_raises
         return {}
 
 
@@ -97,10 +100,10 @@ class FakeTargets:
 def aws(monkeypatch):
     """Point the handler at fakes and record the order things happened in."""
 
-    def build(pages=None, missing=(), email_fails=False):
+    def build(pages=None, missing=(), email_fails=False, update_raises=None):
         if pages is None:
             pages = [[{"target_id": "t_1", "watch_id": "w_1"}]]
-        targets = FakeTargets(pages)
+        targets = FakeTargets(pages, update_raises)
 
         dynamodb = MagicMock()
         dynamodb.Table.return_value = targets
@@ -397,3 +400,42 @@ def test_an_overlong_prompt_is_cut_out_of_the_subject_but_not_the_body(aws):
 
     assert len(subject) <= len("Watch triggered: ") + 60
     assert prompt.strip() in body
+
+
+# --------------------------------------------------------------------------
+# Nothing after the email may re-notify a human
+# --------------------------------------------------------------------------
+
+def test_a_failure_to_tidy_the_row_does_not_fail_the_invocation(aws):
+    """Regression for a bug this code shipped and production found in minutes.
+
+    Clearing `schedule_arn` was added in Phase 5 and needed a
+    `dynamodb:UpdateItem` the Notifier's role did not have. The email had
+    already gone out, so the AccessDenied failed the invocation *after* the
+    side effect that matters -- and EventBridge retried, which is a second
+    email to a real person, and a third, up to the retry cap. One duplicate
+    reached the owner's inbox before it was caught.
+
+    The permission is now granted, but the guarantee cannot rest on that:
+    tidying a field is cosmetic and must never be able to re-notify. Anything
+    after the email is best-effort by construction, not by permission.
+    """
+    env = aws(update_raises=RuntimeError("AccessDeniedException: UpdateItem"))
+
+    result = handler.lambda_handler(triggered(), None)
+
+    assert result["notified"] is True
+    assert result["schedules_deleted"] == ["schedule-ai-app-t_1"]
+
+
+def test_a_later_target_is_still_torn_down_when_an_earlier_tidy_fails(aws):
+    """The swallow must not abandon the loop -- a schedule left running bills
+    forever, which is far worse than a stale field."""
+    env = aws(pages=[[{"target_id": "t_1", "watch_id": "w_1"},
+                      {"target_id": "t_2", "watch_id": "w_1"}]],
+              update_raises=RuntimeError("nope"))
+
+    result = handler.lambda_handler(triggered(), None)
+
+    assert result["schedules_deleted"] == [
+        "schedule-ai-app-t_1", "schedule-ai-app-t_2"]

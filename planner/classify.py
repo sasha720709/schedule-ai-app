@@ -111,11 +111,9 @@ def classify(request: str, known: tuple, *, client=None) -> dict:
     not take planning down with it. The whole request degrades to the path it
     would have taken before this step existed.
     """
-    from anthropic import Anthropic
-
     try:
         decision = llm.ask(
-            client or Anthropic(),
+            client,
             model=llm.READ_MODEL,
             max_tokens=llm.CLASSIFY_MAX_TOKENS,
             system=CLASSIFY_PROMPT,

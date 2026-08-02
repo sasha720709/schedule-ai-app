@@ -324,8 +324,19 @@ data "aws_iam_policy_document" "notifier_lambda" {
   }
 
   # Querying a GSI needs the index ARN as well as the table's.
+  #
+  # UpdateItem is for clearing `schedule_arn` as each schedule is deleted, so
+  # the table stops describing schedules that no longer exist. Added late, and
+  # the omission was found in production rather than in review: the Phase 5
+  # code change shipped without this line, the email had already been sent when
+  # the AccessDenied hit, and EventBridge retried the whole invocation --
+  # delivering a duplicate notification to a real person before it was caught.
+  #
+  # The handler no longer depends on this permission (the tidy-up is swallowed,
+  # because nothing after the email may re-notify). This grant is what makes
+  # the tidy-up actually work rather than merely fail quietly.
   statement {
-    actions = ["dynamodb:Query"]
+    actions = ["dynamodb:Query", "dynamodb:UpdateItem"]
     resources = [
       aws_dynamodb_table.watch_targets.arn,
       "${aws_dynamodb_table.watch_targets.arn}/index/watch_id-index",

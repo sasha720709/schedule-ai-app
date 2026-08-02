@@ -66,7 +66,21 @@ def text_of(response) -> str:
 
 
 def ask(client, *, model, max_tokens, system, content, tools=None) -> dict:
-    """One model call that must answer with a JSON object."""
+    """One model call that must answer with a JSON object.
+
+    `client` may be None, meaning "make a real one". That default lives here
+    rather than at each call site because it was already forgotten once, in
+    production: Phase 9 moved the compile step out of `plan.py` and left the
+    `client or Anthropic()` line behind, so every non-quote plan died with
+    `AttributeError: 'NoneType' object has no attribute 'messages'`. No test
+    caught it -- every test passes a scripted client, which is exactly the
+    argument that is never None. Centralising it means a call site cannot
+    reintroduce the bug by omission.
+    """
+    if client is None:
+        from anthropic import Anthropic
+        client = Anthropic()
+
     kwargs = {
         "model": model,
         "max_tokens": max_tokens,

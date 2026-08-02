@@ -558,3 +558,47 @@ def test_a_missing_baseline_cannot_produce_a_threshold():
 def test_a_boolean_baseline_is_not_arithmetic():
     original = {"metric": "in_stock", "op": "==", "value": True}
     assert plan_mod.resolve_relative_condition(original, -5, True) == original
+
+
+# --------------------------------------------------------------------------
+# The production path: nobody passes a client
+# --------------------------------------------------------------------------
+
+def test_the_pipeline_builds_its_own_client_when_none_is_passed(monkeypatch):
+    """Regression for a bug that reached production and that 378 tests missed.
+
+    Phase 9 moved the compile step out of plan.py and left the
+    `client or Anthropic()` line behind. Every non-quote plan then died with
+    `AttributeError: 'NoneType' object has no attribute 'messages'` -- and no
+    test saw it, because every test passes a scripted client, which is exactly
+    the argument that is never None in a test and always None in the Lambda.
+
+    So this one deliberately does what the handler does: passes nothing.
+    """
+    import anthropic
+    scripted = ScriptedClient({"literal": "$789.00", "note": "ok"}, GOOD_SPEC)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda *a, **k: scripted)
+
+    built = build_extractor("https://example.com", "the price", CONDITION, PAGE)
+
+    assert built["verified_value"] == 789.00
+    # Both model calls went through the constructed client, not just the read.
+    assert len(scripted.prompts) == 2
+
+
+def test_resolve_without_a_client_works_end_to_end(monkeypatch):
+    """The exact call the Planner handler makes: kind.resolve(...) with no
+    client keyword at all."""
+    import anthropic
+    scripted = ScriptedClient({"literal": "$789.00", "note": "ok"}, GOOD_SPEC)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda *a, **k: scripted)
+
+    resolved = kinds.get("value").resolve(
+        {"url": "https://example.com", "extract_hint": "the price"},
+        CONDITION,
+        fetch_http=lambda: PAGE,
+        fetch_browser=lambda: PAGE,
+    )
+
+    assert resolved["verified_value"] == 789.00
+    assert resolved["fetch_method"] == "http"
