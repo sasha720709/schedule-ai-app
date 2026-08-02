@@ -3,18 +3,28 @@
 Deliberately after Phase 8. Alarms watch specific code paths, and Phase 8
 replaced the hot one; doing this first would have meant doing it twice.
 
-## Blocked on you: one IAM change
+**Status: done as of 2026-08-02.** All three alarms are live, the SNS
+subscription is confirmed, and `enable_alarms` defaults to `true`. What
+remains is under "Still open" at the bottom. The section below is kept as the
+record of how the IAM block was cleared — it will be needed again the next
+time this phase-by-phase permission model hits a service it has never used.
 
-The alarm code is written and committed, and **gated off** behind
-`enable_alarms = false` in `terraform/app/variables.tf`. It is off because the
-`schedule-ai-terraform` user cannot create SNS topics or CloudWatch alarms, and
-**cannot grant itself the permission** — by design it holds `iam:*Role` but not
-`iam:*Policy`, so it cannot edit the customer-managed policy that governs it.
+## ~~Blocked on you: one IAM change~~ — cleared 2026-07-31
+
+The alarm code was **gated off** behind `enable_alarms = false` in
+`terraform/app/variables.tf`, because the `schedule-ai-terraform` user could
+not create SNS topics or CloudWatch alarms, and **could not grant itself the
+permission** — by design it holds `iam:*Role` but not `iam:*Policy`, so it
+cannot edit the customer-managed policy that governs it.
 
 Without the gate, an unrelated `terraform apply` fails on a 403 for a resource
 nobody was touching, which is a bad trade for an alarm that is not yet wired up.
 
-### What to add
+The gate itself is **kept** now that the permissions exist. It costs one
+variable and it is what makes the stack applicable from an account that has
+not been through this grant.
+
+### What was added (done, in the console)
 
 In the AWS console, to the customer-managed policy **`schedule-ai-app-terraform`**
 (the one CLAUDE.md says future permissions go in), add these two statements:
@@ -56,7 +66,7 @@ In the AWS console, to the customer-managed policy **`schedule-ai-app-terraform`
 if AWS rejects the scoped form — split it into its own statement rather than
 widening the whole block.
 
-### Then
+### Then — done, both steps
 
 ```sh
 # The topic already exists: the first apply created it before failing on the
@@ -73,7 +83,14 @@ terraform apply
 The email subscription needs a confirmation click in the first message AWS
 sends. Until then it sits in `PendingConfirmation` and the alarm fires into
 nothing — **Terraform reports success either way**, so check the subscription
-state rather than assuming it works.
+state rather than assuming it works. It was clicked; the subscription carries
+a real ARN. Re-check with:
+
+```sh
+aws sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:us-east-1:851725214678:schedule-ai-app-alarms \
+  --query 'Subscriptions[].SubscriptionArn' --output text
+```
 
 ## What the alarms are, and why these
 
@@ -92,6 +109,37 @@ every Tier 1 repair, which is exactly the spend worth catching.
 degraded watch emails you itself; a Checker that is throwing means no tick ran,
 so nothing knows to complain.
 
+**`schedule-ai-app-notifier-errors`** — the other half of the retry cap. Both
+EventBridge targets now carry `retry_policy { maximum_retry_attempts = 8,
+maximum_event_age_in_seconds = 3600 }` instead of EventBridge's default of ~185
+attempts over 24 hours. That is a deliberate trade and it is only acceptable
+with this alarm attached: a notification that can never succeed is now
+**dropped**, and dropping silently would mean a watch fires and nobody hears.
+Threshold is one error, because one lost notification is the whole product
+failing at the only moment it matters.
+
+Note what this is not. A dead-letter queue would keep the failed *event* so it
+could be replayed; a retry cap only stops the retrying. The DLQ needs SQS
+permissions the deploy user does not have, and would repeat the whole IAM
+dance above for a payload we can reconstruct from the watch row anyway.
+
+## Also closed in this phase
+
+Four items lifted straight out of the CLAUDE.md gap list, none of them large,
+all of them the kind that rot quietly:
+
+- **The Notifier's GSI query is now paginated** (`_all_targets()` follows
+  `LastEvaluatedKey`). Unreachable at 1–3 targets per watch; the failure mode
+  was half a watch's schedules left running and billing forever.
+- **`schedule_arn` is cleared** on the same pass that deletes the schedule, so
+  the table stops describing schedules that do not exist.
+- **Wheels are pinned to the Lambda platform** in `planner/build.sh` and
+  `checker/build.sh` (`--platform manylinux2014_x86_64 --implementation cp
+  --python-version 3.12 --only-binary=:all:`). Both zips were rebuilt and
+  redeployed under the new flags. `api/` and `authorizer/` have no binary
+  dependencies and were left alone.
+- **Retries are capped**, as above.
+
 ## Still open
 
 Ordered by how much they would hurt.
@@ -108,16 +156,11 @@ Ordered by how much they would hurt.
   "no matching job yet" or "the filter is wrong", and nothing can tell them
   apart. Storing the unfiltered item count as a baseline would at least let a
   human judge.
-- **Platform-specific wheels.** `pip install -t` vendors binaries for whatever
-  built the zip; `checker/build/` holds
-  `_pydantic_core.cpython-312-x86_64-linux-gnu.so`. It works only because the
-  Codespace matches the Lambda runtime. Fix with
-  `--platform manylinux2014_x86_64 --only-binary=:all:`.
-- **No DLQ on the Notifier.** EventBridge retries a failing target ~185 times
-  over 24h and nothing catches a notification that can never succeed.
-- **Stale `schedule_arn` values.** The Notifier deletes schedules without
-  clearing the field, so rows point at schedules that no longer exist.
-- **The Notifier's GSI query is not paginated.** `query()` returns at most 1MB;
-  a watch with enough targets would keep some schedules alive forever.
-- **`anthropic` is vendored three times now** — Planner, Checker and their
-  shared modules. A Lambda Layer would deduplicate it.
+- **No true DLQ on the Notifier.** Retries are capped at 8, which stops the
+  24-hour retry storm but *discards* an event that never succeeds. Keeping the
+  event needs SQS permissions the deploy user does not have.
+- **`anthropic` is vendored twice** — Planner and Checker each carry ~7.7MB of
+  the same dependency tree. A Lambda Layer would deduplicate it.
+- **Handler-level test coverage.** 262 offline tests pass, but they are
+  concentrated in `shared/`. Nothing covers the api Lambda's routing, a
+  malformed Planner response end to end, or a Fetcher timeout.

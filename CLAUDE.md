@@ -132,22 +132,19 @@ will start to hurt.
   on retry. Fix later with forced structured output (a tool call) or a
   retry-on-parse-failure loop. `checker/check.py` already uses a slightly
   sturdier outermost-`{...}` parse.
-- **The Notifier leaves stale `schedule_arn` values behind.** It deletes
-  the schedules but never clears the field, so a triggered watch's target
-  rows keep pointing at schedules that no longer exist. Confirmed on the
-  Phase 2/3 leftovers: every one carried an ARN for a deleted schedule.
-  Harmless today because nothing reads the field back, but it makes the
-  table lie about the state of the world.
-- **The Notifier's GSI query is not paginated.** `query()` returns at
-  most 1MB; a watch with enough targets would silently keep some of its
-  schedules alive forever. Not reachable with 1–3 targets per watch,
-  but it is a real correctness bug rather than a style note.
-- **There are no tests.** Not one. Every verification so far has been a
-  manual Lambda invoke against real AWS, which is slow, costs money, and
-  cannot check the paths that matter most (a malformed Planner response,
-  a Fetcher timeout, a condition that is exactly at the boundary).
-  `judge()` and `_parse_json()` are pure functions and would be trivial
-  to test offline.
+- ~~**The Notifier leaves stale `schedule_arn` values behind.**~~ Fixed in
+  Phase 5. It now `REMOVE`s the field on the same pass that deletes the
+  schedule, so the table stops claiming a watch points at a schedule that
+  no longer exists.
+- ~~**The Notifier's GSI query is not paginated.**~~ Fixed in Phase 5.
+  `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
+  targets per watch, but the failure mode — half a watch's schedules left
+  alive and billing forever — was worth four lines.
+- **Test coverage is uneven, not absent.** 262 offline tests exist and pass,
+  concentrated in `shared/` (`extract.py`, `condition.py`, `cost.py`,
+  `repair.py`, `sources.py`) where the logic is pure. The handlers are still
+  verified by invoking real Lambdas: nothing covers a malformed Planner
+  response end to end, a Fetcher timeout, or the api Lambda's routing.
 
 ### Product shape
 
@@ -161,32 +158,26 @@ will start to hurt.
 - **No partial-failure handling in the Planner.** If schedule creation
   fails halfway through a multi-target plan, earlier targets keep their
   schedules and the `Watches` row is never written.
-- **No partial-failure handling in the Planner.** If schedule creation
-  fails halfway through a multi-target plan, earlier targets keep their
-  schedules and the `Watches` row is never written.
 
 ### Operations and cost
 
-- **A permanently-failing Notifier retries for a day.** EventBridge
-  rule targets default to ~185 retries over 24h. Nothing catches a
-  notification that can never succeed. Phase 5's DLQ item.
-- **Every tick pays for a Haiku call even when the page has not
-  changed.** The dominant cost of the whole system is ~5k input tokens
-  per check, and most checks on a slow-moving price see byte-identical
-  text. Hashing the fetched text and skipping `judge()` on an unchanged
-  hash is the single highest-leverage cost fix available — plausibly
-  10–100×, far more than any model swap. Trimming `MAX_PAGE_CHARS` by
-  pre-filtering to the region around the hint is the second.
-- **Lambda zips are built for whatever machine ran `build.sh`.**
-  `pip install -t` vendors platform-specific wheels — `checker/build/`
-  contains `_pydantic_core.cpython-312-x86_64-linux-gnu.so`. It works
-  only because the Codespace is Python 3.12 / x86_64 Linux, matching
-  the Lambda runtime. Build on a Mac and the zip deploys fine, then
-  dies at import. Fix in the hardening pass:
-  `pip install ... --platform manylinux2014_x86_64 --only-binary=:all:`.
-  Deliberately *not* done during Phase 6 — it changes `source_code_hash`
-  on two working Lambdas and would muddy the diagnosis if the browser
-  work went wrong.
+- ~~**A permanently-failing Notifier retries for a day.**~~ Capped in
+  Phase 5. Both EventBridge targets carry `retry_policy` — 8 attempts over
+  one hour instead of ~185 over 24. This is a **retry cap, not a DLQ**: a
+  notification that can never succeed is now *dropped* rather than
+  retried forever, and the `notifier-errors` alarm is the thing that tells
+  you it happened. A real DLQ keeps the event and needs SQS permissions the
+  deploy user does not have.
+- ~~**Every tick pays for a Haiku call.**~~ Removed in Phase 8b — that was
+  the whole point of the phase. Tier 0 runs a compiled extractor with no
+  model call; a model appears only on `failed`, once, via 8d's repair.
+- ~~**Lambda zips are built for whatever machine ran `build.sh`.**~~ Fixed
+  in Phase 5. `planner/build.sh` and `checker/build.sh` now pass
+  `--platform manylinux2014_x86_64 --implementation cp --python-version 3.12
+  --only-binary=:all:`, so the wheels are pinned to the Lambda runtime
+  rather than to whatever built them. Both zips were rebuilt and redeployed
+  under the new flags. `api/` and `authorizer/` have no binary dependencies
+  and were left alone.
 - **The `anthropic` bundle is vendored twice.** Planner and Checker each
   carry ~7.7MB of the same dependency tree. A Lambda Layer would
   deduplicate it. Cosmetic at this size; worth it if a fourth zip
@@ -226,10 +217,17 @@ Live AWS resources: `schedule-ai-app-watches` /
 `-checker`, `-notifier`, `-fetcher`, `-api`, `-authorizer` (Lambda, the
 Fetcher a container image); `schedule-ai-app-fetcher` (ECR, with an
 untagged-image expiry rule); `schedule-ai-app-bus` +
-`schedule-ai-app-watch-triggered` rule (EventBridge); a `schedule-ai-app`
-HTTP API with a `$default` stage; a verified SES identity; and seven IAM
-roles (one per Lambda, plus `schedule-ai-app-scheduler-invoke-checker`
-that schedules assume).
+`schedule-ai-app-watch-triggered` and `-watch-degraded` rules
+(EventBridge, both targets retry-capped); a `schedule-ai-app` HTTP API
+with a `$default` stage; a verified SES identity; an S3 bucket +
+CloudFront distribution for the frontend; the `schedule-ai-app-alarms`
+SNS topic with a confirmed email subscription and three CloudWatch
+alarms; and seven IAM roles (one per Lambda, plus
+`schedule-ai-app-scheduler-invoke-checker` that schedules assume).
+
+**Both tables are empty and there are no schedules** as of 2026-08-02 —
+every test watch has been deleted, so the system is idle and billing
+nothing.
 
 **The API is live** at the `api_endpoint` Terraform output
 (`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request
@@ -287,7 +285,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **8b pass 3** · Cheap fetch by default | done — browser only where proven necessary |
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
-| 🔨 | **5** · Production hygiene | started — alarms written, **blocked on one IAM change** |
+| ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
 
@@ -485,25 +483,37 @@ Details of the finished phases:
    path. Full review of every architectural decision to date:
    `docs/architecture-review-2026-07-31.md`.
 
-5. Production hygiene — **started, see `docs/phase-5-plan.md`.** The spend
-   and Checker-error alarms are written and committed, **gated off** behind
-   `enable_alarms = false`. They are off because `schedule-ai-terraform`
-   cannot create SNS topics or CloudWatch alarms and **cannot grant itself
-   the permission** — it holds `iam:*Role` but deliberately not
-   `iam:*Policy`. The exact JSON to paste into the
-   `schedule-ai-app-terraform` policy is in the plan doc. Ungated, an
-   unrelated `terraform apply` fails on a 403 for a resource nobody touched.
+5. Production hygiene — **done, see `docs/phase-5-plan.md`.** Three alarms
+   are live and in state: `daily-spend`, `checker-errors`, `notifier-errors`,
+   all firing into the `schedule-ai-app-alarms` SNS topic. `enable_alarms`
+   now defaults to `true`; the gate stays in the code because it is what
+   lets the whole stack apply from an account that has not been granted the
+   alarm permissions.
 
-   The Checker now publishes `EstimatedCostUSD` **twice** — once with
+   The IAM block is cleared. `schedule-ai-terraform` was granted scoped
+   `cloudwatch:*Alarm*` and `sns:*` on `schedule-ai-app-*` on 2026-07-31 —
+   by hand in the console, because the user holds `iam:*Role` but
+   deliberately not `iam:*Policy` and so cannot widen its own permissions.
+   The pre-existing SNS topic was `terraform import`ed rather than
+   recreated. **The email subscription is confirmed** — check this rather
+   than assuming, since Terraform reports success on a subscription that is
+   still `PendingConfirmation` and would deliver nothing.
+
+   The Checker publishes `EstimatedCostUSD` **twice** — once with
    dimensions for reading, once bare for alarming. This resolves the gotcha
    recorded in 8a: a dimensioned metric cannot be alarmed on without naming
    its exact dimension set, so an alarm on `{browser, false}` would have
    ignored every HTTP check and every Tier 1 repair.
 
-   An `schedule-ai-app-alarms` SNS topic **exists in AWS but not in
-   Terraform state** — the first apply created it before failing on the
-   read-back, and it was `state rm`'d so apply would work again. Enabling
-   the alarms needs `terraform import` first, or the create will collide.
+   Also closed in this phase, all previously in the gap list: the Notifier's
+   unpaginated GSI query, its stale `schedule_arn` values, platform-specific
+   wheels in the Planner and Checker zips, and unbounded EventBridge retries
+   (capped at 8/hour, with the `notifier-errors` alarm as the backstop —
+   a cap is not a DLQ, and the difference is that the event is now dropped).
+
+   What Phase 5 did **not** finish is listed under "Still open" in the plan
+   doc: the Fetcher's memory growth is mitigated but undiagnosed, and a value
+   that is stale relative to its check interval is still invisible.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys). Last on
    purpose. Honest counter-argument: a pipeline would reduce the risk of
    Phase 8's large change. But offline tests already exist where they
@@ -541,13 +551,19 @@ The watch status machine, as built:
 
 ```
 planning ──→ proposed ──→ active ──→ triggered
-    │                       ⇅
-    └──→ failed           paused
+    │                     │  ⇅
+    └──→ failed           │  paused
+                          └──→ degraded
 ```
 
 `planning` means the Planner is running; `proposed` means a plan is ready
 and awaiting confirmation; `failed` carries `plan_error`. Only `active` is
-ever checked.
+ever checked. `degraded` was added by 8d: the extractor broke, repair did
+not fix it, and after `DEGRADE_AFTER` failures the schedules are deleted —
+so like `triggered`, it is a terminal state that costs nothing. The
+frontend renders it in the error colour with an explanation, since it is
+the one status the user did not ask for and cannot act on except by
+recreating the watch.
 
 Things learned in 4a that are easy to trip over again:
 
