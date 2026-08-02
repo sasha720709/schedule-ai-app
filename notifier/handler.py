@@ -15,15 +15,35 @@ dynamodb = boto3.resource("dynamodb")
 scheduler = boto3.client("scheduler")
 
 
+def _all_targets(targets_table, watch_id: str) -> list:
+    """Every target row, following pagination.
+
+    A single `query()` returns at most 1MB. With 1-3 targets per watch that
+    limit is unreachable today, which is exactly the kind of bug that survives
+    for years and then quietly keeps half a watch's schedules alive -- billing
+    forever -- the first time something creates a bigger watch. Listed in the
+    known gaps since Phase 3; closing it costs four lines.
+    """
+    items, start_key = [], None
+    while True:
+        kwargs = {
+            "IndexName": "watch_id-index",
+            "KeyConditionExpression": Key("watch_id").eq(watch_id),
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+        response = targets_table.query(**kwargs)
+        items.extend(response.get("Items", []))
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            return items
+
+
 def _delete_schedules(watch_id: str) -> list:
     targets_table = dynamodb.Table(os.environ["WATCH_TARGETS_TABLE"])
-    response = targets_table.query(
-        IndexName="watch_id-index",
-        KeyConditionExpression=Key("watch_id").eq(watch_id),
-    )
 
     deleted = []
-    for target in response.get("Items", []):
+    for target in _all_targets(targets_table, watch_id):
         name = f"schedule-ai-app-{target['target_id']}"
         try:
             scheduler.delete_schedule(Name=name)
@@ -31,6 +51,16 @@ def _delete_schedules(watch_id: str) -> list:
         except scheduler.exceptions.ResourceNotFoundException:
             # Already gone -- fine, this is the state we wanted anyway.
             pass
+
+        # Clear the pointer as well as the schedule. The field used to be left
+        # behind, so every triggered watch's rows pointed at schedules that no
+        # longer existed -- harmless while nothing read it back, but a table
+        # that lies about the world is a debugging tax on everything after it.
+        # Confirmed on the Phase 2/3 leftovers, in the gap list since.
+        targets_table.update_item(
+            Key={"target_id": target["target_id"]},
+            UpdateExpression="REMOVE schedule_arn",
+        )
     return deleted
 
 
