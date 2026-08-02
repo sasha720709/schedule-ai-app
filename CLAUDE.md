@@ -188,11 +188,14 @@ will start to hurt.
   anyone with `lambda:GetFunctionConfiguration`. Acceptable for a
   single-user project with a scoped IAM user; the real fix is Secrets
   Manager or SSM Parameter Store fetched at runtime.
-- **The Fetcher is over-provisioned and unmeasured.** 2048MB allocated,
-  915MB actually used. Do not just lower it — Lambda scales CPU with
-  memory, and cost is memory × duration, so less memory can render
+- **The Fetcher is over-provisioned.** 2048MB allocated, **887MB peak**
+  across 25 varied renders (measured 2026-08-02; the older "915MB" came
+  from a single REPORT line, which is a container high-water mark and so
+  says less than it appears to). Do not just lower it — Lambda scales CPU
+  with memory, and cost is memory × duration, so less memory can render
   slower and cost the same or more while creeping toward the 60s
-  timeout. Needs measurement at 1024 / 1536 / 2048, not a guess.
+  timeout. Now cheap to settle: the sequence probe in `docs/phase-5-plan.md`
+  run at 1280 / 1536 / 2048. 1024 sits below the observed peak.
 
 ## Current status
 
@@ -425,9 +428,10 @@ Details of the finished phases:
      died with `TargetClosedError`. Pass 3 made this visible by calling the
      Fetcher in bursts at plan time rather than once per tick. Page, context
      and browser are now closed explicitly and a failed render is retried once
-     in a fresh browser. **Whether the growth is a real leak or just three
-     pages of different sizes is not established** — the retry is a mitigation,
-     not a diagnosis, and this belongs in Phase 5.
+     in a fresh browser. **Diagnosed 2026-08-02 and closed** — see Phase 5's
+     plan doc. There is no leak: `Max Memory Used` is a container high-water
+     mark that cannot decrease, so that sequence was an artefact of the metric,
+     and 25 consecutive renders under the current image hold flat at 887MB.
 
    **Relative conditions, closed at last.** Found by the owner: "tell me when
    Apple shares go down from the current" produced `price < 313.93` while the
@@ -511,9 +515,11 @@ Details of the finished phases:
    (capped at 8/hour, with the `notifier-errors` alarm as the backstop —
    a cap is not a DLQ, and the difference is that the event is now dropped).
 
+   The Fetcher's memory question was **diagnosed and closed on 2026-08-02**:
+   no leak, and the metric that suggested one cannot decrease by construction.
    What Phase 5 did **not** finish is listed under "Still open" in the plan
-   doc: the Fetcher's memory growth is mitigated but undiagnosed, and a value
-   that is stale relative to its check interval is still invisible.
+   doc — chiefly that a value which is stale relative to its check interval is
+   still invisible to the system.
 7. Stretch — GitHub Actions CI/CD via OIDC (no static keys). Last on
    purpose. Honest counter-argument: a pipeline would reduce the risk of
    Phase 8's large change. But offline tests already exist where they

@@ -143,11 +143,28 @@ def lambda_handler(event, context):
     succession and the same warm container reported 1207MB, then 1249MB, then
     1304MB before the third render died.
 
-    Whether that growth is a genuine leak or just three pages of different
-    sizes is **not yet established** -- do not treat this retry as a diagnosis.
-    It is a second attempt in a completely fresh browser, which is correct
-    either way, and cheap: a render costs ~$0.00016 and a failed plan costs the
-    user a watch.
+    ## That memory reading was an artefact (measured 2026-08-02)
+
+    **`Max Memory Used` is a container high-water mark, not a per-invocation
+    figure.** It cannot decrease, so a rising sequence of it is not evidence of
+    anything -- it is the definition of the metric. Proven directly: after
+    rendering a 1.49MB page, `https://example.com` (559 bytes of HTML) reported
+    the *same* 887MB, and so did a 3.5MB Wikipedia article. Real per-invocation
+    usage cannot be identical across a 559-byte and a 3,547,897-byte document.
+
+    With the explicit teardown above, 25 consecutive renders in one warm
+    container -- page sizes from 559 to 3,547,897 characters, in bursts, with
+    no cooling off -- held at **887-888MB of 2048** and none of them crashed.
+    There is no leak, and peak memory turns out to be Chromium's own baseline
+    rather than a function of page size.
+
+    So the teardown was the fix, not merely a mitigation; the 1304MB death was
+    almost certainly browsers that were never closed accumulating in a frozen
+    container. That last step is inference -- reverting the image to prove it
+    was not worth the deploy.
+
+    The retry stays regardless. It is correct whatever the cause, and cheap: a
+    render costs ~$0.00016 and a failed plan costs the user a watch.
     """
     url = event["url"]
     try:

@@ -144,10 +144,43 @@ all of them the kind that rot quietly:
 
 Ordered by how much they would hurt.
 
-- **The Fetcher's memory across warm invocations.** Three renders in one
-  container reported 1207MB, 1249MB, 1304MB before Chromium died. Mitigated by
-  an explicit teardown and one retry, **not diagnosed** — it may be a leak or
-  three differently-sized pages. Needs a controlled run of the same URL N times.
+- ~~**The Fetcher's memory across warm invocations.**~~ **Diagnosed and closed
+  2026-08-02 — there is no leak, and the evidence for one never existed.**
+
+  `Max Memory Used` in a Lambda REPORT line is a **container high-water mark**,
+  not a per-invocation measurement. It cannot go down. So "1207 → 1249 → 1304"
+  was not a rising trend to be explained; a non-decreasing sequence is the only
+  thing that metric can produce.
+
+  Shown directly rather than argued: in one warm container, after a 1.49MB
+  page, `https://example.com` — 559 bytes of HTML — reported the same 887MB.
+  So did a 3.5MB Wikipedia article. No per-invocation figure behaves that way.
+
+  The controlled run this entry asked for was then done: **25 consecutive
+  renders in one container**, page sizes 559 → 3,547,897 characters, in bursts,
+  reached 887MB by the sixth render and stayed at 887–888MB for the remaining
+  nineteen. Nothing crashed. Peak memory is Chromium's own baseline; page size
+  barely enters into it.
+
+  The explicit teardown added in 8b pass 3 (image pushed 2026-07-31 10:22, one
+  commit later) therefore looks like the actual fix rather than a mitigation —
+  the 1304MB death was most likely un-closed browsers accumulating in a frozen
+  container. That last link is inference; reverting the image to prove it was
+  not worth the deploy.
+
+  **Reusable consequence:** never reason about this Lambda's memory from a
+  single REPORT line again. Reproduce with the sequence probe — invoke with
+  `--log-type Tail`, decode `LogResult`, and vary page size *within* one warm
+  container, because that is the only thing the high-water mark can falsify.
+
+- **The Fetcher's memory setting is now measurable, and was not before.**
+  887MB peak of 2048MB allocated. The old warning against just lowering it
+  still stands — Lambda scales CPU with memory and cost is memory × duration,
+  so a smaller setting can render slower and cost the same while creeping
+  toward the 60s timeout. But the probe above makes the experiment cheap:
+  render a fixed page N times at 1024 / 1280 / 1536 / 2048 and compare
+  memory × duration. 1024 is below the observed peak and should be expected
+  to fail rather than merely slow down.
 - **A value that is stale relative to the interval.** The CNN AAPL extractor
   reads "Last closed at $…", which moves once a day, on a watch checking every
   minute — while a live pre-market price sits on the same page unread. This is
