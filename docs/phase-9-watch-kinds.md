@@ -79,7 +79,7 @@ Watch
 The important claim: **the machinery underneath barely changes.** Fetch →
 extract → compare → notify stays exactly as it is for all three
 condition-triggered kinds. `shared/extract.py`, `condition.py`, `cost.py` and
-`repair.py` are pure, well-tested (147 tests) and untouched by this phase.
+`repair.py` are pure, well-tested and untouched by this phase.
 This is a split of one file plus two new seams, not a redesign.
 
 ## 4. The kinds
@@ -304,7 +304,8 @@ phase starts editing them, it has gone wrong.
    `planner/llm.py`, and the shared prompts are `planner/prompts.py`. Prompt
    texts were moved by script rather than retyped — every paragraph in them
    was added after a real failure, so a reworded prompt would be undoing
-   evidence. 305 tests pass, the built zip imports in its vendored layout, and
+   evidence. The suite passed (305 tests at that point), the built zip imports
+   in its vendored layout, and
    the deployed Lambda answers `KeyError: 'watch_id'` rather than
    `Runtime.ImportModuleError` on an empty payload, which is a free proof that
    every module loads in the real runtime.
@@ -326,17 +327,52 @@ phase starts editing them, it has gone wrong.
    A quote also stops paying for the expensive call entirely: it never runs
    Sonnet-with-web-search, because there is nothing to choose. `QuoteKind.plan`
    is one small Haiku call for the condition and the cadence.
-3. **Schedule shapes.** **Window done** — `shared/schedules.py` builds
+3. **Schedule shapes.** **3a (window) done** — `shared/schedules.py` builds
    `rate(...)` or `cron(...)`+timezone, `cost.py` prices from real
    checks-per-month rather than assuming 43,200, and a quote target carries
-   `schedule_window` so the api schedules it inside market hours. **`once`
-   (`at(...)` + `--action-after-completion DELETE`) still to do**, with the
-   §8 decision.
-4. **`reminder`** — the kind that proves axis A.
-5. **The `Channel` seam**, with email and `.ics`.
+   `schedule_window` so the api schedules it inside market hours. Proven live:
+   `cron(*/5 9-16 ? * MON-FRI *)` / `America/New_York` on a real schedule.
+
+   **3b — `once` — is the next task.** `at(2026-08-03T09:00:00)` plus
+   `--action-after-completion DELETE`, so a one-shot removes its own schedule
+   instead of leaking one. Both flags verified present on the CLI. This is
+   also where §8 lands: a one-shot belongs to a watch, not to a target, so
+   `_upsert_schedule` and the Checker's entry point both have to learn the
+   `{"watch_id": ...}` shape. Do this **before** step 4 — the reminder is
+   unbuildable without it, and doing them together would mix a plumbing
+   change with a product change in one diff.
+4. **`reminder`** — the kind that proves axis A. No target, no extractor, no
+   condition; the schedule firing *is* the event. Expect `Kind` to need a
+   `trigger` distinction at this point, the way step 2 forced `CompiledKind`
+   out of `Kind`. If it does not, be suspicious.
+5. **The `Channel` seam**, with email and `.ics`. See §6 for why `.ics` first
+   and why Google Calendar is a different project.
 
 Steps 1 and 3 have no user-visible output, which makes them the ones most
 likely to get skipped. They are also the ones the rest depends on.
+
+## 10a. What the first live run taught (2026-08-02)
+
+Phase 9 was written, tested and deployed without ever being run end to end.
+The first real run found two bugs in minutes, and both are worth remembering
+as *classes* rather than as incidents.
+
+**A suite where every test injects its collaborators cannot see a wiring
+bug.** Moving the compile step out of `plan.py` dropped a
+`client or Anthropic()`, so every non-quote plan died on `None.messages`.
+All 378 tests passed, because every one of them hands in a scripted client —
+the single argument that is never None in a test and always None in the
+Lambda. Two tests now take the production path deliberately: they pass
+nothing. Look for this shape elsewhere.
+
+**A per-action IAM policy fails on the action you added last.** The Phase 5
+`schedule_arn` cleanup needed a `dynamodb:UpdateItem` the Notifier did not
+have. The email had already been sent, so the failure landed *after* the side
+effect that matters, and EventBridge retried — three duplicate emails to a
+real person. Fixed on both sides on purpose: the permission is granted, *and*
+the tidy-up is swallowed, because a guarantee as important as "a human is not
+notified twice" must not rest on an IAM statement being right. **Anything
+after the notification is best-effort by construction, not by permission.**
 
 ## 11. Risks
 

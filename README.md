@@ -17,12 +17,19 @@ Two tiers, doing very different jobs:
   exactly one question: has the condition become true. Cheap and frequent,
   by design.
 
-Phase 8 is currently replacing the expensive half of that. Today the Checker
-sends the page to Claude Haiku on every tick, which costs ~$0.0057 a check —
-about $82/month for one target checked every three minutes. The Planner is
-being changed to compile a **deterministic extraction spec** instead of
-describing the task in English, dropping a check to ~$0.000004. See
+Phase 8 replaced the expensive half of that, and it is the change the whole
+project is built around. The Checker used to send the page to Claude Haiku on
+**every tick** — ~$0.0057 a check, about $82/month for one target checked
+every three minutes. Now the Planner compiles a **deterministic extraction
+spec** once, and the Checker executes it with no model at all: $0.0000041 for
+a plain fetch, $0.000186 through the headless browser. A model returns only
+when an extractor actually breaks, once, to repair it. See
 `docs/phase-8-cheap-checks.md`.
+
+Phase 9 is adding **kinds of watch**, so that a market quote (one canonical
+source, market-hours schedule), a vacancy (waiting for something to appear)
+and a product price stop being special cases inside one prompt. See
+`docs/phase-9-watch-kinds.md`.
 
 ```
 User -> Web Chat UI -> API Gateway -> Planner Lambda -> DynamoDB
@@ -87,12 +94,13 @@ aws ssm get-parameter --name /schedule-ai-app/passcode \
 ## Tests
 
 ```bash
-pip install -r api/requirements-dev.txt
-pytest api/ shared/ -q
+pip install -r requirements-dev.txt
+python -m pytest -q
 ```
 
-145 tests, all offline: `boto3` is stubbed, nothing touches AWS, and the
-whole suite runs in about a fifth of a second for nothing.
+382 tests, all offline: `boto3`, `anthropic` and `playwright` are stubbed,
+nothing touches AWS or an API key, and the whole suite runs in about two
+seconds for nothing. They run on every push via GitHub Actions.
 
 They cover the paths a manual Lambda invoke reaches worst — malformed
 bodies, status conflicts, a confirm retried after a partial failure, budget
@@ -102,8 +110,11 @@ cost-safety bug where an explicit `null` interval silently fell back to the
 Planner's own, and a parser that read `512` out of "Steam Deck 512 GB OLED"
 and would have reported it as a price.
 
-The Planner, Checker, Notifier and Fetcher have no tests yet; that is a
-Phase 5 item.
+Every Lambda now has tests. What is still missing is any test that runs the
+**whole chain** — Planner → schedule → Checker → event → Notifier is still
+verified only by invoking the real thing, and the first live end-to-end run
+found two bugs that all 378 tests of the time could not see. A suite where
+every test injects its collaborators cannot catch a wiring bug.
 
 ## Packaging
 
@@ -116,17 +127,26 @@ redeploy it** — `terraform apply` sees an unchanged URI string. Use
 
 ## Status
 
-Phases 0–3, 6, 4a, 4b and 8a are complete and running in AWS. The loop is
+Phases 0–3, 5, 6, 4a, 4b and 8 are complete and running in AWS. The loop is
 closed end to end: a plain-English request becomes a watch that checks
 itself on a schedule, emails you when the condition comes true, and then
 turns its own schedules off. It works on pages that render their value in
-JavaScript, via a headless-Chromium Lambda the Planner opts into per target.
-There is a live HTTP API behind a passcode, a deployed React app, and a
-budget guardrail that refuses to schedule a watch costing more than
-`MONTHLY_BUDGET_USD` a month.
+JavaScript, via a headless-Chromium Lambda the Planner opts into per target
+— though it now proves a plain GET cannot do the job first, because the
+browser is 45x the cost. There is a live HTTP API behind a passcode, a
+deployed React app, spend and error alarms, and a budget guardrail that
+refuses to schedule a watch costing more than `MONTHLY_BUDGET_USD` a month.
 
-**Phase 8 is in progress** — making a check nearly free. The extraction
-engine exists and is tested; wiring the Planner and Checker to it is next.
+A watch also repairs itself: when a site is redesigned under a compiled
+extractor, one model call rewrites the spec, verifies it against the same
+page, and carries on. Three failures in a row and the watch stops and says
+so, because continuing to check something known to be broken bills every
+tick to re-learn a settled fact.
+
+**Phase 9 is in progress** — typed kinds of watch. Market quotes, vacancy
+watches and product prices are being separated so that adding a new kind is
+a module rather than another paragraph in a prompt that already carries
+three request types.
 
 See `CLAUDE.md` for the decision log, roadmap, and the known gaps found
 while building.

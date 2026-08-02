@@ -2,6 +2,35 @@
 
 Context for any Claude Code session working in this repo — read this first.
 
+## Start here (last session: 2026-08-02)
+
+Everything is committed, pushed, deployed and green. **AWS is idle**: zero
+watches, zero targets, zero schedules, so nothing is billing. 382 tests pass
+in ~2s with `python -m pytest -q` from the repo root.
+
+**The next task is Phase 9 step 3b: one-shot schedules, then the `reminder`
+kind.** Plan and reasoning in `docs/phase-9-watch-kinds.md` §10; §8 records
+the decision it depends on (a reminder stores `targets: []` and its schedule
+invokes with `{"watch_id": ...}`, so the Checker's entry point has to branch).
+Everything before it in that phase is done and proven live.
+
+Four things carried forward that are easy to lose:
+
+1. **A watch created outside trading hours takes its baseline from the
+   previous close.** "Tell me when Apple goes down from the current," asked on
+   a Sunday, is measured against Friday. Real bug, open, `docs/phase-9` §5.
+2. **The owner wants plain language, not jargon** — see "How the owner wants
+   to work". Explain in consequences, not in terms.
+3. **Two ideas the owner raised and does not want lost**: a plain time
+   reminder ("remind me at 9am to learn English") and delivery to calendars /
+   Monday.com. The recommended first step for the second is an `.ics`
+   attachment on the existing email — it works with every calendar and needs
+   no OAuth. Google Calendar is not a bigger adapter; it is per-user OAuth and
+   forces the hardcoded `user_id` gap closed. `docs/phase-9` §6.
+4. **Run the real thing before believing it.** The 2026-08-02 live run found
+   two bugs that 378 offline tests could not, one of them shipped that same
+   morning. Details under Phase 9.
+
 ## What this project is
 
 `schedule-ai-app`: an agentic worker that watches the web for a condition
@@ -140,13 +169,14 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda now has tests; the chain still does not.** 305 offline tests
-  pass in ~2s (`python -m pytest -q` from the repo root). By area: `shared/`
-  147, `api/` 54, `planner/` 33, `authorizer/` 24, `checker/` 22, `notifier/`
-  19, `fetcher/` 6. They run on every push via `.github/workflows/tests.yml`.
-  What is still missing is any test that runs the whole chain end to end —
-  Planner → schedule → Checker → event → Notifier is still verified only by
-  invoking real Lambdas.
+- **Every Lambda has tests; the chain still does not.** 382 of them (counts
+  in "Current status"). What is missing is any test that runs the whole chain
+  end to end — Planner → schedule → Checker → event → Notifier is still
+  verified only by invoking real Lambdas, and the 2026-08-02 live run found
+  **two bugs that all 378 tests of the time could not see.** Both are written
+  up under Phase 9; the short version is that a suite where every test injects
+  its collaborators cannot see a wiring bug, and a per-action IAM policy fails
+  on the action you added last.
 
   Two conventions that are load-bearing rather than stylistic. **Three
   Lambdas have a module named `handler`**, so a suite must load its own by
@@ -211,21 +241,32 @@ will start to hurt.
 
 ## Current status
 
-**Phases 0–3 and 6 complete and verified against the real AWS account.**
-The product loop is closed and now works on JavaScript-rendered pages.
+**As of 2026-08-02: everything on the roadmap is done except 4c (the
+designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
+0–3, 6, 4a, 4b, 8a, 8b, 8d and 5 are complete; Phase 9 has steps 1, 2a, 2b
+and the schedule *window* built, deployed and proven live. 8c is deferred
+with numbers.
 
-Proven end-to-end three times. Phase 2 on watch `w_ea349f2f`: Planner
-picked a 5-minute interval and two targets, the Checker extracted "314
-points", and CloudWatch confirmed Scheduler invoking the Checker
-unprompted every 5 minutes. Phase 3 on watch `w_68c179cb`: the Checker
-read "404 points", emitted `WatchTriggered`, and ~1s later the Notifier
-had sent the email and deleted both schedules. Phase 6 on watch
-`w_cd9975d8`: the Planner marked a Steam store target
-`fetch_method: "browser"` and picked *only* that target (no Amazon, no
-Best Buy — the prompt steering works), the Checker invoked the Fetcher,
-Chromium rendered the page, and Haiku read `$629.00` against a `< $450`
-condition. All three test watches have since been deleted; both tables
-and the schedule list are empty.
+**382 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 171, `planner/` 84, `api/` 54,
+`authorizer/` 24, `checker/` 22, `notifier/` 21, `fetcher/` 6. They run on
+every push (`.github/workflows/tests.yml`).
+
+**The whole cycle was proven live on 2026-08-02, both kinds of watch.**
+`w_b9b8efab` (value): planned a Steam browser target, verified `$789.00`,
+confirmed at 2 min, checked with **no model call**, met its condition,
+emailed and deleted its own schedule — 43 seconds end to end.
+`w_fbd02db8` (quote): classified as `quote`, resolved AAPL through
+`shared/sources.py`, verified `$308.91` on the wire, derived its relative
+threshold from *that* reading, and was scheduled
+`cron(*/5 9-16 ? * MON-FRI *)` in `America/New_York`. Both deleted after.
+
+Earlier proofs, kept because they cover paths the 2026-08-02 run did not:
+Phase 2 `w_ea349f2f` (Scheduler invoking the Checker unprompted every 5
+minutes), Phase 3 `w_68c179cb` (`WatchTriggered` → Notifier → email →
+teardown in ~1s), Phase 6 `w_cd9975d8` (the Planner steering away from
+Amazon and Best Buy on its own), 8d `w_71eab15f` (a corrupted `scope`
+repaired by Haiku for $0.008, then three failures → `degraded`).
 
 Live AWS resources: `schedule-ai-app-watches` /
 `schedule-ai-app-watch-targets` (DynamoDB); `schedule-ai-app-planner`,
