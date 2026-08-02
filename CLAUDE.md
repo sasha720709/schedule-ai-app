@@ -301,8 +301,22 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
+| 📐 | **9** · Watch kinds, schedules, delivery | designed, agreed; **one decision open** — `docs/phase-9-watch-kinds.md` |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
+
+9. **Watch kinds — next.** `planner/plan.py` is 634 lines of which ~215 are
+   prompts, and `SEARCH_PROMPT` now carries the rules for three request types
+   at once. Two shipped bugs were **rules in one prompt interfering** (a
+   presence watch could not be planned; a relative threshold was fabricated),
+   so the argument for splitting is a measured failure rate, not tidiness.
+   Three axes get separated: what makes a watch fire (condition vs **time** —
+   a 9am reminder cannot be expressed today), where its target came from
+   (search vs registry), and how the owner is told (email vs calendar vs
+   chat). Market hours become a `cron(...)` + timezone schedule so **no code
+   in the Checker learns what a stock market is**. Note the honest correction
+   recorded in the doc: windows are a *correctness* fix worth ~$0.14/month,
+   not a cost fix — the $5 budget was never binding for HTTP targets.
 
 Details of the finished phases:
 
