@@ -90,12 +90,17 @@ class Kind:
     # `sources.py` for every watch at once.
     self_heals = True
 
+    # A recurring slice of the week this kind is confined to, by name (see
+    # shared/schedules.py). None means "every minute of every day", which is
+    # right for a shop's price and wrong for anything with a calendar.
+    window = None
+
     def resolve(self, target: dict, condition: dict, *,
                 fetch_http, fetch_browser, client=None) -> dict:
         """Return everything the target row needs, or raise.
 
-        Keys: url, extract_hint, fetch_method, extractor, verified_value,
-        verified_raw, why. `why` is for the log and the plan card -- it is the
+        Keys: url, extract_hint, fetch_method, window, extractor,
+        verified_value, verified_raw, why. `why` is for the log and the plan card -- it is the
         one-line explanation of how this target came to be trusted.
         """
         raise NotImplementedError
@@ -153,7 +158,7 @@ class CompiledKind(Kind):
             self, url, hint, condition,
             fetch_http=fetch_http, fetch_browser=fetch_browser, client=client)
         return {"url": url, "extract_hint": hint, "fetch_method": fetch_method,
-                "why": why, **built}
+                "window": self.window, "why": why, **built}
 
 
 def build_with_cheapest_fetch(kind: CompiledKind, url: str, hint: str,

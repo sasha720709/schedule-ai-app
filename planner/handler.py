@@ -107,7 +107,7 @@ def lambda_handler(event, context):
         # actually been read. Resolved below, once a target verifies.
         relative_pct = result.get("relative_change_pct")
         baseline = None
-        target_ids, verified, rejected = [], [], []
+        target_ids, verified, rejected, windows = [], [], [], []
 
         for target in result["targets"]:
             now = datetime.now(timezone.utc).isoformat()
@@ -141,6 +141,7 @@ def lambda_handler(event, context):
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
             verified.append(resolved["fetch_method"])
+            windows.append(resolved.get("window"))
             targets_table.put_item(Item={
                 "target_id": target_id,
                 "watch_id": watch_id,
@@ -153,6 +154,10 @@ def lambda_handler(event, context):
                 "verified_value": _to_decimal(resolved["verified_value"]),
                 "verified_raw": resolved["verified_raw"],
                 "verified_at": now,
+                # Which slice of the week this target's schedule may run in.
+                # Absent means continuously; see shared/schedules.py.
+                **({"schedule_window": resolved["window"]}
+                   if resolved.get("window") else {}),
             })
 
         # Only now is there a real number to be relative to. Doing this before
@@ -178,10 +183,16 @@ def lambda_handler(event, context):
         # tick paid for Haiku now permits the floor, with no constant changed.
         proposed = int(result["check_interval_min"])
         browser = any(method == "browser" for method in verified)
+        # A window makes a watch cheaper by running it less. If the targets
+        # disagree, take the continuous case: overstating cost refuses an
+        # interval that was affordable, which is recoverable; understating it
+        # creates a schedule that bills more than the budget allowed.
+        window = windows[0] if len(set(windows)) == 1 else None
         floor = cost.min_interval_for_budget(
             targets=len(target_ids),
             fetch_method="browser" if browser else "http",
             uses_model=False,
+            window=window,
         )
         interval = max(proposed, floor)
 

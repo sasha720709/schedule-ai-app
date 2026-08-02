@@ -11,7 +11,7 @@ cp handler.py check.py build/
 # Shared modules, vendored per zip rather than shared as a Layer -- layers are
 # still a deferred gap. They are copied flat because that is how they are
 # imported at runtime: `import cost`, not `from shared import cost`.
-for module in cost.py extract.py condition.py fetch.py repair.py; do
+for module in cost.py schedules.py extract.py condition.py fetch.py repair.py; do
   cp "../shared/$module" build/
 done
 # Wheels are pinned to the Lambda runtime's platform, not the build machine's.

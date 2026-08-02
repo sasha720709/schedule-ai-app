@@ -30,6 +30,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 import cost
+import schedules
 
 dynamodb = boto3.resource("dynamodb")
 scheduler = boto3.client("scheduler")
@@ -134,16 +135,12 @@ def _targets_for(watch_id: str) -> list:
             return items
 
 
-def _rate_expression(minutes: int) -> str:
-    """EventBridge Scheduler wants the unit singular at 1: 'rate(1 minute)'."""
-    return f"rate({minutes} minute{'s' if minutes != 1 else ''})"
-
-
 def _schedule_name(target_id: str) -> str:
     return f"schedule-ai-app-{target_id}"
 
 
-def _upsert_schedule(target_id: str, interval_min: int) -> str:
+def _upsert_schedule(target_id: str, interval_min: int,
+                     window: str | None = None) -> str:
     """Create the schedule, or retune an existing one to a new interval.
 
     The name is derived from target_id rather than generated, which makes
@@ -152,7 +149,11 @@ def _upsert_schedule(target_id: str, interval_min: int) -> str:
     """
     args = {
         "Name": _schedule_name(target_id),
-        "ScheduleExpression": _rate_expression(interval_min),
+        # rate(...) normally; cron(...) plus a timezone for a windowed target,
+        # so that a market watch simply does not fire when the market is shut.
+        # Building the expression here is what kept the Checker from ever
+        # needing to know what a stock market is.
+        **schedules.expression(interval_min, window),
         "FlexibleTimeWindow": {"Mode": "OFF"},
         "Target": {
             "Arn": os.environ["CHECKER_FUNCTION_ARN"],
@@ -245,6 +246,18 @@ def _uses_model(targets: list) -> bool:
     return any("extractor" not in target for target in targets)
 
 
+def _window_of(targets: list):
+    """The window every target shares, or None if they disagree.
+
+    Disagreement resolves to continuous on purpose. Overstating cost refuses
+    an interval that was affordable, which the user can argue with;
+    understating it creates a schedule that quietly bills more than the budget
+    allowed, which nobody notices.
+    """
+    windows = {t.get("schedule_window") for t in targets}
+    return windows.pop() if len(windows) == 1 else None
+
+
 def _estimate_for(watch: dict, targets: list, interval=None) -> dict | None:
     """Cost of running this watch, for the plan card to show before confirming."""
     interval = interval if interval is not None else watch.get("check_interval_min")
@@ -256,6 +269,7 @@ def _estimate_for(watch: dict, targets: list, interval=None) -> dict | None:
         targets=len(targets),
         fetch_method="browser" if browser else "http",
         uses_model=_uses_model(targets),
+        window=_window_of(targets),
     )
 
 
@@ -307,6 +321,7 @@ def confirm_watch(event) -> dict:
         targets=len(targets),
         fetch_method="browser" if browser else "http",
         uses_model=_uses_model(targets),
+        window=_window_of(targets),
     )
     if not estimate["within_budget"]:
         raise HttpError(
@@ -318,7 +333,8 @@ def confirm_watch(event) -> dict:
         )
 
     for target in targets:
-        arn = _upsert_schedule(target["target_id"], interval)
+        arn = _upsert_schedule(target["target_id"], interval,
+                                target.get("schedule_window"))
         _targets().update_item(
             Key={"target_id": target["target_id"]},
             UpdateExpression="SET schedule_arn = :a",
@@ -397,7 +413,8 @@ def patch_watch(event) -> dict:
         # Retune the live schedules too, or the stored interval would lie.
         if status == "active":
             for target in watch_targets:
-                _upsert_schedule(target["target_id"], interval)
+                _upsert_schedule(target["target_id"], interval,
+                                target.get("schedule_window"))
 
         updates.append("check_interval_min = :i")
         values[":i"] = _to_decimal(interval)

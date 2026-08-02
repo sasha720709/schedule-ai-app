@@ -19,6 +19,8 @@ keep the old architecture's caution forever.
 import math
 import os
 
+import schedules
+
 # --- published rates, us-east-1, on-demand ------------------------------------
 
 # Claude Haiku 4.5, per million tokens.
@@ -170,10 +172,16 @@ def monthly_cost(
     targets: int = 1,
     fetch_method: str = "http",
     uses_model: bool = True,
+    window: str | None = None,
 ) -> float:
-    if interval_min <= 0:
-        raise ValueError("interval_min must be positive")
-    checks = CHECKS_PER_MONTH_AT_ONE_MINUTE / interval_min
+    """Cost of running this watch for a month.
+
+    `window` names a recurring slice of the week the watch is confined to (see
+    shared/schedules.py). Without it the old assumption holds: every minute of
+    every day. With one, a quote watch runs 10,080 times a month rather than
+    43,200, and pretending otherwise overstates the plan card by ~4x.
+    """
+    checks = schedules.checks_per_month(interval_min, window)
     return checks * targets * cost_per_check(fetch_method, uses_model)
 
 
@@ -182,6 +190,7 @@ def min_interval_for_budget(
     targets: int = 1,
     fetch_method: str = "http",
     uses_model: bool = True,
+    window: str | None = None,
 ) -> int:
     """Tightest interval whose monthly cost still fits the budget.
 
@@ -190,7 +199,8 @@ def min_interval_for_budget(
     """
     budget = monthly_budget_usd() if budget_usd is None else budget_usd
     per_month_at_one_minute = (
-        CHECKS_PER_MONTH_AT_ONE_MINUTE * targets * cost_per_check(fetch_method, uses_model)
+        schedules.checks_per_month(1, window) * targets
+        * cost_per_check(fetch_method, uses_model)
     )
     needed = math.ceil(per_month_at_one_minute / budget)
     return max(MIN_INTERVAL_MIN, min(MAX_INTERVAL_MIN, needed))
@@ -201,15 +211,18 @@ def estimate(
     targets: int = 1,
     fetch_method: str = "http",
     uses_model: bool = True,
+    window: str | None = None,
 ) -> dict:
     """A JSON-safe summary, for API responses and the plan card."""
     budget = monthly_budget_usd()
-    floor = min_interval_for_budget(budget, targets, fetch_method, uses_model)
-    cost = monthly_cost(interval_min, targets, fetch_method, uses_model)
+    floor = min_interval_for_budget(budget, targets, fetch_method, uses_model, window)
+    cost = monthly_cost(interval_min, targets, fetch_method, uses_model, window)
     return {
         "interval_min": interval_min,
         "targets": targets,
         "fetch_method": fetch_method,
+        "window": window,
+        "checks_per_month": round(schedules.checks_per_month(interval_min, window)),
         "cost_per_check_usd": round(cost_per_check(fetch_method, uses_model), 8),
         "estimated_monthly_usd": round(cost, 4),
         "monthly_budget_usd": budget,

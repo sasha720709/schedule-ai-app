@@ -301,7 +301,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
-| 🔨 | **9** · Watch kinds, schedules, delivery | step 1 of 5 done — the seam exists; `docs/phase-9-watch-kinds.md` |
+| 🔨 | **9** · Watch kinds, schedules, delivery | steps 1, 2a, window done & deployed; `docs/phase-9-watch-kinds.md` |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
@@ -333,6 +333,27 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
      removed from the Notifier in Phase 5.
    - **The zip is flat, so `shared/kinds.py` would collide** with the
      `kinds/` package directory. Name any shared kind module `watch_kinds.py`.
+
+   **Step 2a and the window are done and deployed.** Adding `quote` broke the
+   step-1 abstraction immediately and usefully: `Kind` was four methods about
+   *compiling* an extractor, and a quote compiles nothing, so it would have had
+   to stub all four. The axis moved instead — `Kind.resolve()` is now the one
+   method every kind implements, `CompiledKind` adds the four and implements
+   `resolve` in terms of them, and `QuoteKind` extends `Kind` directly. The
+   `known_source` if-statement in `planner/handler.py` is gone.
+
+   `shared/schedules.py` builds `rate(...)` or `cron(...)`+timezone, and
+   `cost.py` now prices from real checks-per-month instead of assuming 43,200
+   — a windowed watch was being quoted ~4x high. **Two corrections worth not
+   re-making**, both recorded in the plan doc: market-hours windows are *not*
+   a cost win (the $5 budget was never binding for HTTP, the saving is 14¢),
+   and they are *not* a correctness win either — a frozen out-of-hours quote
+   is the last real price, so it causes no false fires. The real reason is
+   that a 1-minute quote watch makes 33,120 pointless requests a month to a
+   free third-party endpoint we cannot afford to lose. The genuine
+   correctness bug found while checking that: **a watch created outside
+   trading hours takes its baseline from the previous close**, so "goes down
+   from the current" asked on a Sunday measures against Friday. Still open.
 
 Details of the finished phases:
 

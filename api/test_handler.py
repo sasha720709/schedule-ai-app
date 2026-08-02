@@ -365,13 +365,61 @@ def test_get_returns_the_watch_with_its_targets(aws):
 # Helpers and failure masking
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("minutes,expected", [
-    (1, "rate(1 minute)"),
-    (10, "rate(10 minutes)"),
-    (60, "rate(60 minutes)"),
-])
-def test_rate_expression_gets_the_plural_right(minutes, expected):
-    assert handler._rate_expression(minutes) == expected
+def test_an_ordinary_target_still_gets_a_plain_rate_schedule(aws):
+    """Phase 9 moved expression-building to shared/schedules.py. The default
+    must be exactly what it was, or every existing watch changes cadence."""
+    env = aws(proposed(), one_target())
+    handler.lambda_handler(
+        {"routeKey": "POST /watches/{id}/confirm",
+         "pathParameters": {"id": "w_1"}}, None)
+
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"] == "rate(60 minutes)"
+    assert "ScheduleExpressionTimezone" not in args
+
+
+def test_a_windowed_target_is_scheduled_with_cron_and_a_timezone(aws):
+    """A market watch simply does not fire when the market is shut, which is
+    what keeps the Checker from ever needing to know what a stock market is.
+
+    The timezone is not decoration: a UTC cron would drift an hour twice a
+    year and spend a week each time reading a closed market.
+    """
+    # A compiled extractor, so the budget gate prices this without a model
+    # and a 5-minute interval is affordable -- otherwise confirm refuses and
+    # no schedule is created at all.
+    targets = {"t_1": {"target_id": "t_1", "watch_id": "w_1",
+                       "extractor": {"kind": "jsonpath"},
+                       "schedule_window": "us_market_hours"}}
+    env = aws(proposed(interval=5), targets)
+    handler.lambda_handler(
+        {"routeKey": "POST /watches/{id}/confirm",
+         "pathParameters": {"id": "w_1"}}, None)
+
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"] == "cron(*/5 9-16 ? * MON-FRI *)"
+    assert args["ScheduleExpressionTimezone"] == "America/New_York"
+
+
+def test_a_windowed_watch_is_not_priced_as_if_it_ran_all_night(aws):
+    """Left unfixed this overstates a quote watch by about 4x, which is the
+    difference between an interval the budget affords and one it refuses."""
+    windowed = {"t_1": {"target_id": "t_1", "watch_id": "w_1",
+                        "extractor": {"kind": "jsonpath"},
+                        "schedule_window": "us_market_hours"}}
+    always = {"t_1": {"target_id": "t_1", "watch_id": "w_1",
+                      "extractor": {"kind": "jsonpath"}}}
+
+    aws(proposed(interval=5), windowed)
+    a = body_of(handler.lambda_handler(
+        {"routeKey": "GET /watches/{id}", "pathParameters": {"id": "w_1"}}, None))
+    aws(proposed(interval=5), always)
+    b = body_of(handler.lambda_handler(
+        {"routeKey": "GET /watches/{id}", "pathParameters": {"id": "w_1"}}, None))
+
+    assert a["cost"]["checks_per_month"] == 2016
+    assert b["cost"]["checks_per_month"] == 8640
+    assert a["cost"]["estimated_monthly_usd"] < b["cost"]["estimated_monthly_usd"]
 
 
 @pytest.mark.parametrize("value,expected", [

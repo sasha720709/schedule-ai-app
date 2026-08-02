@@ -1,7 +1,9 @@
 # Phase 9 — Watch kinds, schedules and delivery
 
-Status: **design, agreed in discussion 2026-08-02. One decision still open
-(§8).** Nothing here is built yet.
+Status: **steps 1, 2a and the window half of step 3 are built, deployed and
+tested (2026-08-02).** §8 is decided. Remaining: 2b (a classify step, so
+routing leaves `SEARCH_PROMPT`), `once` schedules, `reminder`, and the
+`Channel` seam. See §10 for exactly where the line is.
 
 The one-line version: a watch is currently one shape with a growing pile of
 exceptions, and the exceptions have started colliding with each other. This
@@ -105,9 +107,20 @@ Verified against the AWS CLI, not assumed. EventBridge Scheduler supports
 
 **Interval** — `rate(N minutes)`. What exists.
 
-**Window** — `cron(...)` plus a timezone. Market hours become
-`cron(* 9-15 ? * MON-FRI *)` in `America/New_York`, and **no code in the
+**Window** — `cron(...)` plus a timezone. Built: market hours are
+`cron(*/N 9-16 ? * MON-FRI *)` in `America/New_York`, and **no code in the
 Checker learns what a stock market is.** The schedule simply does not fire.
+
+`9-16` brackets the 09:30–16:00 session rather than matching it, because
+Scheduler takes one expression per schedule and the exact session needs two
+(`30-59 9` plus `* 10-15`) — which would mean two schedules per target and two
+of everything that creates, pauses and deletes them. The margin costs ~90
+minutes a day of reading an unchanged value, which the table below shows is
+harmless. Missing the opening bell would not be, so the margin goes outwards.
+
+An interval of 60 minutes or more is **refused** on a windowed schedule:
+`cron(*/60 ...)` steps within the hour, so it would silently fire hourly on
+the hour and never raise anything.
 
 Market holidays are not handled and will not be: cron cannot express
 "except Thanksgiving", there are about nine a year, and a check on a holiday
@@ -125,18 +138,52 @@ close to worthless and should not be repeated.** Measured:
 | | checks/month | $/month |
 |---|---|---|
 | stock, 1 min, 24/7 (today) | 43,200 | $0.178 |
-| stock, 1 min, market hours | 8,190 | **$0.034** |
+| stock, 1 min, market hours (9:30–16:00) | 8,190 | **$0.034** |
+| stock, 1 min, as built (9:00–17:00) | 10,080 | $0.042 |
 
 The budget was never binding. $5 buys 1,214,574 HTTP checks a month, and a
 month contains only 8,190 market minutes — the budget would permit checking
 every 0.4 seconds. The saving is fourteen cents.
 
-**So windows are a correctness feature that happens to save pennies.** The
-real defect they fix: outside trading hours CNBC's `last` holds the previous
-close, so a relative watch ("tell me when Apple goes down") can fire at market
-close against a frozen number rather than on a real move — the same family as
-the CNN "Last closed at" bug, a correct reading of the wrong thing. A watch
-that does not run after 16:00 cannot make that mistake.
+### And a second correction: the correctness argument was wrong too
+
+The replacement argument was: outside trading hours CNBC's `last` holds the
+previous close, so a relative watch could fire at market close against a
+frozen number. **Checked before building, and it does not hold.**
+
+A frozen quote is not a wrong quote; it is the last real price. Walk it
+through with a baseline of $333.43 taken at 11:00:
+
+| | `last` | fires? | right? |
+|---|---|---|---|
+| 11:00, trading | 331.00 | yes | yes — it did go down |
+| closes at 335 | 335.00 | no | yes |
+| 16:30, market shut | 335.00 | no | yes |
+| all weekend | 335.00 | no | yes |
+
+There are no false fires. The out-of-hours value is simply the last one that
+was true.
+
+So what the window actually buys, in order of how much it matters:
+
+1. **It stops hammering a free third-party endpoint we do not own.** A
+   one-minute quote watch makes 43,200 requests a month, 33,120 of which
+   cannot return anything new. CNBC's keyless API is the one that answered
+   when Yahoo returned 429 and stooq returned 404 from Lambda; losing it to
+   rate limiting breaks every quote watch at once. **This is the real reason.**
+2. The plan card stops overstating a windowed watch by ~4x.
+3. It is the mechanism reminders need anyway (`cron`, `at`), so quotes are the
+   cheap first user of a seam that has to exist regardless.
+
+### The correctness bug that *is* real, and is not this one
+
+A watch created **outside** trading hours takes its baseline from the previous
+close. "Tell me when Apple goes down from the current," asked on a Sunday, is
+measured against Friday — so if Monday opens higher, the watch is comparing
+against a number the user never saw and never agreed to.
+
+Windowing does not fix this. The fix is to take the baseline during a session,
+or to say plainly on the plan card which close it came from. **Open.**
 
 Where money *is* binding is browser targets: $8.05/month at one minute, above
 the $5 budget. Windows would matter there — but stock quotes are HTTP, so the
@@ -260,10 +307,19 @@ phase starts editing them, it has gone wrong.
    `shared/kinds.py` would land beside the `kinds/` package directory and
    collide. If declarative kind facts need to be shared with `api`/`checker`,
    call that module something else — `watch_kinds.py`.
-2. **`quote` as a kind**, moving `sources.py` routing out of `SEARCH_PROMPT`
-   and adding the market-hours window. First user-visible win, and it fixes
-   the frozen-close defect.
-3. **Schedule shapes**: window and once, plus the §8 decision.
+2. **`quote` as a kind.** **2a done** — `Kind` split into `Kind` /
+   `CompiledKind`, `QuoteKind` extends the former and never sees the four
+   compile methods, and the `known_source` if-statement in `handler.py` is
+   gone. **2b still to do:** a classify step, so routing stops living inside
+   `SEARCH_PROMPT`. Until then the search prompt still names `known_source`
+   and the prompt has not yet shrunk — the success criterion of §1 is
+   therefore **not yet met**.
+3. **Schedule shapes.** **Window done** — `shared/schedules.py` builds
+   `rate(...)` or `cron(...)`+timezone, `cost.py` prices from real
+   checks-per-month rather than assuming 43,200, and a quote target carries
+   `schedule_window` so the api schedules it inside market hours. **`once`
+   (`at(...)` + `--action-after-completion DELETE`) still to do**, with the
+   §8 decision.
 4. **`reminder`** — the kind that proves axis A.
 5. **The `Channel` seam**, with email and `.ics`.
 

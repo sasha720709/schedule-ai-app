@@ -44,6 +44,12 @@ class QuoteKind(Kind):
     # Read by the Checker's degrade path; see the module docstring.
     self_heals = False
 
+    # A market that is shut cannot produce a new price. Confining the schedule
+    # is mostly about not making 35,010 pointless requests a month to a free
+    # third-party endpoint we do not own and cannot afford to lose -- see the
+    # honest accounting in shared/schedules.py.
+    window = "us_market_hours"
+
     def resolve(self, target: dict, condition: dict, *,
                 fetch_http=None, fetch_browser=None, client=None) -> dict:
         """Expand the symbol into a canned target and prove it against the wire.
@@ -68,6 +74,7 @@ class QuoteKind(Kind):
             "url": url,
             "extract_hint": expanded["extract_hint"],
             "fetch_method": expanded["fetch_method"],
+            "window": self.window,
             "extractor": expanded["extractor"],
             "verified_value": outcome.value,
             "verified_raw": outcome.raw,
