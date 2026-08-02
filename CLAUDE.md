@@ -140,11 +140,13 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Test coverage is uneven, not absent.** 262 offline tests exist and pass,
-  concentrated in `shared/` (`extract.py`, `condition.py`, `cost.py`,
-  `repair.py`, `sources.py`) where the logic is pure. The handlers are still
-  verified by invoking real Lambdas: nothing covers a malformed Planner
-  response end to end, a Fetcher timeout, or the api Lambda's routing.
+- **Test coverage is uneven, not absent.** 262 offline tests pass in ~2s
+  (`python -m pytest -q` from the repo root). By area: `shared/` 94,
+  `api/` 41, `planner/` 33, `checker/` 22, `fetcher/` 6 — the api Lambda's
+  routing, confirm/patch/delete, and every cost gate are covered against
+  `moto`, and the Planner's compile-verify-escalate path is covered against
+  fakes. **`notifier/` and `authorizer/` have none.** Nor is there any test
+  that runs the whole chain end to end; that is still a real Lambda invoke.
 
 ### Product shape
 

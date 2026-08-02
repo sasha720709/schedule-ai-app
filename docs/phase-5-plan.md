@@ -194,6 +194,9 @@ Ordered by how much they would hurt.
   event needs SQS permissions the deploy user does not have.
 - **`anthropic` is vendored twice** — Planner and Checker each carry ~7.7MB of
   the same dependency tree. A Lambda Layer would deduplicate it.
-- **Handler-level test coverage.** 262 offline tests pass, but they are
-  concentrated in `shared/`. Nothing covers the api Lambda's routing, a
-  malformed Planner response end to end, or a Fetcher timeout.
+- **Two Lambdas have no tests at all.** 262 tests pass, spread wider than the
+  gap list used to claim (`shared/` 94, `api/` 41, `planner/` 33, `checker/`
+  22, `fetcher/` 6) — but **`notifier/` and `authorizer/` have zero**. The
+  Notifier is the one that sends the email and deletes the schedules, which is
+  the last step of the entire product, and it was edited in this very phase.
+  Nothing runs the chain end to end either; that is still a real AWS invoke.
