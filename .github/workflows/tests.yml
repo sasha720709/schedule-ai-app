@@ -1,0 +1,47 @@
+# Run the offline test suite on every push and every pull request.
+#
+# This is deliberately *not* Phase 7. Phase 7 is a deploy pipeline with GitHub
+# OIDC and no static keys, and it is still last on the roadmap for the reasons
+# written there: one user, infrequent manual deploys, and the riskiest deploy
+# path (the Fetcher's container image) is one a pipeline does not fix, because
+# Terraform compares an image URI string that does not change on a :latest push.
+#
+# What this job is instead: the cheap tenth of CI that catches the case worth
+# catching -- a change pushed without anyone running the tests. It needs no AWS
+# credentials, touches no infrastructure, and cannot deploy anything.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Pinned to the Lambda runtime in terraform/app/lambda.tf. If those
+          # ever disagree, this suite stops being evidence about production.
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      # From the repo root, so every Lambda's suite is collected together.
+      # Each one also has to pass alone -- three Lambdas have a module named
+      # `handler`, and the tests load theirs by path under a unique name so
+      # collection order cannot hand one suite another's code.
+      - run: python -m pytest -q

@@ -1,0 +1,17 @@
+# Everything needed to run the offline test suite -- nothing else.
+#
+# The suite is deliberately cheap to run: `python -m pytest -q` from the repo
+# root, ~2 seconds, no AWS, no network, no API keys, no cost. Keeping that true
+# is why this list is two lines instead of the union of every Lambda's
+# requirements.txt.
+#
+# `anthropic`, `boto3` and `playwright` are all stubbed by the tests rather
+# than installed. They are heavy, they are only ever called through seams the
+# tests replace, and installing them would tempt a future test into making a
+# real client -- which is how a free suite quietly starts costing money.
+#
+# beautifulsoup4 is the exception, because shared/extract.py genuinely parses
+# HTML and the tests genuinely check the parsing. It pulls in soupsieve, which
+# is what provides the `:-soup-contains(...)` selectors the Planner compiles.
+pytest
+beautifulsoup4

@@ -140,13 +140,23 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Test coverage is uneven, not absent.** 262 offline tests pass in ~2s
-  (`python -m pytest -q` from the repo root). By area: `shared/` 94,
-  `api/` 41, `planner/` 33, `checker/` 22, `fetcher/` 6 — the api Lambda's
-  routing, confirm/patch/delete, and every cost gate are covered against
-  `moto`, and the Planner's compile-verify-escalate path is covered against
-  fakes. **`notifier/` and `authorizer/` have none.** Nor is there any test
-  that runs the whole chain end to end; that is still a real Lambda invoke.
+- **Every Lambda now has tests; the chain still does not.** 305 offline tests
+  pass in ~2s (`python -m pytest -q` from the repo root). By area: `shared/`
+  147, `api/` 54, `planner/` 33, `authorizer/` 24, `checker/` 22, `notifier/`
+  19, `fetcher/` 6. They run on every push via `.github/workflows/tests.yml`.
+  What is still missing is any test that runs the whole chain end to end —
+  Planner → schedule → Checker → event → Notifier is still verified only by
+  invoking real Lambdas.
+
+  Two conventions that are load-bearing rather than stylistic. **Three
+  Lambdas have a module named `handler`**, so a suite must load its own by
+  path under a unique name (`importlib.util.spec_from_file_location`) — a
+  plain `import handler` hands whichever one pytest imported first to all of
+  them, silently, with the tests still green. And **`boto3` is stubbed
+  unconditionally**, not behind a `if not installed` guard: a guard makes the
+  result depend on collection order and on whether the machine has a real
+  boto3 with a usable region, which a CI runner does not. Every suite must
+  pass alone and in any order — `for d in */; do pytest $d; done`.
 
 ### Product shape
 
@@ -292,7 +302,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
-| ⬜ | **7** · CI/CD via GitHub OIDC | lowest ratio, last |
+| ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
 Details of the finished phases:
 
@@ -522,10 +532,24 @@ Details of the finished phases:
    What Phase 5 did **not** finish is listed under "Still open" in the plan
    doc — chiefly that a value which is stale relative to its check interval is
    still invisible to the system.
-7. Stretch — GitHub Actions CI/CD via OIDC (no static keys). Last on
-   purpose. Honest counter-argument: a pipeline would reduce the risk of
-   Phase 8's large change. But offline tests already exist where they
-   matter most, deploys are infrequent and manual, and there is one user.
+7. **Split, and the cheap half is done.** The phase was one item — "CI/CD
+   via OIDC" — and it turned out to be two with very different ratios.
+
+   **Tests on push: done** (`.github/workflows/tests.yml`). No credentials,
+   no AWS, cannot deploy. It catches the one thing worth catching for a solo
+   project: a change pushed without anyone having run the suite. Needs
+   `pytest` + `beautifulsoup4` and nothing else, listed in
+   `requirements-dev.txt` — `anthropic`, `boto3` and `playwright` are stubbed
+   by the tests rather than installed, deliberately, so that no future test
+   can quietly reach a real client and start costing money.
+
+   **Deploy on push: still last, on purpose.** The value of automating a
+   deploy scales with frequency × blast radius × team size, and all three are
+   small here. More to the point, the single most dangerous deploy path is
+   one a pipeline does *not* fix: Terraform compares the Fetcher's image
+   *URI*, which does not change on a `:latest` push, so a pipeline would
+   report success while the running code stayed stale — faithfully, every
+   time. Fix that with a versioned tag before automating anything.
 
 ## Phase 4 — 4a and 4b done, 4c next
 
