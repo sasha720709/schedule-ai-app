@@ -301,7 +301,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
-| 🔨 | **9** · Watch kinds, schedules, delivery | steps 1, 2a, window done & deployed; `docs/phase-9-watch-kinds.md` |
+| 🔨 | **9** · Watch kinds, schedules, delivery | steps 1–2 + windows done & deployed; left: `once`, `reminder`, channels |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
@@ -354,6 +354,22 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
    correctness bug found while checking that: **a watch created outside
    trading hours takes its baseline from the previous close**, so "goes down
    from the current" asked on a Sunday measures against Friday. Still open.
+
+   **Step 2b is done, and the phase's own success criterion is finally met.**
+   Routing left the prompt: `planner/classify.py` picks the kind with one
+   small Haiku call before anything expensive runs, and `Kind.plan()` is how
+   each kind turns a request into targets. **`SEARCH_PROMPT` went 4,686 →
+   3,545 characters**, losing the KNOWN SOURCES and WATCH SHAPE paragraphs;
+   it is now *handed* `watch_shape` instead of deciding it. A quote never
+   runs Sonnet-with-web-search at all now — one Haiku call for condition and
+   cadence, and the target is the symbol.
+
+   The doc's "rules first, model second" did not survive contact: no lexical
+   rule separates "how much is Apple" from "how much is an Apple pencil at
+   Best Buy". The rules became **gates around the answer** — kind must be
+   registered, a `quote` must carry a symbol `sources.py` accepts — and
+   anything failing a gate degrades to `value`. A misclassification must cost
+   a suboptimal plan, never a rejected request.
 
 Details of the finished phases:
 
