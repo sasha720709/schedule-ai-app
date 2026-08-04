@@ -206,12 +206,58 @@ Stated plainly, because two of these are bigger than they look.
 
 ---
 
-## 5. Recommended order
+## 5. Step 1, built 2026-08-04 — and it proves step 2 is not optional
 
-1. **Shops registry + Amazon on our own browser.** Cheapest, and it makes the
-   feature work at all outside the pages a web search happens to pick.
+`shared/shops.py` (Ivory, Bug, Amazon), a new `offers` extractor, and a
+`product` kind. Deployed and planned live in about four seconds:
+
+    status proposed | kind product | interval 360
+    condition: price < 2000 ILS
+      [http   ] ILS cheapest=139.0    ivory.co.il
+            139  HyperX CloudX Stinger gaming headset
+      [browser] USD cheapest=34.99    amazon.com
+          34.99  WWE 2K26 - Xbox Series X
+      [http   ] ILS cheapest=29.0     bug.co.il
+             29  Suicide Squad: K.T.J.L
+    cost/mo 0.0671
+
+Three shops, two currencies, Amazon rendered, seven cents a month. **And not
+one of the cheapest offers is a console.** The condition `price < 2000 ILS` is
+already true at every shop, so this watch would have fired within minutes on a
+headset. It was deliberately not confirmed.
+
+That is the strongest argument available for step 2, and it came from running
+the thing rather than reasoning about it. **Until `questions.py` is wired to
+products, a "cheapest" product watch is a watch on whatever accessory a shop
+lists first.** The plan card shows every offer precisely so this is visible
+before anyone pays for a schedule.
+
+### The one architectural idea worth keeping
+
+Prefer a **published standard** over a selector. `schema.org/Product` is a
+contract shops maintain because Google reads it, so it survives the redesigns
+that break a CSS class — and it carries what a selector cannot reach: the
+currency, whether the thing is in stock, the offer's own link, and an `sku`,
+which is the stable identity deduplication has wanted at every step of this
+project.
+
+Only Ivory publishes it, of the four probed. So `offers` tries JSON-LD first
+and falls back to a selector, and Bug and Amazon get the worse path — no
+currency, no stock, and a price scraped out of card text. Stated rather than
+hidden, because the fallback is the one that will break first.
+
+### Currencies are not compared
+
+Each target carries the currency its shop prices in. Ivory quoting ILS and
+Amazon quoting USD are two targets with two thresholds, never one number.
+Silently comparing them is how a watch reports a bargain that is not one.
+
+## 6. Recommended order
+
+1. ✅ **Shops registry + Amazon on our own browser.** Done — §5.
 2. **Particularization via the questions step.** Reuses what exists; turns
-   "the Xbox" into a specific thing before any money is spent.
+   "the Xbox" into a specific thing before any money is spent. **No longer
+   optional**: §5 shows a watch that would fire on a headset.
 3. **Watch-level conditions** — the real engineering, and what makes "cheapest
    of five shops" expressible.
 4. Landed price, and the blocked-render outcome.

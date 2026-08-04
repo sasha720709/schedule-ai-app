@@ -14,6 +14,7 @@ from kinds.base import (Kind, CompiledKind, build_with_cheapest_fetch,
                         compile_and_verify, read_value, tidy)
 from kinds.jobs import JobsKind
 from kinds.presence import PresenceKind
+from kinds.product import ProductKind
 from kinds.quote import QuoteKind
 from kinds.value import ValueKind
 
@@ -22,6 +23,7 @@ REGISTRY = {
     "presence": PresenceKind(),
     "quote": QuoteKind(),
     "jobs": JobsKind(),
+    "product": ProductKind(),
 }
 
 DEFAULT = REGISTRY["value"]

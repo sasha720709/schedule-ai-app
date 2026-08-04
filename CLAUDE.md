@@ -100,6 +100,22 @@ written before any code. Three things from it worth knowing:
   target per tick, and each fires independently. That is the real engineering
   in this phase, not the scraping.
 
+**Marketplaces step 1 is built** (2026-08-04): `shared/shops.py` (Ivory, Bug,
+Amazon), a new **`offers` extractor**, and a `product` kind. `offers` prefers
+**schema.org JSON-LD** — a contract shops maintain because Google reads it, and
+it carries currency, stock, the offer's link and an `sku` that a CSS selector
+cannot reach — falling back to a selector for the three of four shops that
+publish none. Currencies are never compared: ILS and USD are separate targets
+with separate thresholds.
+
+**The live run is the argument for step 2, not a success story.** Planning
+"Xbox Series X below 2000 shekels" gave three working shops at $0.067/month
+whose cheapest offers were a **headset (₪139), WWE 2K26 ($34.99) and Suicide
+Squad (₪29)** — no console anywhere, and `price < 2000` already true, so the
+watch would have fired within minutes on an accessory. It was not confirmed.
+Until `questions.py` is wired to products, a "cheapest" product watch watches
+whatever a shop lists first.
+
 **`docs/vacancies-roadmap.md` is the vacancies analysis** (2026-08-04): what
 the `presence` kind does today, what a check costs, and why the owner's
 "personalised, not just any match" idea is affordable. Three things from it
@@ -339,7 +355,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 558 of them (counts
+- **Every Lambda has tests; the chain still does not.** 590 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -458,8 +474,8 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**558 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 269, `planner/` 107, `api/` 72,
+**590 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 292, `planner/` 116, `api/` 72,
 `authorizer/` 24, `checker/` 50, `notifier/` 30, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 

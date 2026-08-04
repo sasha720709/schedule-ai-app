@@ -54,8 +54,14 @@ CLASSIFY_PROMPT = """You sort a monitoring request into exactly one kind.
   presence  -- something else that DOES NOT EXIST YET and the user is waiting
                for it to APPEAR. A restock, an appointment slot, a ticket
                going on sale. NOT a job -- that is `jobs`.
+  product   -- the price of a thing for sale, where the point is what it
+               costs and where to buy it. "Tell me when the Xbox Series X
+               drops below 2000", "watch the price of AirPods Pro 2". Shops
+               are a decided set, so this never searches the web either.
   value     -- anything else. Something already on a page that the user is
-               waiting to CHANGE: a product price, a rating, a countdown.
+               waiting to CHANGE: a rating, a countdown, a specific page's
+               number. Use this when the request names ONE page and means
+               that page.
 
 Rules:
 
@@ -87,13 +93,19 @@ Rules:
   role**, it is `jobs` -- including when it names a city, a company or a
   board. A named "where" rules out `quote` but not `jobs`, because the boards
   are decided and the place is just a search field.
+- If the request is about **buying something** -- a price, a discount, a
+  restock of a named product -- it is `product`. Naming a shop does not change
+  that: the shops are a decided set and the shop is just one of them. Use
+  `value` only when the request is about one specific page and would make no
+  sense anywhere else.
 - If the request is waiting for something else to show up, it is `presence`,
   even if similar things are listed today.
 - When genuinely unsure, answer "value". It is the general path and it works
   for everything; a wrong guess here is more expensive than a vague one.
 
 Respond with ONLY a JSON object:
-{"kind": "quote" | "jobs" | "presence" | "value", "symbol": string | null}"""
+{"kind": "quote" | "jobs" | "product" | "presence" | "value",
+ "symbol": string | null}"""
 
 
 def _acceptable(decision, known: tuple) -> str:

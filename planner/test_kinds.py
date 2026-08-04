@@ -34,6 +34,7 @@ sys.path.insert(0, _HERE)
 
 import kinds  # noqa: E402
 from kinds import jobs as jobs_mod  # noqa: E402
+from kinds import product as product_mod  # noqa: E402
 from kinds import quote as quote_mod  # noqa: E402
 
 QUOTE = kinds.get("quote")
@@ -528,3 +529,135 @@ def test_jobs_is_not_a_compiled_kind():
     fit the wrong base class."""
     assert not isinstance(JOBS, kinds.CompiledKind)
     assert not hasattr(JOBS, "compile_prompt")
+
+
+# --------------------------------------------------------------------------
+# The `product` kind
+#
+# It exists because a `value` watch watches one page chosen by a web search,
+# which cannot answer the question people actually ask: where is this cheapest.
+# --------------------------------------------------------------------------
+
+PRODUCT = kinds.get("product")
+
+SHOP_PAGE = """<html><head>
+<script type="application/ld+json">
+{"@context":"http://schema.org/","@type":"ItemList","itemListElement":[
+ {"@type":"ListItem","item":{"@type":"Product","name":"Xbox headset","sku":"H1",
+  "offers":{"@type":"Offer","priceCurrency":"ILS","price":139,
+  "availability":"http://schema.org/InStock","url":"https://shop/1"}}},
+ {"@type":"ListItem","item":{"@type":"Product","name":"Xbox Series X 1TB","sku":"C9",
+  "offers":{"@type":"Offer","priceCurrency":"ILS","price":2099,
+  "availability":"http://schema.org/InStock","url":"https://shop/2"}}}
+]}
+</script></head><body></body></html>"""
+
+
+def a_shop_target(**over):
+    target = {"url": "https://www.ivory.co.il/catalog.php?q=xbox",
+              "shop": "ivory", "fetch_method": "http", "currency": "ILS",
+              "extract_hint": "offers on Ivory",
+              "extractor": {"kind": "offers", "parse": "float"}}
+    target.update(over)
+    return target
+
+
+@pytest.fixture
+def shop(monkeypatch):
+    def build(body=SHOP_PAGE):
+        calls = []
+
+        def fetch_raw(url):
+            calls.append(url)
+            return body
+
+        monkeypatch.setattr(product_mod, "fetch_raw", fetch_raw)
+        return calls
+
+    return build
+
+
+def test_a_product_search_never_touches_the_web_search(shop):
+    shop()
+    client = scripted({"query": "xbox series x", "country": "IL",
+                       "relative_change_pct": None,
+                       "condition": {"metric": "price", "op": "<",
+                                     "value": 2000, "currency": "ILS"},
+                       "check_interval_min": 180})
+    plan = PRODUCT.plan("tell me when the Xbox Series X drops below 2000",
+                        client=client)
+
+    assert {t["shop"] for t in plan["targets"]} == {"amazon", "ivory", "bug"}
+    assert plan["check_interval_min"] == 180
+
+
+def test_the_scalar_is_the_cheapest_offer(shop):
+    shop()
+    resolved = PRODUCT.resolve(a_shop_target(), {},
+                               fetch_http=never, fetch_browser=never)
+
+    assert resolved["verified_value"] == 139.0
+    assert len(resolved["verified_items"]) == 2
+
+
+def test_every_offer_is_kept_so_the_plan_card_can_show_the_trap(shop):
+    """Measured on real pages: the cheapest "xbox series x" is a headset at
+    ILS 139, a game at ILS 29, WWE 2K26 at $34.99. A watch on the cheapest is
+    a watch on an accessory, and the only defence before `questions.py` is
+    wired to products is showing every offer before anyone confirms."""
+    shop()
+    items = PRODUCT.resolve(a_shop_target(), {},
+                            fetch_http=never, fetch_browser=never)["verified_items"]
+
+    assert [i["text"] for i in items] == ["Xbox headset", "Xbox Series X 1TB"]
+
+
+def test_the_currency_the_shop_prices_in_is_carried(shop):
+    """Comparing ILS to USD without saying so is how a watch reports a bargain
+    that is not one."""
+    shop()
+    resolved = PRODUCT.resolve(a_shop_target(), {},
+                               fetch_http=never, fetch_browser=never)
+    assert resolved["currency"] == "ILS"
+
+
+def test_a_browser_shop_is_rendered_rather_than_fetched(shop):
+    """Amazon is the one shop that needs it, and it must not quietly fall back
+    to a plain GET that returns a block page."""
+    shop()
+    rendered = []
+    PRODUCT.resolve(a_shop_target(shop="amazon", fetch_method="browser"), {},
+                    fetch_http=never,
+                    fetch_browser=lambda: rendered.append(1) or SHOP_PAGE)
+
+    assert rendered == [1]
+
+
+def test_a_shop_listing_nothing_is_refused(shop):
+    """Unlike a presence watch, zero here is not "not yet" -- it means the
+    query is wrong or the page was reshaped, and the watch could never fire."""
+    shop("<html><body><p>no results</p></body></html>")
+
+    with pytest.raises(ValueError, match="listed nothing"):
+        PRODUCT.resolve(a_shop_target(), {},
+                        fetch_http=never, fetch_browser=never)
+
+
+def test_a_request_with_no_product_in_it_is_refused(shop):
+    shop()
+    client = scripted({"query": "  ", "country": "IL",
+                       "condition": {}, "check_interval_min": 180})
+
+    with pytest.raises(ValueError, match="could not work out"):
+        PRODUCT.plan("something about shopping", client=client)
+
+
+def test_a_price_watch_does_not_repeat():
+    """A threshold crossed is an event and answering it finishes the job.
+    "Tell me when new listings appear" is the presence shape, not this one."""
+    assert PRODUCT.repeating is False
+    assert PRODUCT.self_heals is False
+
+
+def test_product_is_not_a_compiled_kind():
+    assert not isinstance(PRODUCT, kinds.CompiledKind)

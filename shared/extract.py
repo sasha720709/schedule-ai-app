@@ -86,11 +86,13 @@ OK = "ok"
 UNAVAILABLE = "unavailable"
 FAILED = "failed"
 
-KINDS = ("jsonpath", "css", "regex", "count")
+KINDS = ("jsonpath", "css", "regex", "count", "offers")
 PARSERS = ("float", "currency", "int", "text", "bool")
 # A count is a number of elements, so the only sensible coercions are the
 # number itself or "is it more than none".
 COUNT_PARSERS = ("int", "bool")
+# An offer list yields money. The scalar it reduces to is the cheapest price.
+OFFER_PARSERS = ("float", "currency")
 
 
 class SpecError(ValueError):
@@ -152,11 +154,18 @@ _REQUIRED_FIELD = {
     "css": "selector",
     "regex": "pattern",
     "count": "selector",
+    # `offers` reads a standard first; `selector` is an optional fallback for
+    # shops that publish none, so nothing is required.
+    "offers": None,
 }
 
 
 def default_parse(kind: str) -> str:
-    return "int" if kind == "count" else "text"
+    if kind == "count":
+        return "int"
+    if kind == "offers":
+        return "float"
+    return "text"
 
 
 def validate_spec(spec, *, _nested: bool = False) -> None:
@@ -169,9 +178,10 @@ def validate_spec(spec, *, _nested: bool = False) -> None:
         raise SpecError(f"kind must be one of {', '.join(KINDS)}, got {kind!r}")
 
     field_name = _REQUIRED_FIELD[kind]
-    value = spec.get(field_name)
-    if not isinstance(value, str) or not value.strip():
-        raise SpecError(f"{kind} extractor needs a non-empty {field_name!r}")
+    if field_name is not None:
+        value = spec.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise SpecError(f"{kind} extractor needs a non-empty {field_name!r}")
 
     if kind == "regex":
         try:
@@ -184,7 +194,9 @@ def validate_spec(spec, *, _nested: bool = False) -> None:
             raise SpecError("regex may have at most one capture group")
 
     parse = spec.get("parse", default_parse(kind))
-    allowed = COUNT_PARSERS if kind == "count" else PARSERS
+    allowed = (COUNT_PARSERS if kind == "count"
+               else OFFER_PARSERS if kind == "offers"
+               else PARSERS)
     if parse not in allowed:
         raise SpecError(f"parse must be one of {', '.join(allowed)}, got {parse!r}")
 
@@ -504,6 +516,151 @@ def _item_href(node) -> str:
     return str(href or "").strip()
 
 
+_LD_BLOCK = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.S | re.I)
+
+
+def _ld_products(payload: str) -> list:
+    """Every schema.org Product with a price, from a page's JSON-LD.
+
+    ## Why a standard beats a selector
+
+    Every other kind here points at markup: a class, an id, a path through a
+    site's own JSON. All of them are guesses about a page that will be
+    redesigned. `schema.org/Product` is a **published contract** -- shops emit
+    it for Google, so they keep it working, and it survives the redesigns that
+    break a CSS selector.
+
+    It also carries what a price watch actually needs and a selector usually
+    cannot reach: the name, the price, the *currency*, whether it is in stock,
+    the link to that specific offer, and an `sku` -- a stable identity, which
+    is what deduplication has needed at every step of this project.
+
+    Verified 2026-08-04: ivory.co.il publishes an `ItemList` of 16 priced
+    Products on a plain search URL, over plain HTTP, no browser. bug.co.il,
+    zap.co.il and amazon.com do not, which is why this is the preferred path
+    rather than the only one.
+    """
+    products = []
+
+    def walk(node):
+        if isinstance(node, list):
+            for child in node:
+                walk(child)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("@type") == "Product":
+            products.append(node)
+        # ItemList wraps each entry, and @graph is the other common shape.
+        for key in ("itemListElement", "@graph", "item"):
+            if key in node:
+                walk(node[key])
+
+    for block in _LD_BLOCK.findall(payload):
+        try:
+            walk(json.loads(block))
+        except ValueError:
+            continue  # one malformed block must not lose the others
+    return products
+
+
+def _offer_of(product: dict) -> dict | None:
+    """The first priced offer on a Product, flattened."""
+    offers = product.get("offers")
+    if isinstance(offers, list):
+        offers = next((o for o in offers if isinstance(o, dict)), None)
+    if not isinstance(offers, dict) or offers.get("price") in (None, ""):
+        return None
+    try:
+        price = float(str(offers["price"]).replace(",", ""))
+    except ValueError:
+        return None
+
+    name = " ".join(str(product.get("name") or "").split())[:MAX_ITEM_TEXT]
+    url = str(offers.get("url") or product.get("url") or "")
+    sku = str(product.get("sku") or product.get("mpn") or "")
+    available = str(offers.get("availability") or "")
+    return {
+        # sku when the shop gives one: a stable identity that survives the
+        # link being rewritten, which is exactly what LinkedIn taught us.
+        "id": hashlib.sha1((sku or url or name).encode()).hexdigest()[:12],
+        "text": name or "(unnamed)",
+        "href": url,
+        "price": price,
+        "currency": str(offers.get("priceCurrency") or ""),
+        "in_stock": available.endswith("InStock"),
+    }
+
+
+# A price as a shop writes it, anywhere in a card's text.
+_PRICE_IN_TEXT = re.compile(
+    r"(?:[$€£₪]|USD|EUR|ILS|GBP)\s*([\d][\d,.\s]*)|([\d][\d,.]*)\s*(?:[$€£₪]|USD|EUR|ILS|GBP)")
+
+
+def _selector_offers(spec: dict, payload: str) -> list:
+    """The fallback: offers read off cards, for shops that publish no standard.
+
+    Worse than JSON-LD in every way that matters -- no currency, no stock, no
+    sku, and a price scraped out of prose -- but it is what Amazon and most
+    shops leave us. The first money-shaped number in a card is the price the
+    card is advertising; where a shop shows a struck-through original it comes
+    second, so this takes the first and is right more often than not.
+    """
+    selector = spec.get("selector")
+    if not selector:
+        return []
+    try:
+        soup = _soup(payload)
+        nodes = soup.select(selector)
+    except Exception:  # noqa: BLE001
+        return []
+
+    offers = []
+    for node in nodes[:MAX_ITEMS]:
+        text = " ".join(node.get_text(" ", strip=True).split())[:MAX_ITEM_TEXT]
+        match = _PRICE_IN_TEXT.search(text)
+        if not match:
+            continue
+        try:
+            price = parse_number(match.group(1) or match.group(2))
+        except ValueError:
+            continue
+        href = _item_href(node)
+        offers.append({
+            "id": hashlib.sha1(
+                _stable_key(node, href, text).encode()).hexdigest()[:12],
+            "text": text,
+            "href": href,
+            "price": price,
+            "currency": "",
+            "in_stock": True,
+        })
+    return offers
+
+
+def _offers_on(spec: dict, payload: str) -> list:
+    """Every priced offer on the page, cheapest first.
+
+    The standard is tried first and a selector is the fallback, never the other
+    way round: JSON-LD carries currency, stock and a stable sku, and a shop
+    keeps it working because Google reads it.
+    """
+    offers = [o for o in (_offer_of(p) for p in _ld_products(payload)) if o]
+    if not offers:
+        offers = _selector_offers(spec, payload)
+    return sorted(offers, key=lambda o: o["price"])
+
+
+def _run_offers(spec: dict, payload: str):
+    """Cheapest priced offer on the page. Zero offers is not a failure."""
+    offers = _offers_on(spec, payload)
+    if not offers:
+        return None, _Missed("no priced offer found on this page")
+    return str(offers[0]["price"]), None
+
+
 def _count_items(spec: dict, payload: str) -> list:
     """What the count matched, as text and link.
 
@@ -538,6 +695,7 @@ def _count_items(spec: dict, payload: str) -> list:
 
 
 _RUNNERS = {
+    "offers": _run_offers,
     "jsonpath": _run_jsonpath,
     "css": _run_css,
     "regex": _run_regex,
@@ -646,6 +804,10 @@ def extract(spec: dict, payload: str) -> Extraction:
         count = int(raw)
         return Extraction(OK, value=(count > 0) if parse == "bool" else count,
                           raw=raw, items=_count_items(spec, body))
+
+    if kind == "offers":
+        found = _offers_on(spec, body)
+        return Extraction(OK, value=found[0]["price"], raw=raw, items=found)
 
     try:
         value = coerce(raw, parse)

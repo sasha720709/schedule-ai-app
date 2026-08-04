@@ -674,3 +674,104 @@ def test_no_other_kind_produces_items():
     result = extract({"kind": "regex", "pattern": r"\$([\d.]+)",
                       "parse": "currency"}, "price $429.00")
     assert result.items == []
+
+
+# ---------------------------------------------------------------------------
+# `offers`: the cheapest thing on a shop page, from a standard where possible
+# ---------------------------------------------------------------------------
+
+LD_PAGE = """<html><head>
+<script type="application/ld+json">
+{"@context":"http://schema.org/","@type":"ItemList","itemListElement":[
+ {"@type":"ListItem","position":1,"item":{"@type":"Product","name":"Xbox headset",
+  "sku":"H1","offers":{"@type":"Offer","priceCurrency":"ILS","price":139,
+  "availability":"http://schema.org/InStock","url":"https://shop/x/1"}}},
+ {"@type":"ListItem","position":2,"item":{"@type":"Product","name":"Xbox Series X 1TB",
+  "sku":"C9","offers":{"@type":"Offer","priceCurrency":"ILS","price":2099,
+  "availability":"http://schema.org/OutOfStock","url":"https://shop/x/2"}}}
+]}
+</script></head><body>nothing useful here</body></html>"""
+
+
+def test_offers_reads_the_published_standard():
+    """schema.org/Product is a contract a shop keeps working because Google
+    reads it -- unlike a CSS class, which changes on the next redesign."""
+    result = extract({"kind": "offers", "parse": "float"}, LD_PAGE)
+
+    assert result.status == OK
+    assert result.value == 139.0            # the cheapest, as the scalar
+    assert len(result.items) == 2
+
+
+def test_an_offer_carries_what_a_selector_cannot_reach():
+    result = extract({"kind": "offers", "parse": "float"}, LD_PAGE)
+    cheapest = result.items[0]
+
+    assert cheapest["currency"] == "ILS"
+    assert cheapest["in_stock"] is True
+    assert cheapest["href"] == "https://shop/x/1"
+    assert result.items[1]["in_stock"] is False
+
+
+def test_offers_come_back_cheapest_first():
+    prices = [o["price"] for o in extract({"kind": "offers"}, LD_PAGE).items]
+    assert prices == sorted(prices)
+
+
+def test_identity_prefers_the_shops_own_sku():
+    """A link can be rewritten between fetches -- LinkedIn taught that. An sku
+    cannot."""
+    same_page_new_links = LD_PAGE.replace("https://shop/x/", "https://shop/y/")
+    first = extract({"kind": "offers"}, LD_PAGE).items
+    second = extract({"kind": "offers"}, same_page_new_links).items
+
+    assert [o["id"] for o in first] == [o["id"] for o in second]
+
+
+CARDS = """<html><body>
+  <div class="card"><a href="/p/1">Gaming headset</a> <span>$34.99</span></div>
+  <div class="card"><a href="/p/2">Xbox Series X</a> <span>$529.00</span></div>
+  <div class="card"><a href="/p/3">A poster, no price</a></div>
+</body></html>"""
+
+
+def test_a_selector_is_the_fallback_when_there_is_no_standard():
+    """Amazon and most shops publish no product JSON-LD, so this is what they
+    get: worse in every way that matters, and it is what there is."""
+    result = extract({"kind": "offers", "selector": ".card"}, CARDS)
+
+    assert result.value == 34.99
+    assert [o["price"] for o in result.items] == [34.99, 529.00]
+
+
+def test_a_card_with_no_price_is_not_an_offer():
+    result = extract({"kind": "offers", "selector": ".card"}, CARDS)
+    assert all("poster" not in o["text"] for o in result.items)
+
+
+def test_the_standard_wins_when_a_page_has_both():
+    """JSON-LD carries currency, stock and an sku. A selector never does, so it
+    must not shadow it."""
+    both = LD_PAGE.replace("</body>", CARDS + "</body>")
+    result = extract({"kind": "offers", "selector": ".card"}, both)
+
+    assert result.items[0]["currency"] == "ILS"
+
+
+def test_a_page_with_no_offers_at_all_is_not_a_crash():
+    result = extract({"kind": "offers", "selector": ".card"},
+                     "<html><body><p>nothing</p></body></html>")
+    assert result.status == FAILED
+    assert result.items == []
+
+
+def test_a_malformed_json_ld_block_does_not_lose_the_others():
+    broken = LD_PAGE.replace("<head>",
+                             '<head><script type="application/ld+json">{oops</script>')
+    assert extract({"kind": "offers"}, broken).value == 139.0
+
+
+def test_offers_refuses_a_parse_that_is_not_money():
+    for parse in ("text", "bool", "int"):
+        with pytest.raises(SpecError):
+            extract({"kind": "offers", "parse": parse}, LD_PAGE)
