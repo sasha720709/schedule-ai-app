@@ -76,6 +76,7 @@ match the Lambda runtime. Nothing here makes that worse.
 predicates like "out of stock" that are a phrase rather than an element.
 """
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -104,6 +105,17 @@ class _Missed(str):
     """
 
 
+# A count can match a page listing hundreds of things. Enough to show a person
+# what appeared, bounded so a target row cannot grow without limit -- DynamoDB
+# stops at 400KB per item and a watch that has been running for months would
+# find that ceiling.
+MAX_ITEMS = 25
+
+# How much of one item's text is kept. A job title is short; the surrounding
+# card can be a paragraph.
+MAX_ITEM_TEXT = 200
+
+
 @dataclass
 class Extraction:
     status: str
@@ -111,6 +123,10 @@ class Extraction:
     raw: str | None = None
     error: str | None = None
     notes: list = field(default_factory=list)
+    # What a `count` actually matched, not merely how many. Empty for every
+    # other kind. This is the difference between an email that says "1" and one
+    # that says which job appeared and links to it.
+    items: list = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -122,6 +138,7 @@ class Extraction:
             "value": self.value,
             "raw": self.raw,
             "error": self.error,
+            "items": self.items,
         }
 
 
@@ -416,6 +433,52 @@ def _run_count(spec: dict, payload: str):
     return str(len(matches)), None
 
 
+def _item_href(node) -> str:
+    """The link for a matched item.
+
+    Left **relative** if the page wrote it relative. This module only ever sees
+    a payload, never the URL it came from, so joining is done where the URL is
+    known -- the Notifier. Guessing a base here would be inventing a fact.
+    """
+    href = node.get("href") if node.name == "a" else None
+    if not href:
+        link = node.find("a", href=True)
+        href = link["href"] if link else ""
+    return str(href or "").strip()
+
+
+def _count_items(spec: dict, payload: str) -> list:
+    """What the count matched, as text and link.
+
+    `count` returned an integer and nothing else, so a triggered vacancy watch
+    emailed the user the word "1" and a link to the *search page* -- leaving
+    them to go and find the posting themselves, which is most of the work they
+    asked to be spared.
+
+    Identity is computed here rather than by each caller so that "the same
+    posting" means one thing everywhere: the Checker deduplicates on it, and
+    the email is written from it.
+    """
+    try:
+        soup = _soup(payload)
+        matches = soup.select(spec["selector"])
+    except Exception:  # noqa: BLE001 -- the count already succeeded; this is extra
+        return []
+
+    items = []
+    for node in matches[:MAX_ITEMS]:
+        text = " ".join(node.get_text(" ", strip=True).split())[:MAX_ITEM_TEXT]
+        href = _item_href(node)
+        if not text and not href:
+            continue
+        items.append({
+            "id": hashlib.sha1(f"{text}\n{href}".encode()).hexdigest()[:12],
+            "text": text,
+            "href": href,
+        })
+    return items
+
+
 _RUNNERS = {
     "jsonpath": _run_jsonpath,
     "css": _run_css,
@@ -523,7 +586,8 @@ def extract(spec: dict, payload: str) -> Extraction:
 
     if kind == "count":
         count = int(raw)
-        return Extraction(OK, value=(count > 0) if parse == "bool" else count, raw=raw)
+        return Extraction(OK, value=(count > 0) if parse == "bool" else count,
+                          raw=raw, items=_count_items(spec, body))
 
     try:
         value = coerce(raw, parse)

@@ -713,3 +713,40 @@ def test_staleness_never_changes_the_watch(aws):
     assert env.watches.updates == []
     assert env.targets.updates == []
     assert env.scheduler.delete_schedule.call_count == 0
+
+
+# --------------------------------------------------------------------------
+# A repeating watch is the only thing here that does not stop by itself
+# --------------------------------------------------------------------------
+
+def test_confirming_a_repeating_watch_gives_it_a_term(aws):
+    """Every other watch reaches a terminal state on its own and stops
+    billing. Without a term a forgotten vacancy watch checks for years."""
+    watches = proposed(interval=60)
+    watches["w_1"]["repeating"] = True
+    aws(watches, one_target())
+    payload = body_of(call("POST /watches/{id}/confirm", watch_id="w_1"))
+
+    assert payload["repeating"] is True
+    assert payload["expires_at"] is not None
+
+
+def test_a_one_shot_watch_gets_no_expiry(aws):
+    """It already has one: firing."""
+    aws(watches=proposed(), targets=one_target())
+    payload = body_of(call("POST /watches/{id}/confirm", watch_id="w_1"))
+
+    assert payload["repeating"] is False
+    assert payload["expires_at"] is None
+
+
+def test_the_term_starts_when_checking_starts_not_when_planning_did(aws):
+    """Set at confirm rather than at plan time -- a watch described on Monday
+    and confirmed on Friday should get its full term."""
+    watches = proposed(interval=60)
+    watches["w_1"]["repeating"] = True
+    env = aws(watches, one_target())
+    call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    stored = env.watches.updates[-1]["ExpressionAttributeValues"]
+    assert stored[":x"] > stored[":t"]

@@ -23,6 +23,7 @@ import {
   monthlyCost,
   setWatchStatus,
   type Staleness,
+  type MatchedItem,
   type Target,
   type Watch,
 } from "./api";
@@ -298,6 +299,32 @@ function describeNextCheck(iso: string): string {
   return `next check ${when}, in ${Math.round(hours / 24)} days`;
 }
 
+/**
+ * The postings themselves, with links.
+ *
+ * This replaces the worst thing the product did: a `count` extractor returned
+ * an integer, so a vacancy watch told the user "1" and linked to the search
+ * page, leaving them to go and find the job -- which is most of the work they
+ * asked to be spared.
+ */
+function Matches({ items, base }: { items: MatchedItem[]; base: string }) {
+  return (
+    <ul className="matches">
+      {items.map((item) => (
+        <li key={item.id}>
+          {item.href ? (
+            <a href={new URL(item.href, base).href} target="_blank" rel="noreferrer">
+              {item.text || "(untitled)"}
+            </a>
+          ) : (
+            item.text || "(untitled)"
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** "3 h ago". Deliberately coarse -- this is context, not a measurement. */
 function describeSince(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -392,6 +419,32 @@ function WatchRow({
         <p className="muted">{describeNextCheck(nextCheck)}</p>
       )}
 
+      {/* The difference a person needs to know before confirming: this one
+          does not stop at the first result, and therefore has an end date. */}
+      {watch.repeating && watch.status !== "expired" && (
+        <p className="muted">
+          keeps running — reports each new match once, never the same one twice
+          {watch.trigger_count ? ` · ${watch.trigger_count} reported so far` : ""}
+          {watch.expires_at
+            ? ` · runs until ${new Date(watch.expires_at).toLocaleDateString()}`
+            : ""}
+        </p>
+      )}
+
+      {watch.status === "expired" && (
+        <p className="muted">
+          finished: this watch ran its full term and stopped
+          {watch.trigger_count
+            ? `, after telling you about ${watch.trigger_count} thing${
+                watch.trigger_count === 1 ? "" : "s"
+              }`
+            : ""}
+          . Nothing went wrong — a watch that keeps running rather than
+          stopping at its first result is given an end date so a forgotten one
+          cannot check for years. Describe it again to restart it.
+        </p>
+      )}
+
       {watch.plan_error && (
         <p className="error">planning failed: {watch.plan_error}</p>
       )}
@@ -430,6 +483,19 @@ function WatchRow({
                   read <strong>{String(t.verified_raw)}</strong> just now —
                   this is what will be watched
                 </p>
+              )}
+              {/* A count verified at zero is honest and says nothing on its
+                  own. This is what lets someone judge the filter before
+                  paying for a schedule. */}
+              {t.unfiltered_count != null && (
+                <p className="muted">
+                  {t.unfiltered_count} item
+                  {t.unfiltered_count === 1 ? "" : "s"} listed on this page
+                  today, {String(t.verified_raw ?? 0)} of which match
+                </p>
+              )}
+              {!!t.verified_items?.length && (
+                <Matches items={t.verified_items} base={t.url} />
               )}
               <p className="muted">{t.extract_hint}</p>
             </div>
@@ -493,6 +559,9 @@ function WatchRow({
                   {" "}
                   — last read <strong>{t.last_value}</strong>
                 </>
+              )}
+              {!!t.last_items?.length && (
+                <Matches items={t.last_items} base={t.url} />
               )}
               {t.last_note && <p className="muted">{t.last_note}</p>}
               {t.last_error && <p className="error">{t.last_error}</p>}

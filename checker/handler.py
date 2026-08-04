@@ -253,6 +253,9 @@ def _judge_extraction(spec, payload, target, watch_condition) -> dict:
         "note": "",
         "error": None,
         "condition_met": met,
+        # Only a `count` produces these. They are what a repeating watch
+        # deduplicates on and what the email is written from.
+        "items": result.items,
     }
 
 
@@ -271,6 +274,73 @@ def _tier_model(target: dict, watch_condition: dict, fetch_method: str) -> dict:
         "error": None,
         "condition_met": bool(verdict.get("condition_met")),
     }
+
+
+# How many item identities to keep per target. A job board churns; without a
+# cap this list would grow for as long as the watch lived, and DynamoDB stops
+# at 400KB per item. Twelve-hex ids, so 500 of them is about 7KB.
+#
+# The consequence of the cap, stated rather than hidden: a posting that falls
+# out of the window and later reappears is reported again. That is the right
+# way round -- a duplicate email is a small annoyance, a missed job is the
+# thing the watch exists to prevent.
+MAX_SEEN_ITEMS = 500
+
+
+def _json_safe(value):
+    """DynamoDB hands numbers back as Decimal, which json.dumps refuses."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    raise TypeError(f"not JSON serializable: {type(value).__name__}")
+
+
+def _remember(targets_table, target_id: str, target: dict, fresh: list) -> None:
+    """Record which items have now been reported, newest last, bounded."""
+    seen = list(target.get("seen_item_ids") or [])
+    seen.extend(i["id"] for i in fresh if i.get("id"))
+    targets_table.update_item(
+        Key={"target_id": target_id},
+        UpdateExpression="SET seen_item_ids = :s",
+        ExpressionAttributeValues={":s": seen[-MAX_SEEN_ITEMS:]},
+    )
+
+
+def _expire(watches_table, watch: dict, target: dict, now: str) -> dict:
+    """A repeating watch that has run out its term. Not a fault.
+
+    Reuses the `WatchDegraded` event because it does exactly the right two
+    things -- email, then tear down the schedules -- and adding a third event
+    type would mean a third EventBridge rule for a difference the plumbing
+    does not care about. The user-facing wording is what has to be honest, so
+    `reason_kind` tells the Notifier which email to write. Nothing here is
+    broken and the email must not say it is.
+    """
+    watch_id = watch["watch_id"]
+    print(f"EXPIRED {watch_id}: term ended at {watch.get('expires_at')}")
+
+    watches_table.update_item(
+        Key={"watch_id": watch_id},
+        UpdateExpression="SET #s = :s, expired_at = :t",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "expired", ":t": now},
+    )
+    events.put_events(Entries=[{
+        "Source": "schedule-ai-app.checker",
+        "DetailType": "WatchDegraded",
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Detail": json.dumps({
+            "watch_id": watch_id,
+            "target_id": target["target_id"],
+            "url": target["url"],
+            "prompt": watch.get("prompt", ""),
+            "reason_kind": "expired",
+            "reason": f"the watch reached the end of its term "
+                      f"({watch.get('expires_at')})",
+            "trigger_count": int(watch.get("trigger_count") or 0),
+            "degraded_at": now,
+        }),
+    }])
+    return {"checked": False, "status": "expired"}
 
 
 def _degrade(watches_table, targets_table, watch: dict, target: dict,
@@ -352,6 +422,15 @@ def lambda_handler(event, context):
         return {"skipped": True, "status": watch["status"]}
 
     now = datetime.now(timezone.utc).isoformat()
+
+    # A repeating watch is the first thing here that does not stop by itself.
+    # Everything else -- triggered, degraded -- reaches a terminal state and
+    # stops billing; a vacancy watch would otherwise run until someone
+    # remembered it. Checked before the fetch, so an expired watch costs one
+    # DynamoDB read rather than a page.
+    expires_at = watch.get("expires_at")
+    if expires_at and now >= expires_at:
+        return _expire(watches_table, watch, target, now)
     # Read outside the try: the failure path reports cost by fetch method, and
     # must not itself fail on an unbound name.
     fetch_method = target.get("fetch_method", "http")
@@ -471,7 +550,7 @@ def lambda_handler(event, context):
         UpdateExpression=(
             "SET last_value = :v, last_raw = :r, last_checked_at = :t, "
             "last_note = :n, last_status = :s, consecutive_failures = :f, "
-            "last_changed_at = :c, unchanged_checks = :u "
+            "last_changed_at = :c, unchanged_checks = :u, last_items = :i "
             "REMOVE last_error"
         ),
         ExpressionAttributeValues={
@@ -481,24 +560,58 @@ def lambda_handler(event, context):
             ":t": now,
             ":n": result["note"],
             ":s": result["status"],
+            ":i": _to_decimal(result.get("items") or []),
             ":c": now if moved else (target.get("last_changed_at") or now),
             ":u": unchanged,
         },
     )
 
     condition_met = bool(result["condition_met"])
+
+    # A repeating watch reports each posting once and keeps running. That needs
+    # per-item identity, so a watch with nothing to identify degrades to
+    # one-shot -- the safe direction, because it can then fire once too few and
+    # never once per tick forever.
+    items = result.get("items") or []
+    dedup = bool(watch.get("repeating")) and bool(items)
+    if dedup:
+        seen = set(target.get("seen_item_ids") or [])
+        fresh = [i for i in items if i.get("id") not in seen]
+    else:
+        fresh = items
+
+    # Condition AND novelty. Without the second half a vacancy watch would
+    # email every tick for as long as the posting stayed on the page, which is
+    # worse than the silence it was built to fix.
+    fires = condition_met and (bool(fresh) if dedup else True)
+
     print(
         f"target={target_id} status={result['status']} value={result['value']!r} "
         f"met={condition_met} model={used_model}"
+        + (f" new={len(fresh)}/{len(items)}" if dedup else "")
     )
 
-    if condition_met:
-        watches_table.update_item(
-            Key={"watch_id": watch_id},
-            UpdateExpression="SET #s = :s, triggered_at = :t",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": "triggered", ":t": now},
-        )
+    if fires:
+        if dedup:
+            _remember(targets_table, target_id, target, fresh)
+            # Status stays `active`: the watch is not finished, it just spoke.
+            watches_table.update_item(
+                Key={"watch_id": watch_id},
+                UpdateExpression=(
+                    "SET last_triggered_at = :t, trigger_count = :n"
+                ),
+                ExpressionAttributeValues={
+                    ":t": now,
+                    ":n": int(watch.get("trigger_count") or 0) + 1,
+                },
+            )
+        else:
+            watches_table.update_item(
+                Key={"watch_id": watch_id},
+                UpdateExpression="SET #s = :s, triggered_at = :t",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":s": "triggered", ":t": now},
+            )
         # Announce it and move on. The Checker doesn't know or care that a
         # Notifier exists -- anything interested can subscribe to the bus.
         events.put_events(Entries=[{
@@ -513,14 +626,24 @@ def lambda_handler(event, context):
                 "last_value": result["raw"] if result["raw"] is not None
                 else result["value"],
                 "note": result["note"],
+                # What appeared, not merely how many. The email used to say
+                # "1" and link to the search page, leaving the user to go and
+                # find the posting themselves.
+                "items": fresh,
+                # Tells the Notifier whether to tear the schedules down. A
+                # repeating watch must survive its own notification.
+                "repeating": dedup,
                 "triggered_at": now,
-            }),
+            }, default=_json_safe),
         }])
-        print(f"CONDITION MET for watch {watch_id} -- event emitted")
+        print(f"CONDITION MET for watch {watch_id} -- event emitted"
+              + (f" ({len(fresh)} new)" if dedup else ""))
 
     return {
         "checked": True,
         "status": result["status"],
         "condition_met": condition_met,
+        "notified": fires,
+        "new_items": len(fresh) if dedup else None,
         "last_value": result["value"],
     }

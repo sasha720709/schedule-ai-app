@@ -19,7 +19,10 @@ export type Status =
   // 8d: the watch could no longer read its target, repair did not help, and
   // checking was stopped so it bills nothing. Not an error status of ours --
   // the page changed underneath the extractor.
-  | "degraded";
+  | "degraded"
+  // A repeating watch that ran out its term. Terminal, and NOT a fault --
+  // it is the guard that stops a forgotten vacancy watch checking for years.
+  | "expired";
 
 export interface Watch {
   watch_id: string;
@@ -46,6 +49,14 @@ export interface Watch {
   };
   planned_at?: string;
   confirmed_at?: string;
+  /** Does firing once finish the job? False for a price crossing a threshold,
+   * true for a vacancy -- a job search is a stream, not an event. */
+  repeating?: boolean;
+  /** Only a repeating watch has one: it is the only thing here that does not
+   * stop by itself. */
+  expires_at?: string | null;
+  last_triggered_at?: string;
+  trigger_count?: number;
   triggered_at?: string;
   plan_error?: string;
   degraded_at?: string;
@@ -69,6 +80,12 @@ export interface CostEstimate {
   within_budget: boolean;
 }
 
+export interface MatchedItem {
+  id: string;
+  text: string;
+  href: string;
+}
+
 export interface Target {
   target_id: string;
   watch_id: string;
@@ -86,6 +103,14 @@ export interface Target {
   // $333.43 just now" on the plan card.
   verified_raw?: string | number;
   verified_at?: string;
+  /** What a `count` matched, rather than merely how many. This is what turns
+   * "1" into a job you can click. */
+  verified_items?: MatchedItem[];
+  last_items?: MatchedItem[];
+  /** How many items the list holds ignoring the text filter. "47 listed here
+   * today, 3 of which match" is the only honest thing to say about a count
+   * that verified at zero. */
+  unfiltered_count?: number;
   /** Quotes only: which instrument the ticker actually resolved to. A bare
    * ticker for a foreign company returns the US depositary receipt -- a
    * different security, in dollars -- and there was no way to notice. */
@@ -184,6 +209,8 @@ export const confirmWatch = (
      * so the server rounds up to a cadence it can actually express. */
     check_interval_min: number;
     next_check_at: string | null;
+    repeating: boolean;
+    expires_at: string | null;
   }>(
     passcode,
     `/watches/${id}/confirm`,

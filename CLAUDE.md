@@ -88,15 +88,27 @@ worth knowing without opening it:
   $0.012/month at 15-minute checks.** Cost is *not* the constraint for this
   feature, unlike shares. The Israeli job boards stayed `http` in the 8b live
   run; a JS-rendered board (LinkedIn) would cost 45× and still be under $2.
-- **The triggered email currently says `What was found: 1`** — a count, with
-  an empty "why". No title, no link, no description. `count` returns an
-  integer and Tier 0 sets `note` to `""`. Highest value-per-line fix in the
-  feature: return the matched *items*, not how many.
+- ~~**The triggered email says `What was found: 1`.**~~ Fixed 2026-08-04.
+  `count` now carries `items` (text, href, and a stable sha1 `id`), the email
+  lists the jobs with links, and the plan card says "50 listed today, 5 of
+  which match". **Repeating watches** shipped with it: a `presence` watch
+  keeps running, reports each posting once, and expires after 90 days —
+  the first thing here that does not stop by itself.
 - **Judging costs per new posting, not per check**, so personalisation is
   cheap: ~$0.03/month for a niche query against $49/month if a model ran every
   tick. It also *fixes* the kind's worst failure mode — a text filter cannot
   be verified against a posting that does not exist yet, so the selector
   should be deliberately loose and the model should decide.
+
+**Vacancies steps 1 and 2 are done** (2026-08-04) — matched items, the
+plan-time preview, repeating watches with per-item dedup, and a 90-day term.
+Proven live on the Python Job Board: `new=6/6` → one email with six links →
+`new=0/6` twice → silence, watch still running. **Two things to know**: the
+generic Beer Sheva request still fails at *target selection* (the search picks
+cookie-walled career pages and LinkedIn; `SEARCH_PROMPT` has no steer for job
+boards), and `shared/fetch.py` had been **paying 45× for nothing** — it never
+decompressed gzip, so ordinary pages arrived as line noise and escalated to
+Chromium. $3.22/mo → $0.003/mo on the same watch. `shared/test_fetch.py` is new.
 
 **`docs/shares-roadmap.md` is the finish-the-shares plan**, written 2026-08-04
 with the arguments and the evidence, including three things it recommends
@@ -259,7 +271,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 451 of them (counts
+- **Every Lambda has tests; the chain still does not.** 494 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -378,9 +390,9 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**451 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 207, `planner/` 99, `api/` 66,
-`authorizer/` 24, `checker/` 28, `notifier/` 21, `fetcher/` 6. They run on
+**494 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 227, `planner/` 99, `api/` 69,
+`authorizer/` 24, `checker/` 39, `notifier/` 30, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**

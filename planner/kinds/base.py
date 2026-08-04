@@ -95,6 +95,20 @@ class Kind:
     # right for a shop's price and wrong for anything with a calendar.
     window = None
 
+    # Does firing once finish the job?
+    #
+    # For a price it does: "tell me when it drops below $700" is answered the
+    # first time it drops, and continuing to check bills for a settled fact.
+    # For a vacancy it does not. A job search is a stream you follow for
+    # weeks, and a watch that reports the first posting and then goes silent
+    # is a broken product rather than a completed one.
+    #
+    # A repeating watch is the first thing here that does not stop by itself,
+    # so two things exist only because of it: per-item deduplication, so the
+    # same posting is not reported twice, and an expiry, so a forgotten watch
+    # cannot bill forever.
+    repeating = False
+
     def plan(self, request: str, symbol=None, *, client=None) -> dict:
         """Turn the request into targets, a condition and an interval.
 
@@ -136,6 +150,17 @@ class CompiledKind(Kind):
     def prove(self, spec: dict, raw: str) -> str | None:
         """Extra proof beyond "it ran". Return a complaint, or None to accept."""
         return None
+
+    def extras(self, spec: dict, raw: str, result) -> dict:
+        """Kind-specific facts about this verification, for the target row.
+
+        Exists so the plan card can say something more useful than a number.
+        A count verified at zero is honest and completely uninformative on its
+        own; "47 items in this list today, 3 of which match" tells the user
+        whether the filter is plausible, using a figure the proof step already
+        computes and used to throw away.
+        """
+        return {}
 
     def feedback(self, result, anchor: str) -> str:
         """What to tell the model when the spec ran but did not produce a value."""
@@ -256,7 +281,11 @@ def compile_and_verify(kind: CompiledKind, url: str, hint: str, anchor: str,
                 print(f"[verified] {url} -> {result.value!r} via {spec}",
                       file=sys.stderr)
                 return {"extractor": spec, "verified_value": result.value,
-                        "verified_raw": result.raw, "literal": anchor}
+                        "verified_raw": result.raw, "literal": anchor,
+                        # What it matched, not merely how many -- the whole
+                        # point of the change that made a count return items.
+                        "verified_items": result.items,
+                        **kind.extras(spec, raw, result)}
             feedback = complaint
             print(f"[attempt {attempt + 1} unproven] {complaint}", file=sys.stderr)
             continue

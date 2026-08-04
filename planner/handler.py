@@ -179,6 +179,15 @@ def lambda_handler(event, context):
                 **{k: resolved[k]
                    for k in ("instrument_name", "exchange", "currency")
                    if resolved.get(k)},
+                # What the extractor matched at plan time, and how many items
+                # the list holds in total. A count verified at zero is honest
+                # and completely uninformative on its own; "47 listed today, 3
+                # of which match" is what lets a person judge the filter
+                # before paying for a schedule.
+                **({"verified_items": _to_decimal(resolved["verified_items"])}
+                   if resolved.get("verified_items") else {}),
+                **({"unfiltered_count": _to_decimal(resolved["unfiltered_count"])}
+                   if resolved.get("unfiltered_count") is not None else {}),
             })
 
         # Only now is there a real number to be relative to. Doing this before
@@ -228,13 +237,18 @@ def lambda_handler(event, context):
                 "planner_interval_min = :p, min_interval_min = :f, "
                 # Stored so a wrong fork is visible on the plan card before the
                 # user confirms, rather than discovered weeks later.
-                "watch_kind = :k, planned_at = :t "
+                "watch_kind = :k, planned_at = :t, repeating = :r "
                 "REMOVE plan_error"
             ),
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
             ExpressionAttributeValues={
                 ":s": "proposed",
                 ":k": kind.name,
+                # A property of the kind, resolved here so it is on the row --
+                # visible on the plan card, and changeable per watch later
+                # without touching the class. A vacancy is a stream; a price
+                # crossing a threshold is an event. See Kind.repeating.
+                ":r": bool(kind.repeating),
                 ":c": _to_decimal(condition),
                 ":i": _to_decimal(interval),
                 ":p": _to_decimal(proposed),

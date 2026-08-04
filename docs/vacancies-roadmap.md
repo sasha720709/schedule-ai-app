@@ -239,19 +239,81 @@ Ordered by value per unit of work.
 
 ---
 
-## 6. Recommended order
+## 6. What was built, 2026-08-04
+
+Steps 1 and 2 of §6 below, in one pass. Proven live against the Python Job
+Board: `new=6/6` on the first tick → one email listing six jobs with links →
+`new=0/6` on the next two ticks → **silence, with the watch still running**.
+
+- **A `count` returns what it matched.** `extract.py` carries `items` —
+  text, href, and a stable `id` (sha1 of text + href) computed in one place so
+  "the same posting" means one thing to the deduplicator and to the email.
+  Capped at 25 items and 200 characters each: a board can list hundreds and a
+  DynamoDB row stops at 400KB.
+- **The email lists the jobs.** Relative links are joined in the Notifier,
+  which is the first place that knows both the href and the page it came from
+  — `extract.py` only ever sees a payload.
+- **The plan card says what it can see.** "50 items listed today, 5 of which
+  match", from the unfiltered count the proof step already computed and used
+  to throw away. This is the answer to §3.7: a count verified at zero is
+  honest and uninformative, and this is what lets a person judge the filter
+  before paying for a schedule.
+- **`repeating` is a property of the kind.** `PresenceKind.repeating = True`,
+  resolved onto the watch row at plan time so it is visible and overridable
+  later. A price crossing a threshold is an event; a job search is a stream.
+- **Firing needs condition AND novelty.** Without the second half a vacancy
+  watch emails every tick for as long as the posting stays on the page, which
+  is worse than the silence it was built to fix.
+- **A repeating watch with nothing to identify degrades to one-shot.** The
+  safe direction: it can fire once too few, never once per tick forever.
+- **Repeating watches expire after 90 days.** They are the first thing in this
+  system that does not stop by itself — everything else reaches a terminal
+  state and stops billing. The term starts at confirm, not at plan time. The
+  expiry reuses the `WatchDegraded` event because both need "email, then tear
+  down" and a third event type would mean a third EventBridge rule; the email
+  branches on `reason_kind` so it never claims something broke.
+
+### The bug the live run found, which was costing 45x
+
+`shared/fetch.py` sent a browser User-Agent and never decompressed anything.
+`urllib` asks for `identity` and some servers compress regardless — python.org
+does, behind its CDN. **Decoding gzip bytes as UTF-8 does not raise; it
+produces line noise.** So an ordinary HTML page arrived as garbage, the
+Planner reported *"page content is corrupted/unreadable binary data"*, and the
+escalation did the sensible thing and rendered it in Chromium.
+
+Measured on the same watch, before and after: **$3.22/month → $0.003/month**,
+and a 1-minute interval went from *refused by the budget gate at $16.11* to
+$0.18. Every gzip-serving site was being needlessly rendered. `shared/`
+now has `test_fetch.py`, which it did not before.
+
+---
+
+## 7. Recommended order
 
 **Nothing here needs a cost decision**, which is unusual for this project and
 should be enjoyed.
 
-1. Matched items instead of a bare count (3.1) — plus the plan-time preview
-   (5.2, 5.3), which falls out of the same change.
-2. Seen-IDs (3.5) and recurring watches (3.4). These two are one piece of
-   work; a recurring watch without dedup is worse than no recurring watch.
+1. ✅ Matched items instead of a bare count (3.1), plus the plan-time preview
+   (5.2, 5.3), which fell out of the same change.
+2. ✅ Seen-IDs (3.5) and recurring watches (3.4). These were one piece of work;
+   a recurring watch without dedup is worse than no recurring watch.
 3. The judgement step (§4) — Tier 1 over *new* postings only.
 4. Clarifying questions (3.6), last, because they are the only part that needs
    multi-turn chat and the only part that is pure gain rather than a
    correction.
 
-Steps 1 and 2 are what makes the feature usable. Steps 3 and 4 are what makes
-it the thing the owner actually described.
+Steps 1 and 2 made the feature usable and are done. Steps 3 and 4 are what
+make it the thing the owner actually described.
+
+### One thing 1 and 2 did not fix: target selection
+
+The generic request — *"tell me when a student job for a cloud engineer opens
+in Beer Sheva"* — still fails to plan. The web search chose
+`careers.wix.com` (a cookie wall that defeats Chromium too) and LinkedIn
+(known hostile). `SEARCH_PROMPT` steers away from Amazon and Best Buy for
+prices; it has no equivalent steer for job boards, and nothing tells it which
+Israeli boards actually answer. That is a *search* problem, not a machinery
+problem — the machinery works, as the Python Job Board run shows — and it is
+the next thing to fix if the feature is to serve the request it was built
+for.

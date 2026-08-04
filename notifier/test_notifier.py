@@ -439,3 +439,123 @@ def test_a_later_target_is_still_torn_down_when_an_earlier_tidy_fails(aws):
 
     assert result["schedules_deleted"] == [
         "schedule-ai-app-t_1", "schedule-ai-app-t_2"]
+
+
+# --------------------------------------------------------------------------
+# Repeating watches: the postings themselves, and surviving the email
+# --------------------------------------------------------------------------
+
+JOBS = [
+    {"id": "aaa", "text": "Junior Cloud Engineer - Student",
+     "href": "/jobs/1"},
+    {"id": "bbb", "text": "Cloud Architect", "href": "/jobs/5"},
+]
+
+
+def test_the_email_lists_the_postings_rather_than_a_number(aws):
+    """The single worst line in the product. A count extractor returned an
+    integer, so a triggered vacancy watch emailed the word "1" and a link to
+    the search page -- leaving the user to go and find the job themselves,
+    which is most of the work they asked to be spared."""
+    env = aws()
+    handler.lambda_handler(
+        triggered(items=JOBS, repeating=True, last_value="2",
+                  url="https://jobs.example.com/search?q=cloud"), None)
+    subject, body = sent(env)
+
+    assert "Junior Cloud Engineer - Student" in body
+    assert "Cloud Architect" in body
+    assert "\n  2\n" not in body
+
+
+def test_relative_links_are_joined_to_the_page_they_came_from(aws):
+    """`extract.py` only ever sees a payload, never the URL it came from, so
+    this is the first place that knows both."""
+    env = aws()
+    handler.lambda_handler(
+        triggered(items=JOBS, repeating=True,
+                  url="https://jobs.example.com/search?q=cloud"), None)
+    _, body = sent(env)
+
+    assert "https://jobs.example.com/jobs/1" in body
+
+
+def test_a_repeating_watch_keeps_its_schedules(aws):
+    """The entire difference. Tearing them down here would turn "tell me about
+    every new vacancy" back into "tell me about the first one", silently, with
+    the email already sent."""
+    env = aws()
+    result = handler.lambda_handler(
+        triggered(items=JOBS, repeating=True), None)
+
+    assert result["schedules_deleted"] == []
+    env.scheduler.delete_schedule.assert_not_called()
+
+
+def test_a_repeating_email_says_it_is_still_running(aws):
+    env = aws()
+    handler.lambda_handler(triggered(items=JOBS, repeating=True), None)
+    subject, body = sent(env)
+
+    assert "still running" in body
+    assert "stopped checking" not in body
+    assert subject.startswith("2 new:")
+
+
+def test_a_one_shot_watch_still_tears_everything_down(aws):
+    env = aws()
+    result = handler.lambda_handler(triggered(), None)
+
+    assert result["schedules_deleted"]
+    assert "stopped checking" in sent(env)[1]
+    env.scheduler.delete_schedule.assert_called()
+
+
+def test_an_item_without_a_link_is_still_listed(aws):
+    env = aws()
+    handler.lambda_handler(
+        triggered(repeating=True,
+                  items=[{"id": "c", "text": "Cloud Engineer", "href": ""}]),
+        None)
+    _, body = sent(env)
+
+    assert "Cloud Engineer" in body
+
+
+# --------------------------------------------------------------------------
+# Expiry is not a fault
+# --------------------------------------------------------------------------
+
+def test_an_expired_watch_is_not_described_as_broken(aws):
+    """Reusing WatchDegraded is a plumbing decision -- both need "email, then
+    tear down". Nothing is wrong with an expired watch and the email must not
+    say there is."""
+    env = aws()
+    handler.lambda_handler(
+        degraded(reason_kind="expired", trigger_count=4,
+                 reason="the watch reached the end of its term (2026-11-02)"),
+        None)
+    subject, body = sent(env)
+
+    assert "finished" in subject.lower()
+    assert "stopped working" not in subject
+    assert "redesigned" not in body
+    assert "Nothing is broken" in body
+    assert "told you about 4 things" in body
+
+
+def test_an_expired_watch_still_has_its_schedules_deleted(aws):
+    env = aws()
+    result = handler.lambda_handler(degraded(reason_kind="expired"), None)
+
+    assert result["schedules_deleted"]
+    env.scheduler.delete_schedule.assert_called()
+
+
+def test_a_genuinely_broken_watch_still_says_so(aws):
+    env = aws()
+    handler.lambda_handler(degraded(), None)
+    subject, body = sent(env)
+
+    assert "stopped working" in subject
+    assert "redesigned" in body

@@ -573,3 +573,104 @@ def test_scope_belongs_on_the_outer_spec_only():
     with pytest.raises(SpecError):
         validate_spec(spec(unavailable_if={
             "kind": "regex", "pattern": "x", "scope": ".inner"}))
+
+
+# ---------------------------------------------------------------------------
+# A count returns what it matched, not merely how many
+#
+# The single worst line in the product was a triggered vacancy email reading
+# "What was found: 1" with a link to the search page.
+# ---------------------------------------------------------------------------
+
+LISTING = """<div class="results">
+  <a class="job" href="/jobs/1">Junior Cloud Engineer - Student Position</a>
+  <a class="job" href="/jobs/2">Head Chef</a>
+  <a class="job" href="/jobs/3">Cloud Engineer Intern</a>
+</div>"""
+
+CLOUD = {"scope": ".results", "kind": "count",
+         "selector": 'a.job:-soup-contains("Cloud")', "parse": "int"}
+
+
+def test_a_count_carries_the_items_it_matched():
+    result = extract(CLOUD, LISTING)
+
+    assert result.value == 2
+    assert [i["text"] for i in result.items] == [
+        "Junior Cloud Engineer - Student Position",
+        "Cloud Engineer Intern",
+    ]
+    assert [i["href"] for i in result.items] == ["/jobs/1", "/jobs/3"]
+
+
+def test_an_item_id_is_stable_across_runs():
+    """It is what a repeating watch deduplicates on. If it moved between
+    checks, every posting would be reported as new on every tick."""
+    first = extract(CLOUD, LISTING).items
+    second = extract(CLOUD, LISTING).items
+
+    assert [i["id"] for i in first] == [i["id"] for i in second]
+    assert len({i["id"] for i in first}) == 2
+
+
+def test_two_different_postings_get_different_ids():
+    ids = {i["id"] for i in extract(CLOUD, LISTING).items}
+    assert len(ids) == 2
+
+
+def test_the_same_title_at_a_different_link_is_a_different_item():
+    """Identity is title AND href. Job boards repost; a relisting at a new URL
+    is a new thing to apply to."""
+    page = """<div class="results">
+      <a class="job" href="/jobs/1">Cloud Engineer</a>
+      <a class="job" href="/jobs/9">Cloud Engineer</a>
+    </div>"""
+    ids = {i["id"] for i in extract(CLOUD, page).items}
+    assert len(ids) == 2
+
+
+def test_a_href_is_left_relative():
+    """This module only ever sees a payload, never the URL it came from.
+    Joining happens in the Notifier, which knows both. Guessing a base here
+    would be inventing a fact."""
+    assert extract(CLOUD, LISTING).items[0]["href"] == "/jobs/1"
+
+
+def test_a_link_nested_inside_the_matched_item_is_found():
+    page = """<ul class="results">
+      <li class="card"><h3>Cloud Engineer</h3><a href="/jobs/7">apply</a></li>
+    </ul>"""
+    spec = {"scope": ".results", "kind": "count",
+            "selector": 'li.card:-soup-contains("Cloud")', "parse": "int"}
+    item = extract(spec, page).items[0]
+
+    assert item["href"] == "/jobs/7"
+    assert "Cloud Engineer" in item["text"]
+
+
+def test_a_count_of_zero_carries_no_items_and_is_still_ok():
+    """The normal state of a watch that has not fired yet."""
+    spec = {**CLOUD, "selector": 'a.job:-soup-contains("Astronaut")'}
+    result = extract(spec, LISTING)
+
+    assert result.status == OK
+    assert result.value == 0
+    assert result.items == []
+
+
+def test_items_are_capped():
+    """A board can list hundreds and a target row stops at 400KB."""
+    page = ('<div class="results">'
+            + "".join(f'<a class="job" href="/j/{n}">Cloud {n}</a>'
+                      for n in range(200))
+            + "</div>")
+    result = extract(CLOUD, page)
+
+    assert result.value == 200          # the count is still the truth
+    assert len(result.items) == 25      # what is carried is bounded
+
+
+def test_no_other_kind_produces_items():
+    result = extract({"kind": "regex", "pattern": r"\$([\d.]+)",
+                      "parse": "currency"}, "price $429.00")
+    assert result.items == []

@@ -70,6 +70,24 @@ def unfiltered(selector: str) -> str:
     return _TEXT_FILTER.sub("", selector).strip()
 
 
+def unfiltered_count(spec: dict, raw: str):
+    """How many items the list holds in total, ignoring the text filter.
+
+    Two uses, one number. It is the proof that the item selector is real, and
+    it is the only honest thing a plan card can say about a count that
+    verified at zero: "47 jobs listed here today, 3 of which mention Cloud"
+    lets a person judge whether the filter is sane. Without it they are shown
+    a 0 and asked to trust it.
+    """
+    bare = unfiltered(spec.get("selector", ""))
+    if not bare:
+        return None
+    probe = {**spec, "selector": bare}
+    probe.pop("unavailable_if", None)
+    result = extract(probe, raw)
+    return result.value if result.ok else None
+
+
 def prove_the_item_selector(spec: dict, raw: str) -> str | None:
     """Check that a count spec could ever match anything. Returns a complaint.
 
@@ -107,6 +125,11 @@ def prove_the_item_selector(spec: dict, raw: str) -> str | None:
 
 class PresenceKind(CompiledKind):
     name = "presence"
+
+    # A job search is a stream, not an event. Reporting the first posting and
+    # then going silent would be the wrong shape for every request this kind
+    # exists to serve. See `Kind.repeating`.
+    repeating = True
     compile_prompt = COUNT_PROMPT
 
     def anchor(self, reading: dict, url: str) -> str:
@@ -131,6 +154,10 @@ class PresenceKind(CompiledKind):
 
     def prove(self, spec: dict, raw: str) -> str | None:
         return prove_the_item_selector(spec, raw)
+
+    def extras(self, spec: dict, raw: str, result) -> dict:
+        total = unfiltered_count(spec, raw)
+        return {"unfiltered_count": total} if total is not None else {}
 
     def feedback(self, result, anchor: str) -> str:
         # A count that ran and returned nothing is a working extractor

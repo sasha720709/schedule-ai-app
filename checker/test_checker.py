@@ -144,6 +144,13 @@ def make_target(env, **overrides):
     return target
 
 
+def extract_ids(html):
+    """The ids the engine will produce for a page, so a test can pre-seed
+    "already reported" without hardcoding a hash."""
+    import extract as extract_mod
+    return [i["id"] for i in extract_mod.extract(COUNT_SPEC, html).items]
+
+
 def run(env):
     return h.lambda_handler({"target_id": "t_1"}, None)
 
@@ -611,3 +618,170 @@ def test_a_failed_check_leaves_the_movement_fields_alone(env):
 
     assert ":u" not in stored
     assert ":c" not in stored
+
+
+# --- Repeating watches: report each posting once, then keep going ------------
+
+COUNT_SPEC = {"scope": ".results", "kind": "count",
+              "selector": 'a.job:-soup-contains("Cloud")', "parse": "int"}
+
+JOBS_HTML = """<div class="results">
+  <a class="job" href="/jobs/1">Junior Cloud Engineer - Student</a>
+  <a class="job" href="/jobs/2">Head Chef</a>
+</div>"""
+
+
+def a_repeating_watch(env, monkeypatch, *, html=JOBS_HTML, **target):
+    env.watches.items["w_1"] = {
+        "watch_id": "w_1", "status": "active", "prompt": "a cloud job",
+        "condition": {"metric": "count", "op": ">", "value": Decimal("0")},
+        "repeating": True,
+    }
+    monkeypatch.setattr(env.module, "fetch_raw", lambda *a, **k: html)
+    return make_target(env, extractor=COUNT_SPEC, **target)
+
+
+def fired_detail(env):
+    return json.loads(
+        env.module.events.put_events.call_args[1]["Entries"][0]["Detail"])
+
+
+def test_a_repeating_watch_reports_the_posting_not_the_count(env, monkeypatch):
+    """The whole point. The email used to say "1" and link to the search
+    page, leaving the user to go and find the job themselves."""
+    a_repeating_watch(env, monkeypatch)
+
+    run(env)
+    detail = fired_detail(env)
+
+    assert detail["repeating"] is True
+    assert [i["text"] for i in detail["items"]] == [
+        "Junior Cloud Engineer - Student"]
+    assert detail["items"][0]["href"] == "/jobs/1"
+
+
+def test_a_repeating_watch_stays_active(env, monkeypatch):
+    """A job search is a stream. Going terminal on the first posting is the
+    behaviour this feature exists to remove."""
+    a_repeating_watch(env, monkeypatch)
+
+    run(env)
+    stored = values_of(env.watches.last_update())
+
+    assert ":s" not in stored          # status untouched
+    assert stored[":n"] == 1           # trigger_count
+
+
+def test_the_same_posting_is_not_reported_twice(env, monkeypatch):
+    """Without this a vacancy watch emails every tick for as long as the
+    posting stays on the page -- worse than the silence it was built to fix."""
+    seen = extract_ids(JOBS_HTML)
+    a_repeating_watch(env, monkeypatch, seen_item_ids=seen)
+
+    result = run(env)
+
+    assert result["condition_met"] is True   # the condition is still met
+    assert result["notified"] is False       # and nothing was sent
+    env.module.events.put_events.assert_not_called()
+
+
+def test_only_the_new_posting_is_reported(env, monkeypatch):
+    two = """<div class="results">
+      <a class="job" href="/jobs/1">Junior Cloud Engineer - Student</a>
+      <a class="job" href="/jobs/5">Cloud Architect</a>
+    </div>"""
+    a_repeating_watch(env, monkeypatch, html=two,
+                      seen_item_ids=extract_ids(JOBS_HTML))
+
+    run(env)
+    detail = fired_detail(env)
+
+    assert [i["text"] for i in detail["items"]] == ["Cloud Architect"]
+
+
+def test_what_was_reported_is_remembered(env, monkeypatch):
+    a_repeating_watch(env, monkeypatch)
+    run(env)
+
+    stored = [u for u in env.targets.updates
+              if "seen_item_ids" in u["expression"]]
+    assert len(stored) == 1
+    assert len(stored[0]["values"][":s"]) == 1
+
+
+def test_the_memory_is_bounded(env, monkeypatch):
+    """A board churns, and a target row stops at 400KB."""
+    a_repeating_watch(env, monkeypatch,
+                      seen_item_ids=[f"old{n:09d}" for n in range(600)])
+    run(env)
+
+    stored = [u for u in env.targets.updates
+              if "seen_item_ids" in u["expression"]][0]
+    assert len(stored["values"][":s"]) == h.MAX_SEEN_ITEMS
+
+
+def test_a_repeating_watch_with_nothing_to_identify_falls_back_to_one_shot(env):
+    """Deduplication needs items. Without them the safe direction is one-shot:
+    it can fire once too few, never once per tick forever."""
+    env.watches.items["w_1"] = {
+        "watch_id": "w_1", "status": "active", "prompt": "a price",
+        "condition": {"metric": "price", "op": "<", "value": Decimal("450")},
+        "repeating": True,
+    }
+    make_target(env, extractor=PRICE_SPEC, verified_value=Decimal("439.00"))
+
+    run(env)
+
+    assert values_of(env.watches.last_update())[":s"] == "triggered"
+    assert fired_detail(env)["repeating"] is False
+
+
+def test_a_one_shot_watch_is_completely_unchanged(env):
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=PRICE_SPEC, verified_value=Decimal("439.00"))
+
+    run(env)
+
+    assert values_of(env.watches.last_update())[":s"] == "triggered"
+    assert fired_detail(env)["repeating"] is False
+
+
+# --- Expiry: the only unbounded cost this system has ever had ----------------
+
+def test_an_expired_watch_stops_before_it_fetches_anything(env, monkeypatch):
+    called = []
+    monkeypatch.setattr(env.module, "fetch_raw",
+                        lambda *a, **k: called.append(1) or JOBS_HTML)
+    a_repeating_watch(env, monkeypatch)
+    env.watches.items["w_1"]["expires_at"] = "2020-01-01T00:00:00+00:00"
+
+    result = run(env)
+
+    assert result["status"] == "expired"
+    assert called == []
+    assert values_of(env.watches.last_update())[":s"] == "expired"
+
+
+def test_expiry_says_it_is_not_a_fault(env, monkeypatch):
+    """Reusing WatchDegraded is a plumbing decision -- both need "email, then
+    tear down". The wording the user reads must not claim something broke."""
+    a_repeating_watch(env, monkeypatch)
+    env.watches.items["w_1"]["expires_at"] = "2020-01-01T00:00:00+00:00"
+    env.watches.items["w_1"]["trigger_count"] = 4
+
+    run(env)
+    entry = env.module.events.put_events.call_args[1]["Entries"][0]
+    detail = json.loads(entry["Detail"])
+
+    assert entry["DetailType"] == "WatchDegraded"
+    assert detail["reason_kind"] == "expired"
+    assert detail["trigger_count"] == 4
+
+
+def test_a_watch_with_no_expiry_runs_on(env):
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=PRICE_SPEC)
+
+    assert run(env)["checked"] is True

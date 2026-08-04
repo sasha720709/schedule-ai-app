@@ -23,7 +23,7 @@ CORS is configured on the API Gateway itself, so no headers are set here.
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
@@ -43,6 +43,16 @@ USER_ID = "default"
 # Statuses a watch can be in. planning -> proposed -> active -> triggered,
 # with failed as a dead end off planning and paused toggling with active.
 CONFIRMABLE = ("proposed",)
+
+# How long a repeating watch runs before stopping itself.
+#
+# Every other watch reaches a terminal state on its own -- triggered, degraded
+# -- and stops billing. A repeating one would run until somebody remembered it,
+# which is the only unbounded cost this system has ever had. Ninety days is
+# about the length of a job search; the point is that the number exists, not
+# that it is exactly right. One-shot watches get no expiry at all, because they
+# already have one.
+REPEATING_TERM_DAYS = 90
 PAUSABLE = ("active",)
 RESUMABLE = ("paused",)
 
@@ -424,28 +434,42 @@ def confirm_watch(event) -> dict:
     # longer true is the exact defect Phase 5 took out of the Notifier.
     next_check = _next_check_at(interval, window)
 
+    # A repeating watch gets a term here rather than at plan time, because the
+    # clock should start when it starts checking, not when it was described.
+    repeating = bool(watch.get("repeating"))
+    expires_at = (
+        (datetime.now(timezone.utc)
+         + timedelta(days=REPEATING_TERM_DAYS)).isoformat()
+        if repeating else None
+    )
+
     _watches().update_item(
         Key={"watch_id": watch_id},
         UpdateExpression=(
-            "SET #s = :s, check_interval_min = :i, confirmed_at = :t"
+            "SET #s = :s, check_interval_min = :i, confirmed_at = :t, "
+            "expires_at = :x"
         ),
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
             ":s": "active",
             ":i": _to_decimal(interval),
             ":t": _now(),
+            ":x": expires_at,
         },
     )
 
     print(f"confirmed {watch_id}: {len(targets)} schedule(s) at {interval}min, "
           f"~${estimate['estimated_monthly_usd']:.2f}/month, "
-          f"first check {next_check or 'unknown'}")
+          f"first check {next_check or 'unknown'}"
+          + (f", expires {expires_at}" if expires_at else ""))
     return _response(200, {
         "watch_id": watch_id,
         "status": "active",
         "check_interval_min": interval,
         "targets_scheduled": len(targets),
         "next_check_at": next_check,
+        "repeating": repeating,
+        "expires_at": expires_at,
         "cost": estimate,
     })
 

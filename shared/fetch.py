@@ -12,8 +12,10 @@ Two representations, the same split the browser Fetcher makes:
     text    visible text, for the model, where length is billed
 """
 
+import gzip
 import re
 import urllib.request
+import zlib
 
 # Enough of a page for a price or status to appear, without paying to send a
 # whole megabyte of markup to a model.
@@ -34,6 +36,48 @@ _TAG = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
 
 
+# gzip's magic number. Checked as well as the header, because a CDN that
+# compresses without declaring it is not hypothetical.
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _decompress(body: bytes, encoding: str) -> bytes:
+    """Undo Content-Encoding, or return the body untouched.
+
+    ## Why this exists, and what it was costing
+
+    `urllib` asks for `identity` and does not decompress anything itself. Some
+    servers compress regardless -- python.org does, behind its CDN, whatever
+    you ask for. The gzip bytes were then decoded as UTF-8, which does not
+    fail; it produces line noise. So an ordinary page arrived as garbage, the
+    Planner reported *"page content is corrupted/unreadable binary data"*, and
+    the escalation did the reasonable thing and rendered it in Chromium.
+
+    That is the expensive part. A browser check is **45x** an HTTP one, and it
+    was being paid for pages that never needed rendering -- found on
+    2026-08-04, when a python.org job watch was priced at $16.11/month and
+    refused by the budget gate for two targets that are both plain HTML.
+    """
+    encoding = (encoding or "").strip().lower()
+    try:
+        if encoding == "gzip" or body[:2] == _GZIP_MAGIC:
+            return gzip.decompress(body)
+        if encoding == "deflate":
+            return zlib.decompress(body, -zlib.MAX_WBITS)
+    except Exception:  # noqa: BLE001 -- a mislabelled body is not fatal
+        return body
+    return body
+
+
+def _charset(content_type: str) -> str:
+    """The declared encoding, or UTF-8. Never raises on a malformed header."""
+    for part in (content_type or "").split(";"):
+        name, _, value = part.partition("=")
+        if name.strip().lower() == "charset" and value.strip():
+            return value.strip().strip("\"'")
+    return "utf-8"
+
+
 def fetch_raw(url: str) -> str:
     """Plain HTTP GET, markup intact.
 
@@ -42,7 +86,10 @@ def fetch_raw(url: str) -> str:
     """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SEC) as response:
-        raw = response.read().decode("utf-8", errors="replace")
+        body = _decompress(response.read(),
+                           response.headers.get("Content-Encoding", ""))
+        raw = body.decode(_charset(response.headers.get("Content-Type", "")),
+                          errors="replace")
     return raw[:MAX_RAW_CHARS]
 
 
