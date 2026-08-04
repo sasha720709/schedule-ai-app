@@ -273,6 +273,29 @@ def _estimate_for(watch: dict, targets: list, interval=None) -> dict | None:
     )
 
 
+def _next_check_at(interval_min, window) -> str | None:
+    """When this cadence next runs, as an ISO-8601 UTC string.
+
+    None whenever the answer would be a guess -- no interval yet, or a
+    timezone database the runtime does not have. A missing answer displays as
+    "unknown", which is honest; a wrong one is worse than silence.
+    """
+    if interval_min is None:
+        return None
+    fire = schedules.next_fire_after(datetime.now(timezone.utc),
+                                     int(interval_min), window)
+    return fire.isoformat().replace("+00:00", "Z") if fire else None
+
+
+def _next_check_for(watch: dict, targets: list) -> str | None:
+    """Only an `active` watch has schedules, so only an active watch has a next
+    check. A paused or proposed one answering with a time would be describing a
+    schedule that does not exist."""
+    if watch.get("status") != "active":
+        return None
+    return _next_check_at(watch.get("check_interval_min"), _window_of(targets))
+
+
 def get_watch(event) -> dict:
     watch_id = event["pathParameters"]["id"]
     watch = _get_watch(watch_id)
@@ -281,6 +304,7 @@ def get_watch(event) -> dict:
         "watch": watch,
         "targets": targets,
         "cost": _estimate_for(watch, targets),
+        "next_check_at": _next_check_for(watch, targets),
     })
 
 
@@ -311,6 +335,14 @@ def confirm_watch(event) -> dict:
     if not targets:
         raise HttpError(409, f"watch {watch_id} has no targets to schedule")
 
+    # A windowed watch runs on a cron grid, which cannot express every number
+    # of minutes. Snap before the estimate rather than after, so the cost that
+    # is checked, the interval that is stored and the schedule that is created
+    # all describe the same cadence. Snapping only ever lengthens the interval,
+    # so this cannot sneak past the budget gate below.
+    window = _window_of(targets)
+    interval = schedules.snap(interval, window)
+
     # Refuse to start something whose running cost exceeds the budget. This is
     # the last gate before a schedule exists, and a schedule is the only thing
     # here that bills indefinitely -- the AWS budget alarms cannot see the
@@ -321,7 +353,7 @@ def confirm_watch(event) -> dict:
         targets=len(targets),
         fetch_method="browser" if browser else "http",
         uses_model=_uses_model(targets),
-        window=_window_of(targets),
+        window=window,
     )
     if not estimate["within_budget"]:
         raise HttpError(
@@ -341,6 +373,15 @@ def confirm_watch(event) -> dict:
             ExpressionAttributeValues={":a": arn},
         )
 
+    # The single most useful thing to say at this moment, and the thing that
+    # used to be missing. A market watch confirmed after the close does not run
+    # for hours; without this the user sees "active", waits, gets nothing, and
+    # reasonably concludes the product is broken. That happened.
+    # Deliberately computed, never stored: it is right for about one interval
+    # and then it is a lie, and a table that describes something which is no
+    # longer true is the exact defect Phase 5 took out of the Notifier.
+    next_check = _next_check_at(interval, window)
+
     _watches().update_item(
         Key={"watch_id": watch_id},
         UpdateExpression=(
@@ -355,12 +396,14 @@ def confirm_watch(event) -> dict:
     )
 
     print(f"confirmed {watch_id}: {len(targets)} schedule(s) at {interval}min, "
-          f"~${estimate['estimated_monthly_usd']:.2f}/month")
+          f"~${estimate['estimated_monthly_usd']:.2f}/month, "
+          f"first check {next_check or 'unknown'}")
     return _response(200, {
         "watch_id": watch_id,
         "status": "active",
         "check_interval_min": interval,
         "targets_scheduled": len(targets),
+        "next_check_at": next_check,
         "cost": estimate,
     })
 
@@ -397,9 +440,14 @@ def patch_watch(event) -> dict:
         if not 1 <= interval <= 1440:
             raise HttpError(400, "check_interval_min must be between 1 and 1440")
 
+        # Snap to a cadence the schedule can express, exactly as confirm does,
+        # and for the same reason: the stored interval must be the one that
+        # actually runs. See shared/schedules.py.
+        watch_targets = _targets_for(watch_id)
+        interval = schedules.snap(interval, _window_of(watch_targets))
+
         # The same budget gate as confirm. Without it, PATCH would be a way to
         # walk an already-confirmed watch down to an interval confirm refused.
-        watch_targets = _targets_for(watch_id)
         estimate = _estimate_for(watch, watch_targets, interval)
         if estimate and not estimate["within_budget"]:
             raise HttpError(
@@ -435,7 +483,12 @@ def patch_watch(event) -> dict:
         kwargs["ExpressionAttributeNames"] = names
 
     updated = _watches().update_item(**kwargs)["Attributes"]
-    return _response(200, {"watch": updated})
+    # Resuming a paused watch is the other moment "when will you look?" gets
+    # asked, and on a windowed watch the answer can be tomorrow.
+    return _response(200, {
+        "watch": updated,
+        "next_check_at": _next_check_for(updated, _targets_for(watch_id)),
+    })
 
 
 def delete_watch(event) -> dict:

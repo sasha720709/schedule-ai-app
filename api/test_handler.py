@@ -557,3 +557,77 @@ def test_a_compiled_watch_is_dramatically_cheaper_than_a_model_one():
     # And the derived floor collapses, which is the whole point of expressing
     # the guardrail as a budget rather than a hardcoded minimum interval.
     assert compiled["min_interval_min"] < modelled["min_interval_min"]
+
+
+# --------------------------------------------------------------------------
+# The night of 2026-08-03, which produced both of these
+# --------------------------------------------------------------------------
+
+def _windowed_target():
+    return {"t_1": {"target_id": "t_1", "watch_id": "w_1",
+                    "extractor": {"kind": "jsonpath"},
+                    "schedule_window": "us_market_hours"}}
+
+
+def test_confirming_a_windowed_watch_hourly_is_not_a_500(aws):
+    """The real failure. An hourly quote watch was confirmed nine times in one
+    evening and returned `500 ValueError: a windowed schedule cannot use a
+    60-minute interval` every time, because a cron minute step cannot express
+    an hour. It steps the hours field instead now, and 60 means 60.
+    """
+    env = aws(proposed(interval=60), _windowed_target())
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"] == "cron(0 9-16 ? * MON-FRI *)"
+
+
+def test_an_interval_the_cron_grid_cannot_express_is_snapped_not_rejected(aws):
+    """51 minutes is what the 8a budget floor produces, so this arrives on the
+    ordinary path rather than as a curiosity. Snapping goes up, never down, so
+    the schedule created can only be cheaper than the estimate approved."""
+    env = aws(proposed(interval=51), _windowed_target())
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    # The stored and reported interval is the one that actually runs, not the
+    # one that was asked for -- otherwise the row describes a schedule that
+    # does not exist.
+    assert body_of(response)["check_interval_min"] == 60
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"] == "cron(0 9-16 ? * MON-FRI *)"
+
+
+def test_confirm_says_when_it_will_first_look(aws):
+    """The other half of that night: the watch was correct and silent. It was
+    deleted the next morning because "active" was the only thing the product
+    ever said, and a market watch confirmed after the close does not run for
+    sixteen hours."""
+    aws(proposed(interval=5), _windowed_target())
+    payload = body_of(call("POST /watches/{id}/confirm", watch_id="w_1"))
+
+    assert payload["next_check_at"] is not None
+    assert payload["next_check_at"].endswith("Z")
+
+
+def test_a_continuous_confirm_says_it_too(aws):
+    aws(watches=proposed(), targets=one_target())
+    payload = body_of(call("POST /watches/{id}/confirm", watch_id="w_1"))
+    assert payload["next_check_at"] is not None
+
+
+def test_only_an_active_watch_claims_a_next_check(aws):
+    """A proposed watch has no schedule, so a time here would describe
+    something that does not exist."""
+    aws(proposed(interval=5), _windowed_target())
+    payload = body_of(call("GET /watches/{id}", watch_id="w_1"))
+    assert payload["next_check_at"] is None
+
+
+def test_an_active_watch_reports_its_next_check_on_get(aws):
+    aws(watches={"w_1": {"watch_id": "w_1", "status": "active",
+                         "check_interval_min": 5}},
+        targets=one_target())
+    payload = body_of(call("GET /watches/{id}", watch_id="w_1"))
+    assert payload["next_check_at"] is not None

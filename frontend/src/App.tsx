@@ -37,6 +37,10 @@ export default function App() {
   // The per-check rate is the server's to know: it depends on the fetch
   // method and on whether the target carries a compiled extractor.
   const [costs, setCosts] = useState<Record<string, CostEstimate | null>>({});
+  // When each active watch next runs. Held here rather than on the Watch row
+  // because it is computed, not stored: it is correct for about one interval
+  // and a stale copy in the table would be worse than no copy at all.
+  const [nextChecks, setNextChecks] = useState<Record<string, string | null>>({});
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,6 +51,7 @@ export default function App() {
     setPasscode("");
     setWatches([]);
     setTargets({});
+    setNextChecks({});
     setLoaded(false);
   }, []);
 
@@ -203,15 +208,36 @@ export default function App() {
             watch={watch}
             targets={targets[watch.watch_id]}
             cost={costs[watch.watch_id]}
+            nextCheck={nextChecks[watch.watch_id]}
             busy={busy}
             onConfirm={(interval) =>
-              void act(() => confirmWatch(passcode, watch.watch_id, interval))
+              void act(async () => {
+                const done = await confirmWatch(
+                  passcode,
+                  watch.watch_id,
+                  interval,
+                );
+                setNextChecks((prev) => ({
+                  ...prev,
+                  [watch.watch_id]: done.next_check_at,
+                }));
+              })
             }
             onPause={() =>
               void act(() => setWatchStatus(passcode, watch.watch_id, "paused"))
             }
             onResume={() =>
-              void act(() => setWatchStatus(passcode, watch.watch_id, "active"))
+              void act(async () => {
+                const done = await setWatchStatus(
+                  passcode,
+                  watch.watch_id,
+                  "active",
+                );
+                setNextChecks((prev) => ({
+                  ...prev,
+                  [watch.watch_id]: done.next_check_at,
+                }));
+              })
             }
             onDelete={() => void act(() => deleteWatch(passcode, watch.watch_id))}
             onExpand={() =>
@@ -225,6 +251,10 @@ export default function App() {
                   ...prev,
                   [watch.watch_id]: detail.cost,
                 }));
+                setNextChecks((prev) => ({
+                  ...prev,
+                  [watch.watch_id]: detail.next_check_at,
+                }));
               })
             }
           />
@@ -234,10 +264,36 @@ export default function App() {
   );
 }
 
+/**
+ * "next check at 16:00, in 16 hours" -- the sentence whose absence cost a
+ * night's watching.
+ *
+ * A market watch confirmed at 23:33 local time was three minutes past the last
+ * slot of its trading-hours window, so it would not run until the New York
+ * open sixteen hours later. It was correct, and it was silent, and silence and
+ * broken look identical from the outside. The relative half matters more than
+ * the clock time: "16:00" alone still reads like something is wrong.
+ */
+function describeNextCheck(iso: string): string {
+  const at = new Date(iso);
+  const minutes = Math.round((at.getTime() - Date.now()) / 60000);
+  const when = at.toLocaleString(undefined, {
+    weekday: minutes > 12 * 60 ? "short" : undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (minutes <= 1) return `next check ${when}, any moment now`;
+  if (minutes < 60) return `next check ${when}, in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return `next check ${when}, in ${hours} h`;
+  return `next check ${when}, in ${Math.round(hours / 24)} days`;
+}
+
 function WatchRow({
   watch,
   targets,
   cost,
+  nextCheck,
   busy,
   onConfirm,
   onPause,
@@ -248,6 +304,7 @@ function WatchRow({
   watch: Watch;
   targets?: Target[];
   cost?: CostEstimate | null;
+  nextCheck?: string | null;
   busy: boolean;
   onConfirm: (interval: number) => void;
   onPause: () => void;
@@ -284,6 +341,12 @@ function WatchRow({
             <> · every {watch.check_interval_min} min</>
           )}
         </p>
+      )}
+
+      {/* Only for an active watch: a paused one has no schedule, so a time
+          here would describe something that does not exist. */}
+      {watch.status === "active" && nextCheck && (
+        <p className="muted">{describeNextCheck(nextCheck)}</p>
       )}
 
       {watch.plan_error && (

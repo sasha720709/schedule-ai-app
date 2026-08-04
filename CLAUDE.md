@@ -2,11 +2,11 @@
 
 Context for any Claude Code session working in this repo — read this first.
 
-## Start here (last session: 2026-08-02)
+## Start here (last session: 2026-08-04)
 
 Everything is committed, pushed, deployed and green. **AWS is idle**: zero
-watches, zero targets, zero schedules, so nothing is billing. 382 tests pass
-in ~2s with `python -m pytest -q` from the repo root.
+schedules, so nothing is billing. 414 tests pass in ~2s with
+`python -m pytest -q` from the repo root.
 
 **The next task is Phase 9 step 3b: one-shot schedules, then the `reminder`
 kind.** Plan and reasoning in `docs/phase-9-watch-kinds.md` §10; §8 records
@@ -14,11 +14,29 @@ the decision it depends on (a reminder stores `targets: []` and its schedule
 invokes with `{"watch_id": ...}`, so the Checker's entry point has to branch).
 Everything before it in that phase is done and proven live.
 
+**2026-08-04 fixed two things a real overnight run found**, written up in
+`docs/phase-9-watch-kinds.md` §10b. The owner made an Apple watch at 23:33
+Israel time and got no email. The schedule was right: 23:33 Israel is 16:33 in
+New York, three minutes past the last slot of the `9-16` window, so the first
+check was 09:00 Tuesday — and the watch was deleted next morning, hours before
+it would ever have run. The defect was that **confirm said `"active"` and
+nothing else**, so correct-and-silent looked identical to broken. There is now
+a `next_check_at` on confirm, PATCH and GET, computed and never stored.
+Separately, `confirm` had returned **500 nine times in twenty minutes** to
+someone reasonably asking for an hourly quote watch: a windowed schedule
+refused any interval ≥ 60. A cron *minute* step cannot express an hour, but a
+cron *hour* step always could — `cron(0 9-16 ? * MON-FRI *)`. Intervals no
+cron grid can express (51 min, which is what the budget floor produces) now
+snap **up**, never down, so a snapped schedule can only cost less than the
+estimate that was approved.
+
 Four things carried forward that are easy to lose:
 
 1. **A watch created outside trading hours takes its baseline from the
    previous close.** "Tell me when Apple goes down from the current," asked on
-   a Sunday, is measured against Friday. Real bug, open, `docs/phase-9` §5.
+   a Sunday, is measured against Friday. Real bug, **still open**,
+   `docs/phase-9` §5. Not the cause of the 2026-08-04 missing email — that was
+   the silent window above — but the next one on this list to close.
 2. **The owner wants plain language, not jargon** — see "How the owner wants
    to work". Explain in consequences, not in terms.
 3. **Two ideas the owner raised and does not want lost**: a plain time
@@ -169,7 +187,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 382 of them (counts
+- **Every Lambda has tests; the chain still does not.** 414 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -241,14 +259,14 @@ will start to hurt.
 
 ## Current status
 
-**As of 2026-08-02: everything on the roadmap is done except 4c (the
+**As of 2026-08-04: everything on the roadmap is done except 4c (the
 designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 0–3, 6, 4a, 4b, 8a, 8b, 8d and 5 are complete; Phase 9 has steps 1, 2a, 2b
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**382 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 171, `planner/` 84, `api/` 54,
+**414 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 197, `planner/` 84, `api/` 60,
 `authorizer/` 24, `checker/` 22, `notifier/` 21, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
@@ -260,6 +278,17 @@ emailed and deleted its own schedule — 43 seconds end to end.
 `shared/sources.py`, verified `$308.91` on the wire, derived its relative
 threshold from *that* reading, and was scheduled
 `cron(*/5 9-16 ? * MON-FRI *)` in `America/New_York`. Both deleted after.
+
+**Re-proven on 2026-08-04, after the windowed-schedule fixes.** `w_46310d2d`
+(quote, AAPL): planned in 4s, confirmed at **60 min** — the interval that
+returned 500 nine times the night before — producing
+`cron(0 9-16 ? * MON-FRI *)` in `America/New_York` and reporting
+`next_check_at: 17:00Z`. Retuned to 5 min via PATCH, which moved the answer to
+`16:35:00Z`; the Checker fired at **16:35:05**, read `306.49` against a
+baseline of `306.40` with `model=False`, met its condition, sent **one** email
+and deleted its own schedule. `zoneinfo` works in the Lambda runtime — worth
+knowing, since `next_fire_after` degrades to `None` rather than crashing if it
+ever does not.
 
 Earlier proofs, kept because they cover paths the 2026-08-02 run did not:
 Phase 2 `w_ea349f2f` (Scheduler invoking the Checker unprompted every 5
@@ -281,9 +310,11 @@ SNS topic with a confirmed email subscription and three CloudWatch
 alarms; and seven IAM roles (one per Lambda, plus
 `schedule-ai-app-scheduler-invoke-checker` that schedules assume).
 
-**Both tables are empty and there are no schedules** as of 2026-08-02 —
-every test watch has been deleted, so the system is idle and billing
-nothing.
+**There are no schedules** as of 2026-08-04, so the system is idle and
+billing nothing. One `triggered` row is left in `Watches` on purpose —
+`w_46310d2d`, the 2026-08-04 verification run — so the owner can see it in
+the UI. A terminal watch has no schedule and costs nothing; delete it from
+the UI whenever.
 
 **The API is live** at the `api_endpoint` Terraform output
 (`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request
@@ -342,7 +373,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
-| 🔨 | **9** · Watch kinds, schedules, delivery | steps 1–2 + windows done & deployed; left: `once`, `reminder`, channels |
+| 🔨 | **9** · Watch kinds, schedules, delivery | steps 1–2 + windows done, deployed, twice proven live; left: `once`, `reminder`, channels |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
@@ -437,6 +468,36 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
    The lesson worth keeping: a suite where every test injects its
    collaborators cannot see a wiring bug, and a Lambda whose IAM is scoped
    per-action will fail on the action you added last, at the worst moment.
+
+   **Step 2b's window then failed its first overnight use, on 2026-08-04, and
+   not in the way anyone was watching for.** Full write-up in
+   `docs/phase-9-watch-kinds.md` §10b. The owner made an Apple watch at 23:33
+   Israel time and woke to nothing. **The schedule was correct**: 23:33 Israel
+   is 16:33 New York, three minutes past the last slot of `9-16` on a Monday,
+   so the first check was 09:00 Tuesday — and the watch was deleted at 11:24
+   Israel, four and a half hours before it would have run. Nothing was broken
+   and nothing said so.
+
+   - **The fix is a sentence, not a schedule.** `schedules.next_fire_after()`
+     computes the first fire; `confirm`, `PATCH` and `GET /watches/{id}` all
+     return `next_check_at`, and the UI renders "next check 16:00, in 16 h".
+     It is **computed, never stored** — right for about one interval, then a
+     lie, which is what Phase 5 removed from the Notifier.
+   - **A guardrail that returns 500 is an outage.** `confirm` answered
+     `500 ValueError: a windowed schedule cannot use a 60-minute interval`
+     **nine times in twenty minutes** to someone asking for an hourly quote
+     watch. The refusal was right that a cron *minute* step cannot express an
+     hour (`*/60` collapses to `0`) and wrong that nothing could: a cron
+     *hour* step always could — `cron(0 9-16 ? * MON-FRI *)`.
+   - **Inexpressible intervals snap up, never down.** 51 minutes is not exotic
+     — `cost.py` derives the interval floor from a monthly budget, so an
+     arbitrary number arrives on the ordinary path. Up is the safety argument:
+     fewer checks, so a snapped schedule can only cost less than the estimate
+     the budget gate approved.
+
+   The lesson: **a correct system that explains nothing is a broken product.**
+   No test could have caught this — every assertion about the schedule was
+   true. Check the other places the product knows something the user does not.
 
 Details of the finished phases:
 

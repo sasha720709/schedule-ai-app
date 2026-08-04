@@ -374,6 +374,55 @@ the tidy-up is swallowed, because a guarantee as important as "a human is not
 notified twice" must not rest on an IAM statement being right. **Anything
 after the notification is best-effort by construction, not by permission.**
 
+## 10b. What the second live run taught (2026-08-04)
+
+The owner created an AAPL quote watch at 23:33 Israel time, went to bed, and
+woke to no email. Three defects, and the interesting one is that **the system
+did nothing wrong.**
+
+**The watch was never checked, and that was correct.** 23:33 Israel is 16:33
+in New York — three minutes past the last slot of the `9-16` window, on a
+Monday. Its first check was 09:00 Tuesday New York, sixteen and a half hours
+later. It was deleted at 11:24 Israel the next morning, still four and a half
+hours before it would ever have run.
+
+So the defect is not in the schedule. It is that **the confirm response said
+`"status": "active"` and nothing else.** A window nobody reports is a window
+the user experiences as a bug, and "correct but silent" is indistinguishable
+from "broken" from the outside. `schedules.next_fire_after()` now computes the
+first fire, and `confirm`, `PATCH` and `GET /watches/{id}` all report
+`next_check_at`. It is **computed, never stored**: it is right for about one
+interval and then it is a lie, which is the same class of defect Phase 5 took
+out of the Notifier.
+
+**And an hourly windowed watch could not be confirmed at all.** The API log
+shows `500 ValueError: a windowed schedule cannot use a 60-minute interval`
+**nine times in twenty minutes** — the owner trying, reasonably, to check
+Apple once an hour. The refusal was right about the danger and wrong about the
+remedy: a cron *minute* step cannot express an hour, since `*/60` silently
+collapses to `0`. But a cron *hour* step can, and always could —
+`cron(0 9-16 ? * MON-FRI *)`. Refusing was a workaround that shipped as a
+feature.
+
+**Intervals that no cron grid can express now snap up rather than fail.** 51
+minutes is not a curiosity: `cost.py` derives the interval floor from a
+monthly budget, so an arbitrary number arrives on the ordinary path. Snapping
+goes **up, never down**, and that direction is the whole safety argument — a
+longer interval is fewer checks, so a snapped schedule can only cost less than
+the estimate the budget gate approved. Rounding down would quietly bill past a
+budget nobody was watching.
+
+Two lessons worth keeping:
+
+- **A guardrail that returns 500 is not a guardrail, it is an outage.** The
+  ValueError was raised in `shared/`, uncaught by the API, and surfaced as a
+  server error nine times without ever telling the user what to type instead.
+  A constraint the product intends must be expressed as a 4xx with the fix in
+  it, or absorbed — never leaked as a crash.
+- **A correct system that explains nothing is a broken product.** No test
+  could have caught this: every assertion about the schedule was true. The
+  missing thing was a sentence.
+
 ## 11. Risks
 
 - **Four kinds is thin evidence for an abstraction.** `value` and `presence`

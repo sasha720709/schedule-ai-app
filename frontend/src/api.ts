@@ -129,10 +129,14 @@ export const listWatches = (passcode: string) =>
   request<{ watches: Watch[] }>(passcode, "/watches");
 
 export const getWatch = (passcode: string, id: string) =>
-  request<{ watch: Watch; targets: Target[]; cost: CostEstimate | null }>(
-    passcode,
-    `/watches/${id}`,
-  );
+  request<{
+    watch: Watch;
+    targets: Target[];
+    cost: CostEstimate | null;
+    /** When the schedule next runs, ISO-8601 UTC. Null when the watch is not
+     * active, or when the server cannot say -- never a guess. */
+    next_check_at: string | null;
+  }>(passcode, `/watches/${id}`);
 
 export const createWatch = (passcode: string, prompt: string) =>
   request<{ watch_id: string; status: Status }>(passcode, "/watches", {
@@ -145,7 +149,13 @@ export const confirmWatch = (
   id: string,
   checkIntervalMin: number,
 ) =>
-  request<{ watch_id: string; check_interval_min: number }>(
+  request<{
+    watch_id: string;
+    /** May differ from what was asked: a windowed watch runs on a cron grid,
+     * so the server rounds up to a cadence it can actually express. */
+    check_interval_min: number;
+    next_check_at: string | null;
+  }>(
     passcode,
     `/watches/${id}/confirm`,
     {
@@ -159,7 +169,7 @@ export const setWatchStatus = (
   id: string,
   status: "paused" | "active",
 ) =>
-  request<{ watch: Watch }>(passcode, `/watches/${id}`, {
+  request<{ watch: Watch; next_check_at: string | null }>(passcode, `/watches/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ status }),
   });
