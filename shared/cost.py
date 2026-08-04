@@ -113,6 +113,43 @@ def fetch_cost(fetch_method: str) -> float:
     return 0.0  # the Checker's own invocation already covers an HTTP GET
 
 
+# One Tier 1 ranking: a Haiku call over the items that just appeared, judging
+# them against the original request. Batched -- all the new items in one call,
+# because ten job cards are about 500 tokens and judging them separately would
+# cost ten times as much for scores that could not be compared with each other.
+#
+# Paid per *notification*, not per check, which is the whole reason this does
+# not undo Phase 8b. A jobs watch at 15-minute intervals firing twice a day
+# spends about $0.19/month on ranking; the same watch judging on every tick
+# would spend $16.42.
+RANK_BASE_INPUT_TOKENS = 700     # the system prompt and the request
+RANK_TOKENS_PER_ITEM = 90        # one card: title, company, place, date
+RANK_OUTPUT_TOKENS_PER_ITEM = 30
+
+
+def rank_cost(items: int = 10) -> float:
+    """One batched ranking call over `items` things that just appeared."""
+    inputs = RANK_BASE_INPUT_TOKENS + RANK_TOKENS_PER_ITEM * max(items, 0)
+    outputs = RANK_OUTPUT_TOKENS_PER_ITEM * max(items, 0)
+    return (inputs / 1_000_000 * HAIKU_INPUT_PER_MTOK
+            + outputs / 1_000_000 * HAIKU_OUTPUT_PER_MTOK)
+
+
+def can_afford_rank(interval_min: int, targets: int = 1,
+                    fetch_method: str = "http", spend_usd: float = 0.0,
+                    items: int = 10) -> bool:
+    """Is there room in this watch's monthly budget to rank what appeared?
+
+    Charged against the same `MONTHLY_BUDGET_USD` as checks and repairs, for
+    the reason given on `can_afford_repair`: one guarantee is easier to reason
+    about than three, and it self-limits with no constant to tune. A watch that
+    fires constantly stops being ranked and keeps notifying -- ranking is the
+    part that degrades, never the notification.
+    """
+    checks = monthly_cost(interval_min, targets, fetch_method, uses_model=False)
+    return checks + spend_usd + rank_cost(items) <= monthly_budget_usd()
+
+
 # One Tier 1 repair: a Haiku call that re-reads the page and re-derives the
 # spec. Bigger than a judge call in both directions -- it is shown the old
 # extractor and the error alongside the text, and it writes a spec rather than

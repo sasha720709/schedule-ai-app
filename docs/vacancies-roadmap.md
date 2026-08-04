@@ -298,7 +298,7 @@ should be enjoyed.
    (5.2, 5.3), which fell out of the same change.
 2. ✅ Seen-IDs (3.5) and recurring watches (3.4). These were one piece of work;
    a recurring watch without dedup is worse than no recurring watch.
-3. The judgement step (§4) — Tier 1 over *new* postings only.
+3. ✅ The judgement step (§4) — Tier 1 over *new* postings only. See §9.
 4. Clarifying questions (3.6), last, because they are the only part that needs
    multi-turn chat and the only part that is pure gain rather than a
    correction.
@@ -395,6 +395,81 @@ Then, confirmed at one minute:
 `presence` keeps everything that is not a job — restocks, appointment slots,
 tickets — and keeps the compiled counter with its unverifiable filter. The
 `jobs` kind did not fix that class; it removed jobs from it.
+
+---
+
+## 9. The judgement step, done 2026-08-04
+
+`shared/rank.py`. A jobs watch fires when the board returns something new; the
+board matched on one or two keywords, so "new" means *new and roughly
+relevant*. A model now reads what appeared and scores it against the whole
+request.
+
+### Why this does not undo Phase 8b
+
+**Judging is paid per notification, not per check.** Measured, not estimated:
+
+    one deterministic check                       $0.0000041
+    one batched judgement of ten new items         $0.0031
+    a jobs watch at 15 min, firing twice a day     $0.19/month
+    the same watch judging on every tick          $16.42/month
+
+A cheap counter decides *whether* anything happened; the model only ever sees
+the handful of things that did. It is the same Tier 0 / Tier 1 split the
+Checker already used for repairs, applied to a stream.
+
+**One call for all the new items, not one per item.** Ten cards are about five
+hundred tokens. Per-item calls would cost ten times as much, take ten times as
+long inside a tick, and produce scores that cannot be compared with each other
+because nothing saw them together.
+
+### Three rules that are load-bearing
+
+**Ranking never withholds a job.** Only items the model calls outright
+irrelevant are held back — a barista role in a cloud engineering search.
+Everything else is reported with a score and a one-line reason, best first. The
+asymmetry is the same argument `COUNT_PROMPT` makes about loose selectors: a
+near-miss costs two seconds, a missed job is what the watch exists to prevent.
+
+**Ranking never blocks a notification.** Slow, malformed, over budget, down —
+the items go out unranked in their original order. Demonstrated by accident
+while writing this: `anthropic` is deliberately not installed in the Codespace,
+so a local run logged `[rank] failed, sending unranked` and reported all ten
+items for $0. That is the designed behaviour, observed for real.
+
+**What ranking sets aside is still remembered.** Remembering only what was
+*reported* would bring every rejected posting back on the next tick, to be paid
+for and rejected again, for as long as it stayed on the board. Caught in review,
+not in production; there is a test pinning it.
+
+Ranking is also what degrades when the shared $5 budget runs out — never the
+notification. And a fire that ranks to nothing is a successful outcome, not a
+silent failure: the postings were seen, judged, remembered and paid for, and
+none of them was the job. `trigger_count` counts emails, because the expiry
+message reads it back as "it told you about N things".
+
+### Proven live
+
+    19:01:16  linkedin  new=10/10  -> 7 kept, 3 set aside, $0.0031  -> email
+    19:01:21  drushim   new=25/25  -> 9 kept, 16 set aside, $0.0055 -> email
+    19:01:59  drushim   new=0/25   -> silence, no model call
+    19:02:11  linkedin  new=9/10   -> 8 kept, 1 set aside, $0.0029  -> email
+    19:03:11  linkedin  new=0/10   -> silence
+    19:03:48  drushim   new=0/25   -> silence
+
+The 19:02:11 line is LinkedIn's alternating result set arriving, exactly as
+§8 predicted: nine genuinely different postings, ranked once, reported once,
+then quiet. Total ranking spend for the run: **$0.0115**.
+
+### What it still cannot see
+
+Ranking reads the **summary card** — title, company, location, sometimes a
+date. That covers role, seniority and place, which is most of what people
+filter on. It does not cover hours, pay or contract type, because those are in
+the job description and fetching each posting would be a second HTTP request
+per new item. The prompt is told this explicitly, so an unstated criterion
+scores as "not mentioned" rather than as a failure. Fetching the full posting
+is a well-defined next step if it turns out to matter.
 
 ---
 

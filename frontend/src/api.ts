@@ -84,6 +84,11 @@ export interface MatchedItem {
   id: string;
   text: string;
   href: string;
+  /** Set only on items a model has judged against the original request --
+   * which happens per notification, not per check. Absent when ranking was
+   * skipped, over budget, or failed: it must never block a notification. */
+  score?: number;
+  why?: string;
 }
 
 export interface Target {

@@ -93,10 +93,19 @@ def _format_items(items: list, base_url: str) -> str:
     for item in items:
         text = (item.get("text") or "").strip() or "(untitled)"
         href = (item.get("href") or "").strip()
-        lines.append(f"  - {text}")
+        score = item.get("score")
+        # Ranked items lead with their score, because that is the thing being
+        # scanned for. Unranked ones look exactly as they did before -- ranking
+        # never blocks a notification, so an email may carry both.
+        head = f"[{score}/10] " if isinstance(score, int) else ""
+        lines.append(f"  {head}{text}")
+        why = (item.get("why") or "").strip()
+        if why:
+            lines.append(f"    {why}")
         if href:
             lines.append(f"    {urljoin(base_url, href)}")
-    return "\n".join(lines)
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _format_email(detail: dict) -> tuple:
@@ -106,7 +115,10 @@ def _format_email(detail: dict) -> tuple:
     url = detail.get("url", "(unknown)")
 
     if repeating and items:
-        subject = f"{len(items)} new: {prompt[:50]}"
+        best = max((i["score"] for i in items
+                    if isinstance(i.get("score"), int)), default=None)
+        rating = f" (best {best}/10)" if best is not None else ""
+        subject = f"{len(items)} new{rating}: {prompt[:44]}"
     else:
         subject = f"Watch triggered: {prompt[:60]}"
 

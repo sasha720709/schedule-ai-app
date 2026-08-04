@@ -7,6 +7,12 @@ JSON back out of a reply that may not contain any text at all.
 Keeping this separate is what lets a new kind of watch add a prompt without
 also re-deriving how to parse a response, which is where two of this project's
 production failures came from.
+
+Moved from `planner/` to `shared/` on 2026-08-04, when the Checker gained a
+model call of its own (`rank.py`). The alternative was a second copy of
+`client or Anthropic()` -- the exact line whose omission took every non-quote
+plan down in production, and which `ask()` exists to make un-forgettable. One
+copy, vendored into both zips.
 """
 
 import json

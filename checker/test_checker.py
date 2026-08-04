@@ -785,3 +785,130 @@ def test_a_watch_with_no_expiry_runs_on(env):
     make_target(env, extractor=PRICE_SPEC)
 
     assert run(env)["checked"] is True
+
+
+# --- Ranking: judge what appeared, once, against what was asked ---------------
+#
+# Two properties matter more than the ordering. Nothing may be re-reported that
+# ranking set aside, and nothing about ranking may withhold a notification.
+
+def wire_rank(env, monkeypatch, ranked=None, spend=0.003, fail=False):
+    calls = []
+
+    def fake(request, items, **kwargs):
+        calls.append((request, items))
+        if fail:
+            return items, 0.0
+        return (items if ranked is None else ranked), spend
+
+    monkeypatch.setattr(env.module, "rank", fake)
+    return calls
+
+
+def test_ranking_sees_the_request_and_only_the_new_items(env, monkeypatch):
+    a_repeating_watch(env, monkeypatch)
+    calls = wire_rank(env, monkeypatch)
+
+    run(env)
+
+    assert len(calls) == 1
+    request, items = calls[0]
+    assert request == "a cloud job"
+    assert [i["text"] for i in items] == ["Junior Cloud Engineer - Student"]
+
+
+def test_only_the_ranked_items_are_emailed(env, monkeypatch):
+    a_repeating_watch(env, monkeypatch)
+    wire_rank(env, monkeypatch, ranked=[
+        {"id": "x", "text": "Junior Cloud Engineer - Student", "href": "/1",
+         "score": 9, "why": "student cloud role"}])
+
+    run(env)
+    detail = fired_detail(env)
+
+    assert detail["items"][0]["score"] == 9
+    assert detail["items"][0]["why"] == "student cloud role"
+
+
+def test_what_ranking_set_aside_is_still_remembered(env, monkeypatch):
+    """The bug this guards. Remembering only what was *reported* would bring
+    every rejected posting back on the next tick, to be paid for and rejected
+    again, for as long as it stayed on the board."""
+    a_repeating_watch(env, monkeypatch)
+    wire_rank(env, monkeypatch, ranked=[])      # everything judged irrelevant
+
+    run(env)
+
+    remembered = [u for u in env.targets.updates
+                  if "seen_item_ids" in u["expression"]][0]
+    assert len(remembered["values"][":s"]) == 1
+
+
+def test_nothing_relevant_means_no_email(env, monkeypatch):
+    """A successful outcome, not a silent failure: the postings were seen,
+    judged, remembered and paid for, and none of them was the job."""
+    a_repeating_watch(env, monkeypatch)
+    wire_rank(env, monkeypatch, ranked=[])
+
+    result = run(env)
+
+    assert result["notified"] is False
+    env.module.events.put_events.assert_not_called()
+
+
+def test_a_watch_that_said_nothing_does_not_count_a_trigger(env, monkeypatch):
+    """`trigger_count` is read back to the user by the expiry email -- "it told
+    you about N things" -- so it counts emails, not ticks."""
+    a_repeating_watch(env, monkeypatch)
+    wire_rank(env, monkeypatch, ranked=[])
+
+    run(env)
+
+    assert env.watches.updates == []
+
+
+def test_the_spend_is_recorded_against_the_watch(env, monkeypatch):
+    a_repeating_watch(env, monkeypatch)
+    wire_rank(env, monkeypatch, spend=0.004)
+
+    run(env)
+
+    assert float(values_of(env.watches.last_update())[":r"]) == 0.004
+
+
+def test_spend_accumulates_across_notifications(env, monkeypatch):
+    a_repeating_watch(env, monkeypatch)
+    env.watches.items["w_1"]["rank_spend_usd"] = Decimal("0.010")
+    wire_rank(env, monkeypatch, spend=0.004)
+
+    run(env)
+
+    assert float(values_of(env.watches.last_update())[":r"]) == 0.014
+
+
+def test_a_watch_over_budget_stops_ranking_and_keeps_notifying(env, monkeypatch):
+    """Ranking is what degrades when the money runs out, never the
+    notification. That is the right way round."""
+    a_repeating_watch(env, monkeypatch)
+    env.watches.items["w_1"]["rank_spend_usd"] = Decimal("99")
+    calls = wire_rank(env, monkeypatch)
+
+    result = run(env)
+
+    assert calls == []                       # never asked
+    assert result["notified"] is True        # still emailed
+    assert len(fired_detail(env)["items"]) == 1
+
+
+def test_a_one_shot_watch_is_never_ranked(env, monkeypatch):
+    """There is no stream to judge and no request-shaped criteria to judge
+    against -- a price either crossed the threshold or it did not."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=PRICE_SPEC, verified_value=Decimal("439.00"))
+    calls = wire_rank(env, monkeypatch)
+
+    run(env)
+
+    assert calls == []
+    assert values_of(env.watches.last_update())[":s"] == "triggered"

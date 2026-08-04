@@ -116,6 +116,19 @@ The original failing request now plans: `kind jobs, repeating True`, two HTTP
 targets, 35 + 10 listings, $0.0119/mo. Live: `new=10/10 new=25/25` → 2 emails,
 then `new=0/…` three ticks running → silence.
 
+**Step 3 is done too** — `shared/rank.py` judges what appeared against the
+whole request and reports it best-first with a score and a reason. **Paid per
+notification, not per check**: $0.19/month for a jobs watch firing twice a day
+against $16.42 to judge every tick, which is what keeps this from undoing
+Phase 8b. Three rules not to undo: ranking **never withholds a job** (only
+outright-irrelevant items are held back), it **never blocks a notification**
+(any failure sends the items unranked), and **what it sets aside is still
+remembered** — remembering only what was reported would bring every rejected
+posting back on the next tick forever. It reads the summary *card*, so hours
+and pay are invisible; the prompt says an unstated criterion is not a failed
+one. `llm.py` moved from `planner/` to `shared/` so the Checker could reuse
+`ask()` rather than grow a second `client or Anthropic()`.
+
 **Three findings no offline test could have produced.** LinkedIn rewrites every
 job link on every response (`refId`), so identity must key on
 `data-entity-urn` — otherwise a repeating watch re-reports every job every
@@ -287,7 +300,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 515 of them (counts
+- **Every Lambda has tests; the chain still does not.** 537 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -406,9 +419,9 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**515 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 240, `planner/` 107, `api/` 69,
-`authorizer/` 24, `checker/` 39, `notifier/` 30, `fetcher/` 6. They run on
+**537 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 253, `planner/` 107, `api/` 69,
+`authorizer/` 24, `checker/` 48, `notifier/` 30, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**

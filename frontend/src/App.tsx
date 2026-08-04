@@ -312,6 +312,13 @@ function Matches({ items, base }: { items: MatchedItem[]; base: string }) {
     <ul className="matches">
       {items.map((item) => (
         <li key={item.id}>
+          {/* Ranked items lead with their score, because that is what gets
+              scanned for. Unranked ones look exactly as they did before: an
+              email or a list may carry both, since ranking is allowed to fail
+              and must never withhold a result. */}
+          {typeof item.score === "number" && (
+            <span className="score">{item.score}/10</span>
+          )}
           {item.href ? (
             <a href={new URL(item.href, base).href} target="_blank" rel="noreferrer">
               {item.text || "(untitled)"}
@@ -319,6 +326,7 @@ function Matches({ items, base }: { items: MatchedItem[]; base: string }) {
           ) : (
             item.text || "(untitled)"
           )}
+          {item.why && <span className="muted"> — {item.why}</span>}
         </li>
       ))}
     </ul>

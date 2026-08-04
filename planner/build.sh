@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 rm -rf build dist
 mkdir -p build dist
 
-cp handler.py plan.py llm.py prompts.py classify.py build/
+cp handler.py plan.py prompts.py classify.py build/
 # Phase 9: the kind-specific half of the Planner is a package, not a flat file.
 # It is imported as `import kinds` / `from kinds.value import ...`, so it has to
 # land as a directory beside handler.py -- the same flat layout the other
@@ -22,7 +22,7 @@ rm -rf build/kinds/__pycache__ build/kinds/test_*.py
 # still a deferred gap. They are copied flat because that is how they are
 # imported at runtime: `import cost`, not `from shared import cost`.
 for module in cost.py schedules.py extract.py condition.py fetch.py \
-              sources.py job_boards.py; do
+              sources.py job_boards.py llm.py; do
   cp "../shared/$module" build/
 done
 # Wheels are pinned to the Lambda runtime's platform, not the build machine's.

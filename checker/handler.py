@@ -36,6 +36,7 @@ import cost
 from condition import ConditionError, evaluate
 from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
 from check import fetch_raw, fetch_text, judge
+from rank import rank
 from repair import repair
 
 dynamodb = boto3.resource("dynamodb")
@@ -292,6 +293,32 @@ def _json_safe(value):
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
+
+
+def _rank(watch: dict, target: dict, fresh: list):
+    """Score what just appeared against what was asked for. Never raises.
+
+    Charged against the same monthly budget as checks and repairs, for the
+    reason on `cost.can_afford_repair`: one guarantee is easier to reason about
+    than three. **Ranking is what degrades when the budget runs out, never the
+    notification** -- a watch that fires constantly stops being ranked and
+    keeps emailing, which is the right way round.
+    """
+    prompt = watch.get("prompt") or ""
+    interval = int(watch.get("check_interval_min") or 60)
+    spent = float(watch.get("rank_spend_usd") or 0)
+
+    if not cost.can_afford_rank(interval,
+                                fetch_method=target.get("fetch_method", "http"),
+                                spend_usd=spent, items=len(fresh)):
+        print(f"[rank] skipped, ${spent:.4f} already spent this month")
+        return fresh, 0.0
+
+    ranked, spend = rank(prompt, fresh)
+    if spend:
+        kept, dropped = len(ranked), len(fresh) - len(ranked)
+        print(f"[rank] {kept} kept, {dropped} set aside, ${spend:.4f}")
+    return ranked, spend
 
 
 def _remember(targets_table, target_id: str, target: dict, fresh: list) -> None:
@@ -591,18 +618,48 @@ def lambda_handler(event, context):
         + (f" new={len(fresh)}/{len(items)}" if dedup else "")
     )
 
-    if fires:
+    reported, rank_spend = fresh, 0.0
+    if fires and dedup:
+        # Tier 1 for a stream. The board matched on a keyword or two, so "new"
+        # means new and roughly relevant -- and roughly is where it stops.
+        # Judging happens **per notification, not per check**, which is what
+        # keeps this from undoing Phase 8b: $0.19/month for a jobs watch firing
+        # twice a day, against $16.42 to judge every tick.
+        reported, rank_spend = _rank(watch, target, fresh)
+
+        # Remember everything that appeared, including what ranking set aside.
+        # Remembering only what was *reported* would bring every rejected
+        # posting back on the next tick, to be paid for and rejected again, for
+        # as long as it stayed on the board.
+        _remember(targets_table, target_id, target, fresh)
+
+    # Ranking can leave nothing worth saying. That is a successful outcome, not
+    # a silent failure: the postings were seen, judged, remembered and paid
+    # for, and none of them was the job.
+    #
+    # Only a deduplicating watch has items to be left with none of. A price
+    # watch has no items at all, and gating it on this emptiness would silence
+    # every one-shot watch in the system.
+    notifying = fires and (bool(reported) if dedup else True)
+    if fires and not notifying:
+        print(f"nothing relevant for watch {watch_id} -- checked, not emailed")
+
+    if notifying:
         if dedup:
-            _remember(targets_table, target_id, target, fresh)
             # Status stays `active`: the watch is not finished, it just spoke.
+            # `trigger_count` counts emails, because that is what the expiry
+            # message reads back to the user.
             watches_table.update_item(
                 Key={"watch_id": watch_id},
                 UpdateExpression=(
-                    "SET last_triggered_at = :t, trigger_count = :n"
+                    "SET last_triggered_at = :t, trigger_count = :n, "
+                    "rank_spend_usd = :r"
                 ),
                 ExpressionAttributeValues={
                     ":t": now,
                     ":n": int(watch.get("trigger_count") or 0) + 1,
+                    ":r": _to_decimal(
+                        float(watch.get("rank_spend_usd") or 0) + rank_spend),
                 },
             )
         else:
@@ -612,6 +669,7 @@ def lambda_handler(event, context):
                 ExpressionAttributeNames={"#s": "status"},
                 ExpressionAttributeValues={":s": "triggered", ":t": now},
             )
+
         # Announce it and move on. The Checker doesn't know or care that a
         # Notifier exists -- anything interested can subscribe to the bus.
         events.put_events(Entries=[{
@@ -629,7 +687,7 @@ def lambda_handler(event, context):
                 # What appeared, not merely how many. The email used to say
                 # "1" and link to the search page, leaving the user to go and
                 # find the posting themselves.
-                "items": fresh,
+                "items": reported,
                 # Tells the Notifier whether to tear the schedules down. A
                 # repeating watch must survive its own notification.
                 "repeating": dedup,
@@ -637,13 +695,14 @@ def lambda_handler(event, context):
             }, default=_json_safe),
         }])
         print(f"CONDITION MET for watch {watch_id} -- event emitted"
-              + (f" ({len(fresh)} new)" if dedup else ""))
+              + (f" ({len(reported)} reported)" if dedup else ""))
 
     return {
         "checked": True,
         "status": result["status"],
         "condition_met": condition_met,
-        "notified": fires,
+        "notified": notifying,
         "new_items": len(fresh) if dedup else None,
+        "reported_items": len(reported) if dedup else None,
         "last_value": result["value"],
     }
