@@ -32,11 +32,16 @@ estimate that was approved.
 
 Four things carried forward that are easy to lose:
 
-1. **A watch created outside trading hours takes its baseline from the
-   previous close.** "Tell me when Apple goes down from the current," asked on
-   a Sunday, is measured against Friday. Real bug, **still open**,
-   `docs/phase-9` §5. Not the cause of the 2026-08-04 missing email — that was
-   the silent window above — but the next one on this list to close.
+1. **The previous-close baseline is settled: it is fine.** Decided by the
+   owner on 2026-08-04 — asked on a Sunday, Friday's close *is* "current".
+   What that exposes instead: **"any change" is a guarantee, not a condition.**
+   A stock never reopens at the previous close, so `relative_change_pct: 0`
+   fires in the first seconds of the next session, every time. Measured
+   in-hours the same day: baseline 306.40, first check 306.49, fired — a 0.03%
+   move on the first tick. Do **not** fix this by inventing a percentage;
+   `plan.py` forbids that on purpose and fabricating 5% is a bug already
+   shipped once. Store `baseline_at`/`baseline_source` and say it at plan time.
+   `docs/shares-roadmap.md` §1.
 2. **The owner wants plain language, not jargon** — see "How the owner wants
    to work". Explain in consequences, not in terms.
 3. **Two ideas the owner raised and does not want lost**: a plain time
@@ -48,6 +53,35 @@ Four things carried forward that are easy to lose:
 4. **Run the real thing before believing it.** The 2026-08-02 live run found
    two bugs that 378 offline tests could not, one of them shipped that same
    morning. Details under Phase 9.
+
+## Where the product is going (owner, 2026-08-04)
+
+Three ways to watch and then stop: a **share price**, a **job vacancy**, a
+**thing for sale**. Then **calendar reminders**, then auth and the frontend,
+then the product is done. No expansion beyond that — the remaining work is
+polish on those three.
+
+Worth knowing before acting on it:
+
+- **They are not three features.** They are one engine at three levels of
+  trust in the source — `quote` (registry, we own the extractor), `value`
+  (searched, compiled, verified), `presence` (searched, compiled as a
+  counter). All three already run live. "Finish the three" is one hardening
+  pass plus a short per-kind list, not three projects.
+- **Auth is not polish.** `user_id` is hardcoded `"default"` in every query
+  and `NOTIFY_EMAIL` is one env var — a single recipient baked into the
+  Notifier. A second user changes every table read, the SES send and the
+  passcode model at once. Decide the shape early even if it is built late,
+  or the polish gets redone on top of a single-user assumption.
+- **Calendar reminders are two jobs, not one.** The `.ics` file really is
+  easy (fifteen lines, no OAuth, `ses:SendRawEmail`). The *trigger* is Phase 9
+  step 3b and does not exist. Attaching an `.ics` to a condition-watch email
+  is near-pointless — "Apple dropped below $300" already happened, and a
+  calendar entry in the past is clutter. Build the reminder kind first.
+
+**`docs/shares-roadmap.md` is the finish-the-shares plan**, written 2026-08-04
+with the arguments and the evidence, including three things it recommends
+*not* building (holiday calendars, quote self-healing, a paid data API).
 
 ## What this project is
 
@@ -209,9 +243,32 @@ will start to hurt.
 ### Product shape
 
 - **Nothing keeps a history of what was checked.** `last_value` is
-  overwritten on every tick, so there is no way to draw "the price over
-  the last month," and no way to tell a genuinely stable price from a
-  target that has silently been failing to extract for a week.
+  overwritten on every tick and there is no `last_changed_at`, so there is no
+  way to draw "the price over the last month," and no way to tell a genuinely
+  stable price from a target that has silently been failing to extract for a
+  week. **For quotes this has teeth**: a frozen CNBC `last` (halt, delisting,
+  a plausible-but-dormant ticker) returns `ok` forever, so a `!=` watch never
+  fires and nothing is ever recorded. `docs/shares-roadmap.md` §2.4.
+
+- **Non-US symbols are silently wrong, which is worse than broken.** Probed
+  from a Lambda IP on 2026-08-04: `WALMEX` (Bolsa Mexicana) returns
+  `last: null` and fails planning with a jsonpath error; **`AMX` returns
+  $25.01 NYSE USD and `SAP` returns $193.50 NYSE USD — the American ADRs**,
+  confidently, for requests that named a different exchange. The plan card
+  shows a bare number. CNBC already returns `exchange`, `currencyCode` and
+  `name` in the same payload; read and display them. `docs/shares-roadmap.md`
+  §2.1.
+
+- **The trading window is hardcoded to New York and the quote source has no
+  fallback.** `US_MARKET` is the only `Window` and `QuoteKind.window` is a
+  class constant, so **TASE (Sunday–Thursday) misses Sunday entirely and polls
+  all Friday** — not hypothetical given where the owner is. And
+  `shared/sources.py` holds exactly one URL with `self_heals = False`: on
+  2026-08-04 CNBC served the Lambda normally and returned **HTTP 403 to the
+  Codespace**, so the IP-blocking that already killed Yahoo and stooq is live
+  on the current source too. If AWS's range is blocked, every share watch
+  breaks at once and it looks like per-watch extractor failure.
+  `docs/shares-roadmap.md` §2.2–2.3.
 - **A watch cannot be edited.** No changing the threshold, the interval,
   or a bad target URL — the only recourse is delete and re-plan, which
   pays for a fresh Sonnet call and web search.

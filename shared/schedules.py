@@ -36,14 +36,32 @@ So what the window actually buys, in order of how much it matters:
 
 The money is not a reason: the saving is about fourteen cents a month.
 
-## Still open, and *this* is the real correctness bug
+## The previous-close baseline: decided 2026-08-04, and it is not a bug
 
-A watch created outside trading hours takes its baseline from the previous
-close. "Tell me when Apple goes down from the current" asked on Sunday is
-measured against Friday, so if Monday opens higher the watch is comparing
-against a number the user never saw. Windowing does not fix this -- the fix is
-to take the baseline during a session, or to say plainly which close it came
-from. Tracked in `docs/phase-9-watch-kinds.md`.
+This file used to call it the real correctness bug -- a watch created outside
+trading hours takes its baseline from the previous close, so "goes down from
+the current" asked on Sunday measures against Friday.
+
+**The owner settled it: the close is a fine baseline.** Asked on a Sunday what
+"current" means, Friday's close *is* current; there is no other number, and
+refusing to plan a watch outside market hours would be a worse product than
+using the last real price.
+
+But accepting it sharpens what is left, so do not read this as closed:
+
+**"Any change" is not a condition on a price, it is a guarantee.** A stock
+does not reopen at the previous close, so a watch with
+`relative_change_pct: 0` and a close for a baseline fires in the first seconds
+of the next session, every time. Measured in-hours on 2026-08-04: baseline
+306.40, first check 306.49, condition met -- a 0.03% move on the very first
+tick. The email is correct and carries no information.
+
+The fix is not to invent a percentage on the user's behalf; `plan.py` forbids
+that deliberately, and fabricating 5% is a bug this project already shipped
+once. The fix is to store `baseline_at` and `baseline_source`, and to say at
+plan time that a zero-percent condition will fire at the opening bell. Same
+shape as the silent-window fix below: the system knows something the user does
+not. Full argument and ordering in `docs/shares-roadmap.md` §1.
 
 ## And the one a real night found (2026-08-04)
 
