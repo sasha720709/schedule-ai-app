@@ -334,7 +334,15 @@ function WatchRow({
               {watch.condition.relative_change_pct
                 ? `${watch.condition.relative_change_pct}% from`
                 : "any move below"}{" "}
-              the {watch.condition.baseline} read at planning)
+              the {watch.condition.baseline}
+              {/* Which reading it came from. The owner accepted a previous
+                  close as a baseline, which is exactly why it has to be
+                  labelled: the two are identical on screen and are not the
+                  same promise. */}
+              {watch.condition.baseline_source === "previous_close"
+                ? " read at the previous close"
+                : " read live at planning"}
+              )
             </>
           )}
           {watch.check_interval_min != null && watch.status !== "proposed" && (
@@ -342,6 +350,20 @@ function WatchRow({
           )}
         </p>
       )}
+
+      {/* "Any change" is not a condition on a price, it is a guarantee: a
+          stock never reopens at the previous close, so this fires in the
+          first seconds of the next session. Measured 2026-08-04 -- baseline
+          306.40, first check 306.49, fired. Say so rather than quietly
+          picking a percentage nobody asked for. */}
+      {watch.status === "proposed" &&
+        watch.condition?.baseline != null &&
+        !watch.condition.relative_change_pct && (
+          <p className="muted">
+            any move at all triggers this — at the next open that is close to
+            certain. Say a size (&ldquo;5% down&rdquo;) if you meant one.
+          </p>
+        )}
 
       {/* Only for an active watch: a paused one has no schedule, so a time
           here would describe something that does not exist. */}
@@ -372,6 +394,16 @@ function WatchRow({
                 {t.url}
               </a>
               <span className="muted"> · {t.fetch_method}</span>
+              {/* Asking for a foreign company by its bare ticker returns the
+                  US depositary receipt. This line is how that becomes
+                  visible before confirming instead of never. */}
+              {t.instrument_name && (
+                <p className="muted">
+                  {t.instrument_name}
+                  {t.exchange && <> · {t.exchange}</>}
+                  {t.currency && <> · {t.currency}</>}
+                </p>
+              )}
               {t.verified_raw != null && (
                 <p>
                   read <strong>{String(t.verified_raw)}</strong> just now —

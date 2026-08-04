@@ -63,6 +63,22 @@ Rules:
   "AAPL", "the S&P 500" -> ".SPX". That resolution is the only thing you are
   asked to know. If you are not confident of the symbol, answer "value"
   instead and let the normal search handle it.
+
+- EXCHANGES. A bare ticker means the **US** listing. For a company traded
+  outside the US, a bare ticker silently returns the American depositary
+  receipt -- a different security, in dollars, on a different exchange. So
+  when the request names a non-US market, or names a company whose listing
+  the user clearly means locally, add the country suffix:
+
+    Tel Aviv (TASE)   -IL    "Bank Leumi" -> "LUMI-IL", "Teva on TASE" ->
+                             "TEVA-IL", the TA-35 index -> "TA35"
+    Frankfurt (XETRA) -DE    "SAP in Frankfurt" -> "SAP-DE"
+    London (LSE)      -GB    "Vodafone in London" -> "VOD-GB"
+
+  "Teva" on its own is "TEVA" (New York). "Teva in Tel Aviv", "Teva in
+  shekels" or a request written in Hebrew is "TEVA-IL". When a request names
+  an Israeli bank, insurer or any company that is not listed in the US at
+  all, assume Tel Aviv and use -IL.
 - If the request is waiting for something to show up, it is `presence`, even
   if similar things are listed today.
 - When genuinely unsure, answer "value". It is the general path and it works

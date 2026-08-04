@@ -27,6 +27,7 @@ import boto3
 import classify as classify_mod
 import cost
 import kinds
+import schedules
 from fetch import fetch_raw
 from plan import resolve_relative_condition
 
@@ -109,6 +110,7 @@ def lambda_handler(event, context):
         # actually been read. Resolved below, once a target verifies.
         relative_pct = result.get("relative_change_pct")
         baseline = None
+        baseline_at = baseline_source = None
         target_ids, verified, rejected, windows = [], [], [], []
 
         for target in result["targets"]:
@@ -130,8 +132,25 @@ def lambda_handler(event, context):
                 rejected.append({"url": name, "reason": message[:300]})
                 continue
 
+            # The condition was written before anything was fetched, so its
+            # currency is null on every quote planned so far while the payload
+            # says USD or ILS. A bare "7377" for Bank Leumi is a number nobody
+            # can sanity-check.
+            if resolved.get("currency") and not condition.get("currency"):
+                condition["currency"] = resolved["currency"]
+
             if baseline is None:
                 baseline = resolved["verified_value"]
+                baseline_at = now
+                # Was the market open when this number was read? The owner
+                # accepted the previous close as a baseline, which makes saying
+                # which one it was the whole remaining job.
+                baseline_source = (
+                    "live"
+                    if schedules.in_window(datetime.now(timezone.utc),
+                                           resolved.get("window"))
+                    else "previous_close"
+                )
 
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
@@ -153,13 +172,22 @@ def lambda_handler(event, context):
                 # Absent means continuously; see shared/schedules.py.
                 **({"schedule_window": resolved["window"]}
                    if resolved.get("window") else {}),
+                # Which instrument the symbol actually resolved to. Absent for
+                # every kind but `quote`. Shown on the plan card so that "AMX"
+                # coming back as América Móvil's NYSE listing in dollars is
+                # visible before confirming rather than never.
+                **{k: resolved[k]
+                   for k in ("instrument_name", "exchange", "currency")
+                   if resolved.get(k)},
             })
 
         # Only now is there a real number to be relative to. Doing this before
         # the fetch is what produced `price < 313.93` for "tell me when Apple
         # goes down" -- 5% below a stale figure from search results, while the
         # page said $333.43.
-        condition = resolve_relative_condition(condition, relative_pct, baseline)
+        condition = resolve_relative_condition(
+            condition, relative_pct, baseline,
+            baseline_at=baseline_at, baseline_source=baseline_source)
 
         if not target_ids:
             raise RuntimeError(

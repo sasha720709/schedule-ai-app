@@ -117,7 +117,42 @@ US_MARKET = Window(
     days_per_month=TRADING_DAYS_PER_MONTH,
 )
 
-WINDOWS = {US_MARKET.name: US_MARKET}
+# Tel Aviv trades **Sunday to Thursday**, which is the entire reason this stops
+# being one hardcoded window. A `MON-FRI` schedule does not merely mistime a
+# TASE watch: it misses Sunday's session completely and then polls all Friday
+# while the exchange is shut. Continuous trading runs to about 17:15, earlier
+# on Sundays, so 9-18 brackets it with the usual margin at each end.
+#
+# Written as an explicit list rather than `SUN-THU`. A weekday *range* that
+# wraps the end of the week is the kind of thing that is either quietly wrong
+# or quietly unsupported, and there is nothing to gain by finding out which.
+TEL_AVIV = Window(
+    "tase_hours",
+    hours="9-18",
+    days="SUN,MON,TUE,WED,THU",
+    timezone="Asia/Jerusalem",
+    days_per_month=TRADING_DAYS_PER_MONTH,
+)
+
+# Continuous trading to 17:30 Frankfurt time.
+XETRA = Window(
+    "xetra_hours",
+    hours="9-18",
+    days="MON-FRI",
+    timezone="Europe/Berlin",
+    days_per_month=TRADING_DAYS_PER_MONTH,
+)
+
+# 08:00-16:30 London.
+LONDON = Window(
+    "lse_hours",
+    hours="8-17",
+    days="MON-FRI",
+    timezone="Europe/London",
+    days_per_month=TRADING_DAYS_PER_MONTH,
+)
+
+WINDOWS = {w.name: w for w in (US_MARKET, TEL_AVIV, XETRA, LONDON)}
 
 
 def get(name):
@@ -239,6 +274,35 @@ def _allowed_weekdays(window: Window) -> set:
         first, last = (_DAY_NAMES.index(d) for d in field.split("-", 1))
         return set(range(first, last + 1))
     return {_DAY_NAMES.index(d) for d in field.split(",")}
+
+
+def in_window(moment: datetime, window_name=None) -> bool:
+    """Is this moment inside the window -- i.e. was the market open?
+
+    Used to label a baseline. "Tell me when Apple drops 5% from current" reads
+    a price and computes the threshold from it, and whether that price was live
+    or the previous close is the difference between a threshold the user
+    watched happen and one taken from a number they never saw. The owner
+    decided the close is an acceptable baseline; this is what lets the plan
+    card *say* which one it was rather than presenting both identically.
+
+    True for a continuous window, which has no notion of being shut, and true
+    when the timezone cannot be loaded -- an unknown answer must not be
+    reported as "stale".
+    """
+    window = get(window_name)
+    if window is None:
+        return True
+    try:
+        tz = ZoneInfo(window.timezone)
+    except Exception:
+        return True
+
+    local = moment.astimezone(tz)
+    if local.weekday() not in _allowed_weekdays(window):
+        return False
+    low, _, high = window.hours.partition("-")
+    return int(low) <= local.hour <= int(high or low)
 
 
 def next_fire_after(after: datetime, interval_min: int, window_name=None):

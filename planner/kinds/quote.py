@@ -87,10 +87,15 @@ class QuoteKind(Kind):
     # Read by the Checker's degrade path; see the module docstring.
     self_heals = False
 
-    # A market that is shut cannot produce a new price. Confining the schedule
-    # is mostly about not making 35,010 pointless requests a month to a free
-    # third-party endpoint we do not own and cannot afford to lose -- see the
-    # honest accounting in shared/schedules.py.
+    # The fallback only. The real window comes from the exchange the symbol
+    # resolved to (`sources.window_for`), because a market that is shut cannot
+    # produce a new price and markets are not all shut at the same times. This
+    # constant is what a symbol on an exchange the table does not know gets:
+    # US hours, which is right for a bare ticker and the commonest case by far.
+    #
+    # Confining the schedule at all is mostly about not making 35,010
+    # pointless requests a month to a free third-party endpoint we do not own
+    # and cannot afford to lose -- see the accounting in shared/schedules.py.
     window = "us_market_hours"
 
     def plan(self, request: str, symbol=None, *, client=None) -> dict:
@@ -125,12 +130,24 @@ class QuoteKind(Kind):
         is not known until the registry has expanded the symbol, so the caller
         cannot have bound a fetcher to it -- and there is no page to render,
         which is the whole point of the kind.
+
+        The body is fetched **once** and read twice: for the price, and for
+        which instrument the symbol turned out to mean. The second read is what
+        stops the feature answering a question about the Bolsa Mexicana with a
+        number from the New York ADR.
         """
         expanded = sources.expand(
             target.get("known_source", "stock_quote"), target.get("symbol", ""))
 
         url = expanded["url"]
-        outcome = extract(expanded["extractor"], fetch_raw(url))
+        body = fetch_raw(url)
+
+        # Before the price, because a symbol this source does not carry needs
+        # to say so in words. It used to fail as a jsonpath error naming our
+        # own extractor, which told the user nothing they could act on.
+        described = sources.describe(body)
+
+        outcome = extract(expanded["extractor"], body)
         if not outcome.ok:
             raise ValueError(
                 f"canned extractor gave {outcome.status}"
@@ -141,10 +158,20 @@ class QuoteKind(Kind):
             "url": url,
             "extract_hint": expanded["extract_hint"],
             "fetch_method": expanded["fetch_method"],
-            "window": self.window,
+            # Not a constant any more. Tel Aviv trades Sunday to Thursday, so a
+            # single hardcoded New York window did not merely mistime a TASE
+            # watch -- it missed Sunday entirely and polled all Friday.
+            "window": sources.window_for(described["exchange"]) or self.window,
             "extractor": expanded["extractor"],
             "verified_value": outcome.value,
             "verified_raw": outcome.raw,
             "literal": outcome.raw,
-            "why": "known source; nothing searched, nothing compiled",
+            # Shown on the plan card so the user can see, before confirming,
+            # that "AMX" resolved to América Móvil's NYSE listing in dollars.
+            "instrument_name": described["name"],
+            "exchange": described["exchange"],
+            "currency": described["currency"],
+            "why": (f"known source; {described['name'] or 'symbol'} on "
+                    f"{described['exchange'] or 'an unnamed exchange'} "
+                    f"in {described['currency'] or 'an unknown currency'}"),
         }

@@ -38,14 +38,17 @@ from kinds import quote as quote_mod  # noqa: E402
 QUOTE = kinds.get("quote")
 
 
-def cnbc(last="333.43"):
-    """The shape shared/sources.py's canned jsonpath expects."""
-    return json.dumps({
-        "FormattedQuoteResult": {
-            "FormattedQuote": [{"symbol": "AAPL", "last": last,
-                                "name": "Apple Inc"}]
-        }
-    })
+def cnbc(last="333.43", symbol="AAPL", name="Apple Inc",
+         exchange="NASDAQ", currency="USD"):
+    """The shape shared/sources.py's canned jsonpath expects.
+
+    Carries the exchange and currency because those are no longer decoration:
+    the window a quote watch runs in is looked up from `exchange`, and asking
+    for a foreign company by its bare ticker returns the US listing.
+    """
+    quote = {"symbol": symbol, "last": last, "name": name,
+             "exchange": exchange, "currencyCode": currency}
+    return json.dumps({"FormattedQuoteResult": {"FormattedQuote": [quote]}})
 
 
 @pytest.fixture
@@ -149,10 +152,21 @@ def test_the_hint_that_survives_is_a_repair_instruction(wire):
 # It is canned, not trusted
 # --------------------------------------------------------------------------
 
-def test_a_payload_the_canned_spec_cannot_read_is_refused(wire):
+def test_a_reshaped_payload_is_refused(wire):
     """CNBC reshaping its response must fail here, loudly, with nothing
     stored -- not silently at 3am three weeks later."""
     wire(body=json.dumps({"quotes": [{"price": "333.43"}]}))
+
+    with pytest.raises(ValueError, match="could not read a quote"):
+        QUOTE.resolve({"known_source": "stock_quote", "symbol": "AAPL"}, {},
+                      fetch_http=never, fetch_browser=never)
+
+
+def test_a_price_that_is_present_but_unreadable_still_names_the_extractor(wire):
+    """The two failures are different and must stay distinguishable. A missing
+    quote is a coverage limit; a quote whose price will not parse is our spec
+    being wrong about a payload that does exist."""
+    wire(body=cnbc(last="N/A"))
 
     with pytest.raises(ValueError, match="canned extractor"):
         QUOTE.resolve({"known_source": "stock_quote", "symbol": "AAPL"}, {},
@@ -277,3 +291,90 @@ def test_the_planned_interval_is_expressible_as_a_windowed_schedule():
     import schedules
     result, _ = quote_plan({"condition": {}, "check_interval_min": 720})
     schedules.expression(result["check_interval_min"], QUOTE.window)
+
+
+# --------------------------------------------------------------------------
+# Which instrument, on which exchange, in which currency
+#
+# The feature's worst behaviour was answering a question about one security
+# with a confident number from another. Every test here is about that.
+# --------------------------------------------------------------------------
+
+def test_the_instrument_that_answered_is_reported(wire):
+    """A bare ticker for a foreign company returns the US depositary receipt.
+    Probed live: SAP comes back $193.50 NYSE USD, not Frankfurt. The plan card
+    showed a bare number and there was no way to notice."""
+    wire(body=cnbc(symbol="SAP", name="SAP SE", exchange="NYSE",
+                   currency="USD", last="193.50"))
+    resolved = QUOTE.resolve({"known_source": "stock_quote", "symbol": "SAP"},
+                             {}, fetch_http=never, fetch_browser=never)
+
+    assert resolved["instrument_name"] == "SAP SE"
+    assert resolved["exchange"] == "NYSE"
+    assert resolved["currency"] == "USD"
+    # And it reaches the human-readable line the Planner logs and stores.
+    assert "SAP SE" in resolved["why"]
+    assert "NYSE" in resolved["why"]
+
+
+def test_a_tel_aviv_listing_gets_the_tel_aviv_window(wire):
+    """The reason windows stopped being a constant. TASE trades Sunday to
+    Thursday, so a MON-FRI schedule misses Sunday's session entirely and then
+    polls all Friday while the exchange is shut."""
+    wire(body=cnbc(symbol="LUMI-IL", name="Bank Leumi Le Israel BM",
+                   exchange="Tel Aviv Stock Exchange", currency="ILS",
+                   last="7,377.00"))
+    resolved = QUOTE.resolve({"known_source": "stock_quote", "symbol": "LUMI-IL"},
+                             {}, fetch_http=never, fetch_browser=never)
+
+    assert resolved["window"] == "tase_hours"
+    # Agorot, and deliberately not converted to shekels: 7,377 is what TASE
+    # itself displays, and a relative condition has no units anyway.
+    assert resolved["verified_value"] == 7377.0
+
+
+@pytest.mark.parametrize("exchange,window", [
+    ("NASDAQ", "us_market_hours"),
+    ("NYSE", "us_market_hours"),
+    ("Tel Aviv Stock Exchange", "tase_hours"),
+    ("XETRA", "xetra_hours"),
+    ("London Stock Exchange", "lse_hours"),
+])
+def test_the_window_follows_the_exchange(wire, exchange, window):
+    wire(body=cnbc(exchange=exchange))
+    resolved = QUOTE.resolve({"known_source": "stock_quote", "symbol": "X"},
+                             {}, fetch_http=never, fetch_browser=never)
+    assert resolved["window"] == window
+
+
+def test_an_unlisted_exchange_falls_back_to_us_hours_rather_than_failing(wire):
+    """The table cannot be complete. Checking a shut market too often is a
+    small cost problem; refusing to plan the watch is a broken product."""
+    wire(body=cnbc(exchange="Bourse de Casablanca"))
+    resolved = QUOTE.resolve({"known_source": "stock_quote", "symbol": "X"},
+                             {}, fetch_http=never, fetch_browser=never)
+    assert resolved["window"] == "us_market_hours"
+
+
+def test_an_uncovered_symbol_says_so_in_words(wire):
+    """What WALMEX did on 2026-08-03. CNBC does not carry the Bolsa Mexicana,
+    and the user was told `no key 'last' at
+    '.FormattedQuoteResult.FormattedQuote[0].last'` -- a sentence about our
+    jsonpath, not about their problem."""
+    wire(body=json.dumps({"FormattedQuoteResult": {
+        "FormattedQuote": [{"symbol": "WALMEX-MX"}]}}))
+
+    with pytest.raises(ValueError, match="no quote for WALMEX-MX"):
+        QUOTE.resolve({"known_source": "stock_quote", "symbol": "WALMEX-MX"},
+                      {}, fetch_http=never, fetch_browser=never)
+
+
+def test_the_symbol_suffix_survives_into_the_request(wire):
+    """-IL is what selects the home listing over the ADR. If it were stripped
+    or upper-cased away, every Israeli watch would silently track New York."""
+    calls = wire(body=cnbc(symbol="TEVA-IL", exchange="Tel Aviv Stock Exchange",
+                           currency="ILS", last="10,350.00"))
+    QUOTE.resolve({"known_source": "stock_quote", "symbol": "TEVA-IL"}, {},
+                  fetch_http=never, fetch_browser=never)
+
+    assert "TEVA-IL" in calls[0]

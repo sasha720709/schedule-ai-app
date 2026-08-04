@@ -38,6 +38,11 @@ export interface Watch {
     // from. Shown so the number on screen can be checked against reality.
     baseline?: number;
     relative_change_pct?: number;
+    /** When that baseline was read, and whether the market was open at the
+     * time. A threshold 5% below a live price and one 5% below Friday's close
+     * are arithmetically identical and are not the same promise. */
+    baseline_at?: string;
+    baseline_source?: "live" | "previous_close";
   };
   planned_at?: string;
   confirmed_at?: string;
@@ -81,6 +86,12 @@ export interface Target {
   // $333.43 just now" on the plan card.
   verified_raw?: string | number;
   verified_at?: string;
+  /** Quotes only: which instrument the ticker actually resolved to. A bare
+   * ticker for a foreign company returns the US depositary receipt -- a
+   * different security, in dollars -- and there was no way to notice. */
+  instrument_name?: string;
+  exchange?: string;
+  currency?: string;
 }
 
 /** Thrown for any non-2xx. `unauthorized` means the passcode needs re-entering. */

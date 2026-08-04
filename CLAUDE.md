@@ -82,6 +82,23 @@ Worth knowing before acting on it:
 **`docs/shares-roadmap.md` is the finish-the-shares plan**, written 2026-08-04
 with the arguments and the evidence, including three things it recommends
 *not* building (holiday calendars, quote self-healing, a paid data API).
+**Tiers 1 and 2 are done and proven live**; the second-source item was
+withdrawn by the owner. Next on it is Tier 3, `last_changed_at`.
+
+Two corrections the owner made on 2026-08-04, both recorded in §6:
+
+- **"Change from current" was a test request.** Real ones are "5% down",
+  "7% down", "goes up from current". Note that **"goes up from current" is
+  still `relative_change_pct: 0`**, so the fires-at-the-open warning still
+  applies to it.
+- **"Stamp each time it drops 5%" is not the history item — it is a recurring
+  watch, and that does not exist.** Today a watch that fires is finished: the
+  Notifier emails, deletes the schedules, and `triggered` is terminal. There
+  is no "while the watch is still running". Building it needs a **re-arm
+  rule** decided first (does the baseline reset to the new price or stay at
+  the original? those mean very different things), repeat-alert suppression,
+  and an end condition, since a recurring watch bills forever where a one-shot
+  stops by itself.
 
 ## What this project is
 
@@ -221,7 +238,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 414 of them (counts
+- **Every Lambda has tests; the chain still does not.** 436 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -250,25 +267,35 @@ will start to hurt.
   a plausible-but-dormant ticker) returns `ok` forever, so a `!=` watch never
   fires and nothing is ever recorded. `docs/shares-roadmap.md` §2.4.
 
-- **Non-US symbols are silently wrong, which is worse than broken.** Probed
-  from a Lambda IP on 2026-08-04: `WALMEX` (Bolsa Mexicana) returns
-  `last: null` and fails planning with a jsonpath error; **`AMX` returns
-  $25.01 NYSE USD and `SAP` returns $193.50 NYSE USD — the American ADRs**,
-  confidently, for requests that named a different exchange. The plan card
-  shows a bare number. CNBC already returns `exchange`, `currencyCode` and
-  `name` in the same payload; read and display them. `docs/shares-roadmap.md`
-  §2.1.
+- ~~**Non-US symbols are silently wrong.**~~ Fixed 2026-08-04.
+  `sources.describe()` reads `exchange`, `currencyCode` and `name` out of the
+  response already fetched, stores them on the target and shows them on the
+  plan card, so "SAP" resolving to the **NYSE ADR in USD** is now visible
+  before confirming. An uncovered symbol (`WALMEX-MX`; CNBC does not carry the
+  Bolsa Mexicana at all) raises `NotCovered` with a sentence instead of
+  `no key 'last' at ...`. **Minor units are deliberately not converted** — Tel
+  Aviv quotes in agorot and London in pence, so Bank Leumi genuinely reads
+  7,377 rather than 73.77, which is what TASE itself displays. A relative
+  condition has no units; an absolute one ("below 70 shekels") would compare
+  against 7,377 and fire instantly. That trap is open.
 
-- **The trading window is hardcoded to New York and the quote source has no
-  fallback.** `US_MARKET` is the only `Window` and `QuoteKind.window` is a
-  class constant, so **TASE (Sunday–Thursday) misses Sunday entirely and polls
-  all Friday** — not hypothetical given where the owner is. And
-  `shared/sources.py` holds exactly one URL with `self_heals = False`: on
-  2026-08-04 CNBC served the Lambda normally and returned **HTTP 403 to the
-  Codespace**, so the IP-blocking that already killed Yahoo and stooq is live
-  on the current source too. If AWS's range is blocked, every share watch
-  breaks at once and it looks like per-watch extractor failure.
-  `docs/shares-roadmap.md` §2.2–2.3.
+- ~~**The trading window is hardcoded to New York.**~~ Fixed 2026-08-04.
+  `sources.EXCHANGE_WINDOWS` maps the exchange to a window and
+  `QuoteKind.window` is now only the fallback. `tase_hours`
+  (**SUN–THU**, `Asia/Jerusalem`), `xetra_hours` and `lse_hours` added.
+  Proven live: "Bank Leumi on the Tel Aviv Stock Exchange" → `LUMI-IL` →
+  `cron(*/5 9-18 ? * SUN,MON,TUE,WED,THU *)`. An exchange missing from the
+  table degrades to US hours rather than raising.
+
+- **The quote source has no fallback, and the owner has accepted that risk.**
+  `shared/sources.py` holds one URL with `self_heals = False`. On 2026-08-04
+  CNBC served the Lambda normally and returned **HTTP 403 to the Codespace**,
+  so the IP-blocking that already ended Yahoo and stooq is live on the current
+  source. If AWS's range is blocked, every share watch breaks at once and it
+  looks like per-watch extractor failure. **Judged not a real risk by the
+  owner on 2026-08-04**; the second-source work is withdrawn, not forgotten.
+  `docs/shares-roadmap.md` §2.2 and Tier 2 item 4.
+
 - **A watch cannot be edited.** No changing the threshold, the interval,
   or a bad target URL — the only recourse is delete and re-plan, which
   pays for a fresh Sonnet call and web search.
@@ -322,8 +349,8 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**414 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 197, `planner/` 84, `api/` 60,
+**436 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 204, `planner/` 99, `api/` 60,
 `authorizer/` 24, `checker/` 22, `notifier/` 21, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 

@@ -265,21 +265,28 @@ rather than assumed.
 
 Grouped so each step ships something provable, cheapest-first within a tier.
 
-**Tier 1 — stop being confidently wrong.** The only tier that fixes something
-a user can be misled by today.
+**Tier 1 — stop being confidently wrong. ✅ DONE 2026-08-04.**
 
-1. `sources.expand()` reads `exchange`, `currencyCode`, `name` from the
-   payload it already fetches. Plan card shows them. A named exchange that
-   disagrees with the response is refused with a sentence. (§2.1, §2.5)
-2. `baseline_at` + `baseline_source`; the plan card warns when a zero-percent
-   condition will fire at the open. (§1)
+1. ✅ `sources.describe()` reads `exchange`, `currencyCode`, `name` out of the
+   response already fetched — no second request. Stored on the target row and
+   shown on the plan card. An uncovered symbol raises `NotCovered` with a
+   sentence instead of a jsonpath error. (§2.1, §2.5)
+2. ✅ `baseline_at` + `baseline_source` (`live` / `previous_close`), decided by
+   `schedules.in_window()`. The plan card says which reading the threshold came
+   from, and warns when a zero-percent condition will fire at the open. (§1)
 
-**Tier 2 — stop being fragile.**
+**Tier 2 — stop being fragile. Half done; the other half withdrawn.**
 
-3. Exchange → window lookup; `QuoteKind.window` becomes per-target. TASE's
-   Sunday session is the test case. (§2.3)
-4. Second source in the registry with failover and a distinct
-   `source_unavailable` outcome. (§2.2)
+3. ✅ Exchange → window lookup (`sources.EXCHANGE_WINDOWS`);
+   `QuoteKind.window` is now a fallback, not the answer. Tel Aviv, XETRA and
+   London added. **Proven live**: "Bank Leumi on the Tel Aviv Stock Exchange"
+   → `LUMI-IL` → `cron(*/5 9-18 ? * SUN,MON,TUE,WED,THU *)` in
+   `Asia/Jerusalem`. (§2.3)
+4. ⛔ **Second source with failover — dropped by the owner, 2026-08-04.** The
+   CNBC 403 from the Codespace was judged not a real risk. The argument in
+   §2.2 stands and is left there deliberately: if the Lambda range is ever
+   blocked, every share watch breaks at once and it will look like per-watch
+   extractor failure. Revisit at the first `source_unavailable` in production.
 
 **Tier 3 — stop being silent.**
 
@@ -289,13 +296,51 @@ a user can be misled by today.
 
 6. A `Checks` history table. (§2.6)
 
-Tiers 1 and 2 are what "shares is finished" should mean. 3 is shared with the
-other two kinds and is better done once for all of them. 4 is a product
-decision, not a defect.
+Tiers 1 and 2 are what "shares is finished" should mean, and they are done
+apart from the withdrawn item. 3 is shared with the other two kinds and is
+better done once for all of them. 4 is a product decision, not a defect.
 
 ---
 
-## 5. On calendar reminders, since it came up
+## 6. Two corrections from the owner, 2026-08-04
+
+**"Change from current" was a test request, not a real one.** Real requests
+are "5% down", "7% down", "goes up from current". Fair, and it lowers the
+priority of §1's warning — but not to zero: **"goes up from current" is still
+`relative_change_pct: 0`**, so the certainty argument applies to it unchanged.
+The warning is one line of UI and it is built; it now only fires on the case
+that genuinely warrants it.
+
+**Logging each firing is not §2.6, and it needs something that does not
+exist.** The owner described: a watch on "5% down" stamps the moment it first
+drops 5%, then stamps again the next time it does, *while the watch is still
+running*. That is a different feature from §2.6 in two ways.
+
+- §2.6 is a log of **every check** — the price series, one row per tick,
+  which is what a chart is drawn from. What the owner described is a log of
+  **firings**, which is a much smaller and much more interesting table.
+- More importantly: **today a watch that fires is finished.** The Notifier
+  emails, deletes the schedules, and the status becomes `triggered`, which is
+  terminal. There is no "while the watch is not stopped yet" — that state does
+  not exist. "Fires more than once" is a **recurring watch**, and it is a new
+  capability, not a log.
+
+That capability is worth having and it is not free. A watch that keeps running
+after firing needs: a re-arm rule (does the baseline reset to the new price,
+or stay at the original?), a way not to email every five minutes while the
+price sits 5.1% down, and an end condition, since a recurring watch bills
+forever where a one-shot stops by itself. The re-arm question in particular is
+a product decision with no obvious default — "tell me each time it drops 5%"
+means something quite different depending on whether the 5% is measured from
+the original baseline or from the last alert.
+
+**Recommendation: build it, after Tier 3, and decide the re-arm rule first.**
+`last_changed_at` from Tier 3 is a prerequisite anyway — you cannot sensibly
+suppress repeat alerts without knowing when the value last moved.
+
+---
+
+## 7. On calendar reminders, since it came up
 
 The owner's estimate: *"it's not so hard — write an `.ics` file and attach it
 to the email."*

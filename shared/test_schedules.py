@@ -248,3 +248,67 @@ def test_a_snapped_interval_reports_the_time_it_will_really_fire():
     not 51 minutes after the question, which would be a time nothing runs."""
     got = schedules.next_fire_after(_utc(2026, 8, 4, 14, 5), 51, "us_market_hours")
     assert got == _utc(2026, 8, 4, 15, 0)
+
+
+# --------------------------------------------------------------------------
+# Tel Aviv trades Sunday to Thursday
+#
+# This is why the window stopped being one hardcoded constant. A MON-FRI
+# schedule on a TASE symbol is not slightly off: it misses a whole session
+# every week and polls a shut exchange on Friday.
+# --------------------------------------------------------------------------
+
+def test_tel_aviv_runs_sunday_to_thursday():
+    expr = schedules.expression(5, "tase_hours")
+    assert expr["ScheduleExpression"] == "cron(*/5 9-18 ? * SUN,MON,TUE,WED,THU *)"
+    assert expr["ScheduleExpressionTimezone"] == "Asia/Jerusalem"
+
+
+def test_a_sunday_is_a_trading_day_in_tel_aviv_and_not_in_new_york():
+    """2026-08-09 is a Sunday. 07:00 UTC is 10:00 in Jerusalem -- mid-session
+    on TASE, and a New York window would not run for another day."""
+    sunday = _utc(2026, 8, 9, 7, 0)
+    assert schedules.in_window(sunday, "tase_hours")
+    assert not schedules.in_window(sunday, "us_market_hours")
+
+
+def test_friday_is_the_weekend_in_tel_aviv():
+    """2026-08-07 is a Friday. 14:00 UTC is 17:00 in Jerusalem -- inside the
+    9-18 bracket by hour, and still shut, because TASE does not trade Friday.
+    The old MON-FRI window polled all day. New York is mid-session."""
+    friday = _utc(2026, 8, 7, 14, 0)
+    assert not schedules.in_window(friday, "tase_hours")
+    assert schedules.in_window(friday, "us_market_hours")
+
+
+def test_a_thursday_evening_confirm_waits_for_sunday_in_tel_aviv():
+    """Thursday 2026-08-06, 20:00 UTC is 23:00 in Jerusalem -- after the close.
+    The next session is Sunday the 9th at 09:00 local, which is 06:00 UTC."""
+    got = schedules.next_fire_after(_utc(2026, 8, 6, 20, 0), 30, "tase_hours")
+    assert got == _utc(2026, 8, 9, 6, 0)
+
+
+def test_in_window_is_true_for_a_continuous_schedule():
+    """A shop's price has no notion of being shut, and a baseline read from
+    one is always live."""
+    assert schedules.in_window(_utc(2026, 8, 9, 3, 0))
+    assert schedules.in_window(_utc(2026, 8, 9, 3, 0), "not_a_window")
+
+
+def test_the_us_window_still_answers_exactly_as_before():
+    """2026-08-04 is a Tuesday. 14:00 UTC is 10:00 New York, mid-session;
+    20:33 UTC is 16:33, past the last slot but still inside the 9-16 bracket
+    by hour, which is what `in_window` is asked about."""
+    assert schedules.in_window(_utc(2026, 8, 4, 14, 0), "us_market_hours")
+    assert not schedules.in_window(_utc(2026, 8, 4, 8, 0), "us_market_hours")
+
+
+def test_every_registered_window_produces_a_usable_expression():
+    """A window that cannot express a schedule would fail at confirm time, in
+    front of a user, having already been chosen by the Planner."""
+    for name in schedules.WINDOWS:
+        expr = schedules.expression(5, name)
+        assert expr["ScheduleExpression"].startswith("cron(")
+        assert expr["ScheduleExpressionTimezone"]
+        assert schedules.checks_per_month(5, name) > 0
+        assert schedules.next_fire_after(_utc(2026, 8, 4, 12, 0), 5, name)

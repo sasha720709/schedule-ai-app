@@ -85,7 +85,8 @@ def search(request: str, *, shape: str = "value", client=None) -> dict:
     return llm.parse_json(llm.text_of(response))
 
 
-def resolve_relative_condition(condition: dict, pct, baseline) -> dict:
+def resolve_relative_condition(condition: dict, pct, baseline, *,
+                               baseline_at=None, baseline_source=None) -> dict:
     """Turn "goes down from current" into a real threshold, using a real reading.
 
     The condition is written during the search step, before any page has been
@@ -103,6 +104,20 @@ def resolve_relative_condition(condition: dict, pct, baseline) -> dict:
     actually verified against, and the baseline is stored alongside it so the
     plan card can say "5% below the $333.43 read just now" rather than showing
     a bare number nobody can check.
+
+    ## And *when* it was read (added 2026-08-04)
+
+    The owner settled that a previous close is an acceptable baseline: asked on
+    a Sunday what "current" means, Friday's close is the only honest answer.
+    Accepting that makes labelling it mandatory rather than optional, because
+    the two cases now look identical on screen and behave very differently. A
+    threshold 5% below a live price is one the user watched being set; the same
+    threshold below Friday's close was computed from a number they never saw.
+
+    `baseline_source` is `live` or `previous_close`, decided by whether the
+    market was open when the reading was taken, and `baseline_at` is the
+    moment. Neither changes any arithmetic. They exist so the plan card can
+    say which it was.
     """
     if pct is None or not isinstance(baseline, (int, float)) or isinstance(baseline, bool):
         return condition
@@ -112,6 +127,10 @@ def resolve_relative_condition(condition: dict, pct, baseline) -> dict:
     resolved["value"] = threshold
     resolved["baseline"] = float(baseline)
     resolved["relative_change_pct"] = float(pct)
+    if baseline_at:
+        resolved["baseline_at"] = baseline_at
+    if baseline_source:
+        resolved["baseline_source"] = baseline_source
     # "goes down" is any decrease, so the threshold IS the baseline and the
     # comparison has to be strict -- `<=` would fire on an unchanged price.
     if not resolved.get("op"):

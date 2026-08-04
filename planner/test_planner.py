@@ -602,3 +602,51 @@ def test_resolve_without_a_client_works_end_to_end(monkeypatch):
 
     assert resolved["verified_value"] == 789.00
     assert resolved["fetch_method"] == "http"
+
+
+# --------------------------------------------------------------------------
+# Labelling the baseline
+#
+# The owner settled that a previous close is an acceptable baseline. That
+# makes saying which one it was the whole remaining job: a threshold 5% below
+# a live price and one 5% below Friday's close look identical on screen and
+# are not the same promise.
+# --------------------------------------------------------------------------
+
+def test_a_baseline_read_live_is_labelled_live():
+    resolved = plan_mod.resolve_relative_condition(
+        {"metric": "price", "op": "<"}, -5, 300.0,
+        baseline_at="2026-08-04T14:00:00+00:00", baseline_source="live")
+
+    assert resolved["value"] == 285.0
+    assert resolved["baseline"] == 300.0
+    assert resolved["baseline_source"] == "live"
+    assert resolved["baseline_at"] == "2026-08-04T14:00:00+00:00"
+
+
+def test_a_baseline_read_out_of_hours_says_so():
+    """Asked on a Sunday, "current" is Friday's close. That is fine -- it is
+    the last real price -- but the arithmetic is identical either way, so
+    nothing except this field distinguishes them."""
+    resolved = plan_mod.resolve_relative_condition(
+        {"metric": "price", "op": "<"}, -5, 300.0,
+        baseline_source="previous_close")
+
+    assert resolved["baseline_source"] == "previous_close"
+
+
+def test_labels_change_no_arithmetic():
+    """They are for the plan card to read aloud, nothing more. If adding them
+    ever moves a threshold, the labelling has grown into a behaviour."""
+    bare = plan_mod.resolve_relative_condition({"op": "<"}, -7, 100.0)
+    labelled = plan_mod.resolve_relative_condition(
+        {"op": "<"}, -7, 100.0, baseline_at="t", baseline_source="live")
+
+    assert bare["value"] == labelled["value"] == 93.0
+    assert "baseline_source" not in bare
+
+
+def test_an_absolute_condition_is_left_entirely_alone():
+    """No percentage means no baseline to label."""
+    condition = {"metric": "price", "op": "<", "value": 300}
+    assert plan_mod.resolve_relative_condition(condition, None, 333.0) == condition
