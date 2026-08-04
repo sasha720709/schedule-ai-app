@@ -79,6 +79,25 @@ Worth knowing before acting on it:
   is near-pointless — "Apple dropped below $300" already happened, and a
   calendar entry in the past is clutter. Build the reminder kind first.
 
+**`docs/vacancies-roadmap.md` is the vacancies analysis** (2026-08-04): what
+the `presence` kind does today, what a check costs, and why the owner's
+"personalised, not just any match" idea is affordable. Three things from it
+worth knowing without opening it:
+
+- **A vacancy check is a plain HTTP GET with no model — $0.0000041, or
+  $0.012/month at 15-minute checks.** Cost is *not* the constraint for this
+  feature, unlike shares. The Israeli job boards stayed `http` in the 8b live
+  run; a JS-rendered board (LinkedIn) would cost 45× and still be under $2.
+- **The triggered email currently says `What was found: 1`** — a count, with
+  an empty "why". No title, no link, no description. `count` returns an
+  integer and Tier 0 sets `note` to `""`. Highest value-per-line fix in the
+  feature: return the matched *items*, not how many.
+- **Judging costs per new posting, not per check**, so personalisation is
+  cheap: ~$0.03/month for a niche query against $49/month if a model ran every
+  tick. It also *fixes* the kind's worst failure mode — a text filter cannot
+  be verified against a posting that does not exist yet, so the selector
+  should be deliberately loose and the model should decide.
+
 **`docs/shares-roadmap.md` is the finish-the-shares plan**, written 2026-08-04
 with the arguments and the evidence, including three things it recommends
 *not* building (holiday calendars, quote self-healing, a paid data API).
