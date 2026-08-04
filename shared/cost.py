@@ -150,6 +150,18 @@ def can_afford_rank(interval_min: int, targets: int = 1,
     return checks + spend_usd + rank_cost(items) <= monthly_budget_usd()
 
 
+# One question-building call, at plan time, over the items the search already
+# returned. Paid once per watch, never on a tick.
+QUESTIONS_BASE_INPUT_TOKENS = 800
+QUESTIONS_OUTPUT_TOKENS = 400
+
+
+def questions_cost(items: int = 25) -> float:
+    inputs = QUESTIONS_BASE_INPUT_TOKENS + RANK_TOKENS_PER_ITEM * max(items, 0)
+    return (inputs / 1_000_000 * HAIKU_INPUT_PER_MTOK
+            + QUESTIONS_OUTPUT_TOKENS / 1_000_000 * HAIKU_OUTPUT_PER_MTOK)
+
+
 # One Tier 1 repair: a Haiku call that re-reads the page and re-derives the
 # spec. Bigger than a judge call in both directions -- it is shown the old
 # extractor and the error alongside the text, and it writes a spec rather than

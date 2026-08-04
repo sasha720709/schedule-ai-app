@@ -912,3 +912,44 @@ def test_a_one_shot_watch_is_never_ranked(env, monkeypatch):
 
     assert calls == []
     assert values_of(env.watches.last_update())[":s"] == "triggered"
+
+
+def test_the_answers_reach_the_ranker_as_criteria(env, monkeypatch):
+    """The answers were given about the postings visible that day. They travel
+    to the ranker as preferences, so a future job that misses one scores lower
+    rather than disappearing -- the too-strict filter is the bug class this
+    codebase keeps rediscovering."""
+    a_repeating_watch(env, monkeypatch)
+    env.watches.items["w_1"]["questions"] = [{
+        "id": "seniority", "question": "Which level suits you?",
+        "options": [{"value": "junior", "label": "Junior or student",
+                     "items": ["x"]},
+                    {"value": "senior", "label": "Senior", "items": ["y"]}],
+    }]
+    env.watches.items["w_1"]["answers"] = {"seniority": ["junior"]}
+
+    seen = {}
+
+    def fake(request, items, *, criteria="", **kwargs):
+        seen["criteria"] = criteria
+        return items, 0.001
+
+    monkeypatch.setattr(env.module, "rank", fake)
+    run(env)
+
+    assert "Junior or student" in seen["criteria"]
+    assert "Senior" not in seen["criteria"]
+
+
+def test_an_unanswered_watch_ranks_exactly_as_before(env, monkeypatch):
+    a_repeating_watch(env, monkeypatch)
+    seen = {}
+
+    def fake(request, items, *, criteria="", **kwargs):
+        seen["criteria"] = criteria
+        return items, 0.001
+
+    monkeypatch.setattr(env.module, "rank", fake)
+    run(env)
+
+    assert seen["criteria"] == ""

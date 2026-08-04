@@ -299,9 +299,8 @@ should be enjoyed.
 2. ✅ Seen-IDs (3.5) and recurring watches (3.4). These were one piece of work;
    a recurring watch without dedup is worse than no recurring watch.
 3. ✅ The judgement step (§4) — Tier 1 over *new* postings only. See §9.
-4. Clarifying questions (3.6), last, because they are the only part that needs
-   multi-turn chat and the only part that is pure gain rather than a
-   correction.
+4. ✅ Clarifying questions (3.6). See §10 — and note that the roadmap was
+   **wrong** that they need multi-turn chat.
 
 Steps 1 and 2 made the feature usable and are done. Steps 3 and 4 are what
 make it the thing the owner actually described.
@@ -395,6 +394,99 @@ Then, confirmed at one minute:
 `presence` keeps everything that is not a job — restocks, appointment slots,
 tickets — and keeps the compiled counter with its unverifiable filter. The
 `jobs` kind did not fix that class; it removed jobs from it.
+
+---
+
+## 10. Questions grounded in the results, done 2026-08-04
+
+The owner's proposal: search broadly first, ask questions *based on what came
+back*, show only what matches, then watch only that.
+
+**The first three quarters of that are right and are now built.** The last
+quarter is the one thing that must not be done, and the reason is worth
+keeping.
+
+### Why grounding the questions is the good idea
+
+A generic clarifying form asks "which neighbourhood? what hours? full or part
+time?" — and half of it is wasted, because it does not know that every one of
+today's results is already in Be'er Sheva, or that not one of them mentions
+hours. Questions derived from the live result set can only ask what
+**discriminates**: real options, real counts, and a visible effect the moment
+they are answered.
+
+It is a facet filter built from the search results rather than a survey
+written in advance. Observed on the real request, "a cloud engineer job in
+Israel", 35 postings:
+
+    ? Which role type interests you most?
+        [11] DevOps / Infrastructure
+        [ 3] Cloud Security
+        [ 4] Cloud Platform / Architecture
+    ? What experience level?
+        [ 4] 1-2 years      [ 6] 3-4 years      [ 7] 5+ years
+
+No one wrote those options. They are what was there.
+
+### The correction: answers must not filter the future
+
+"Then we watch only the vacancies that satisfy the answers" is the one step to
+refuse. The answers describe **today's** postings. Tomorrow's good job may come
+from a company not in today's list or describe itself differently, and a hard
+filter built from today would silently exclude it, count zero, and go on
+looking healthy. That is the most persistent bug class in this codebase: it
+broke the presence kind's text filter, it is why `COUNT_PROMPT` argues for
+loose selectors, and removing it is most of what the jobs registry was for.
+
+So the answers do two different jobs, and the asymmetry is the design:
+
+- **On today's list they filter.** The items are visible, the effect is
+  immediate, and a wrong answer is undone by clicking again. Narrowing is an
+  exact set intersection, because each option carries the ids of the items it
+  covers.
+- **On tomorrow's postings they rank.** `questions.as_criteria()` turns them
+  into a sentence handed to `rank.py`, which scores and only ever drops the
+  outright irrelevant. A future job that misses a stated preference is reported
+  with a lower score, never hidden.
+
+A preference someone clicked is a preference, not a promise about postings
+that do not exist yet.
+
+### The roadmap was wrong that this needs chat
+
+§3.6 deferred clarifying questions behind sub-phase 4d because they "need
+multi-turn chat". They do not. The plan card already shows what was found and
+waits for a confirm; the questions belong **on it**, and the answers travel
+with the confirm call. No new conversational state, no new endpoint, and
+nothing is ever required — confirming without answering behaves exactly as it
+did before.
+
+### Two prompt rules that came from watching it get them wrong
+
+**Options describe the items, not the user's flexibility.** The first live run
+produced *"Beer Sheva only [1] / Open to other cities [29]"* — and "open to
+other cities" carried only the items that are **not** in Be'er Sheva, so
+choosing it would have hidden the one local job the person most wanted. Options
+are now required to be properties you can point at: "Be'er Sheva", "Tel Aviv",
+"Remote". *No preference* is already expressed by not answering.
+
+**Ask about something that still means something next month.** The second run
+asked *"How recent should the posting be?"* — a real split of today's list and
+meaningless for a posting that appears tomorrow, since the answers become a
+lasting preference for a watch that keeps running. The prompt now says so.
+
+### Cost, and the failure modes
+
+One Haiku call per watch at plan time, over items already fetched: about half a
+cent, paid once. Applying the answers is free — text appended to a ranking
+prompt that was going to run anyway.
+
+No questions is a good outcome, not a failure: the results may genuinely be all
+of a kind. It is also what any error produces, because **a watch must be
+creatable whether or not this step worked**. An answer naming an option that no
+longer exists is ignored rather than fatal — verified live by sending
+deliberately wrong values and watching the watch rank exactly as an unanswered
+one.
 
 ---
 

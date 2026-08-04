@@ -383,6 +383,14 @@ def confirm_watch(event) -> dict:
     if not 1 <= interval <= 1440:
         raise HttpError(400, "check_interval_min must be between 1 and 1440")
 
+    # Answers to the plan card's questions, if any were asked and any given.
+    # Deliberately optional: confirming without answering behaves exactly as it
+    # did before this existed, which is what keeps the questions a help rather
+    # than a form to be got past.
+    answers = body.get("answers")
+    if answers is not None and not isinstance(answers, dict):
+        raise HttpError(400, "answers must be an object of question id -> choices")
+
     targets = _targets_for(watch_id)
     if not targets:
         raise HttpError(409, f"watch {watch_id} has no targets to schedule")
@@ -447,7 +455,7 @@ def confirm_watch(event) -> dict:
         Key={"watch_id": watch_id},
         UpdateExpression=(
             "SET #s = :s, check_interval_min = :i, confirmed_at = :t, "
-            "expires_at = :x"
+            "expires_at = :x, answers = :a"
         ),
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
@@ -455,6 +463,7 @@ def confirm_watch(event) -> dict:
             ":i": _to_decimal(interval),
             ":t": _now(),
             ":x": expires_at,
+            ":a": _to_decimal(answers or {}),
         },
     )
 

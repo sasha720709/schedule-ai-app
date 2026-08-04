@@ -36,6 +36,7 @@ import cost
 from condition import ConditionError, evaluate
 from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
 from check import fetch_raw, fetch_text, judge
+import questions
 from rank import rank
 from repair import repair
 
@@ -308,13 +309,22 @@ def _rank(watch: dict, target: dict, fresh: list):
     interval = int(watch.get("check_interval_min") or 60)
     spent = float(watch.get("rank_spend_usd") or 0)
 
+    # What the user said when they answered the plan card's questions. These
+    # become ranking *criteria*, never a filter: the answers were given about
+    # the postings visible that day, and a future job that misses one should
+    # score lower rather than disappear. See shared/questions.py.
+    criteria = questions.as_criteria(
+        _from_decimal(watch.get("questions") or []),
+        _from_decimal(watch.get("answers") or {}),
+    )
+
     if not cost.can_afford_rank(interval,
                                 fetch_method=target.get("fetch_method", "http"),
                                 spend_usd=spent, items=len(fresh)):
         print(f"[rank] skipped, ${spent:.4f} already spent this month")
         return fresh, 0.0
 
-    ranked, spend = rank(prompt, fresh)
+    ranked, spend = rank(prompt, fresh, criteria=criteria)
     if spend:
         kept, dropped = len(ranked), len(fresh) - len(ranked)
         print(f"[rank] {kept} kept, {dropped} set aside, ${spend:.4f}")

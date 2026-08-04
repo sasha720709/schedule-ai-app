@@ -24,6 +24,7 @@ import {
   setWatchStatus,
   type Staleness,
   type MatchedItem,
+  type PlanQuestion,
   type Target,
   type Watch,
 } from "./api";
@@ -216,12 +217,13 @@ export default function App() {
             nextCheck={nextChecks[watch.watch_id]}
             staleness={staleness[watch.watch_id]}
             busy={busy}
-            onConfirm={(interval) =>
+            onConfirm={(interval, answers) =>
               void act(async () => {
                 const done = await confirmWatch(
                   passcode,
                   watch.watch_id,
                   interval,
+                  answers,
                 );
                 setNextChecks((prev) => ({
                   ...prev,
@@ -362,13 +364,46 @@ function WatchRow({
   nextCheck?: string | null;
   staleness?: Staleness[];
   busy: boolean;
-  onConfirm: (interval: number) => void;
+  onConfirm: (interval: number, answers: Record<string, string[]>) => void;
   onPause: () => void;
   onResume: () => void;
   onDelete: () => void;
   onExpand: () => void;
 }) {
   const [interval, setIntervalValue] = useState(watch.check_interval_min ?? 60);
+  // Which option is selected per question. Empty means "no preference", which
+  // is a real answer and the default -- questions are a help, not a form.
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+
+  const questions = watch.questions ?? [];
+
+  // Narrowing today's list is an exact set intersection, because each option
+  // already carries the ids of the items it covers. Tomorrow's postings cannot
+  // be filtered this way -- they do not exist yet -- so the same answers are
+  // sent to the server as ranking preferences instead.
+  const allowed = questions.reduce<Set<string> | null>((keep, q) => {
+    const chosen = answers[q.id] ?? [];
+    if (!chosen.length) return keep;
+    const covered = new Set(
+      q.options.filter((o) => chosen.includes(o.value)).flatMap((o) => o.items),
+    );
+    if (!keep) return covered;
+    return new Set([...keep].filter((id) => covered.has(id)));
+  }, null);
+
+  const narrow = (items: MatchedItem[]) =>
+    allowed ? items.filter((i) => allowed.has(i.id)) : items;
+
+  const toggle = (q: PlanQuestion, value: string) =>
+    setAnswers((prev) => {
+      const chosen = prev[q.id] ?? [];
+      return {
+        ...prev,
+        [q.id]: chosen.includes(value)
+          ? chosen.filter((v) => v !== value)
+          : [...chosen, value],
+      };
+    });
 
   return (
     <li>
@@ -503,11 +538,43 @@ function WatchRow({
                 </p>
               )}
               {!!t.verified_items?.length && (
-                <Matches items={t.verified_items} base={t.url} />
+                <Matches items={narrow(t.verified_items)} base={t.url} />
               )}
               <p className="muted">{t.extract_hint}</p>
             </div>
           ))}
+
+          {/* Built from what the search actually returned, so every option
+              has real items behind it. A generic form would ask about hours
+              no posting mentions and a city every result already shares. */}
+          {questions.length > 0 && (
+            <div className="questions">
+              {questions.map((q) => (
+                <div key={q.id}>
+                  <p className="muted">{q.question}</p>
+                  {q.options.map((o) => (
+                    <button
+                      key={o.value}
+                      className={
+                        (answers[q.id] ?? []).includes(o.value)
+                          ? "chip on"
+                          : "chip"
+                      }
+                      onClick={() => toggle(q, o.value)}
+                      disabled={busy}
+                    >
+                      {o.label} <span className="muted">{o.items.length}</span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+              <p className="muted">
+                Answering narrows what is shown here, and tells the watch what
+                to prefer later — it never hides a future posting, only ranks
+                it lower.
+              </p>
+            </div>
+          )}
 
           <label>
             check every{" "}
@@ -547,7 +614,7 @@ function WatchRow({
           </span>
 
           <div>
-            <button onClick={() => onConfirm(interval)} disabled={busy}>
+            <button onClick={() => onConfirm(interval, answers)} disabled={busy}>
               Start watching
             </button>{" "}
             <button onClick={onDelete} disabled={busy}>

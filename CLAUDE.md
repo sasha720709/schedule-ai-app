@@ -129,6 +129,24 @@ and pay are invisible; the prompt says an unstated criterion is not a failed
 one. `llm.py` moved from `planner/` to `shared/` so the Checker could reuse
 `ask()` rather than grow a second `client or Anthropic()`.
 
+**Step 4 is done, and the roadmap was wrong about it.** Clarifying questions
+were deferred behind multi-turn chat (4d); they need none. `shared/questions.py`
+builds them **from what the search actually returned**, so every option is a
+property real postings have, with the ids of the items it covers — narrowing
+today's list is an exact set intersection. They live on the plan card and the
+answers travel with confirm.
+
+**The one thing refused:** answers must NOT filter future postings. They
+describe *today's* results; a hard filter built from them would silently
+exclude tomorrow's good job and count zero while looking healthy — the bug
+class that broke the presence text filter. So they filter today's visible list
+and become *ranking preferences* (`as_criteria` → `rank.py`) from then on: a
+future job that misses one scores lower, never disappears. Two prompt rules
+came from watching it get this wrong live: options must describe **items**, not
+flexibility ("Open to other cities [29]" carried only the jobs *not* in the
+city, hiding the local one), and must be **durable** ("How recent should the
+posting be?" is meaningless for a posting that appears tomorrow).
+
 **Three findings no offline test could have produced.** LinkedIn rewrites every
 job link on every response (`refId`), so identity must key on
 `data-entity-urn` — otherwise a repeating watch re-reports every job every
@@ -300,7 +318,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 537 of them (counts
+- **Every Lambda has tests; the chain still does not.** 558 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -419,9 +437,9 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**537 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 253, `planner/` 107, `api/` 69,
-`authorizer/` 24, `checker/` 48, `notifier/` 30, `fetcher/` 6. They run on
+**558 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 269, `planner/` 107, `api/` 72,
+`authorizer/` 24, `checker/` 50, `notifier/` 30, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**

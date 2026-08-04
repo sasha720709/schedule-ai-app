@@ -52,6 +52,7 @@ export interface Watch {
   /** Does firing once finish the job? False for a price crossing a threshold,
    * true for a vacancy -- a job search is a stream, not an event. */
   repeating?: boolean;
+  questions?: PlanQuestion[];
   /** Only a repeating watch has one: it is the only thing here that does not
    * stop by itself. */
   expires_at?: string | null;
@@ -78,6 +79,15 @@ export interface CostEstimate {
   monthly_budget_usd: number;
   min_interval_min: number;
   within_budget: boolean;
+}
+
+/** A question the plan card asks, built from what the search actually
+ * returned. Each option carries the ids of the items it covers, so narrowing
+ * the list is an exact set operation rather than re-matching text. */
+export interface PlanQuestion {
+  id: string;
+  question: string;
+  options: { value: string; label: string; items: string[] }[];
 }
 
 export interface MatchedItem {
@@ -207,6 +217,9 @@ export const confirmWatch = (
   passcode: string,
   id: string,
   checkIntervalMin: number,
+  /** Optional throughout. Confirming without answering behaves exactly as it
+   * did before questions existed. */
+  answers?: Record<string, string[]>,
 ) =>
   request<{
     watch_id: string;
@@ -221,7 +234,10 @@ export const confirmWatch = (
     `/watches/${id}/confirm`,
     {
       method: "POST",
-      body: JSON.stringify({ check_interval_min: checkIntervalMin }),
+      body: JSON.stringify({
+        check_interval_min: checkIntervalMin,
+        ...(answers && Object.keys(answers).length ? { answers } : {}),
+      }),
     },
   );
 

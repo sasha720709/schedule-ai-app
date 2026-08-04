@@ -750,3 +750,29 @@ def test_the_term_starts_when_checking_starts_not_when_planning_did(aws):
 
     stored = env.watches.updates[-1]["ExpressionAttributeValues"]
     assert stored[":x"] > stored[":t"]
+
+
+def test_confirm_stores_the_answers_to_the_plan_cards_questions(aws):
+    env = aws(watches=proposed(), targets=one_target())
+    call("POST /watches/{id}/confirm",
+         {"answers": {"seniority": ["junior"]}}, watch_id="w_1")
+
+    stored = env.watches.updates[-1]["ExpressionAttributeValues"]
+    assert stored[":a"] == {"seniority": ["junior"]}
+
+
+def test_confirming_without_answering_still_works(aws):
+    """Questions are a help, not a form to be got past."""
+    env = aws(watches=proposed(), targets=one_target())
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert env.watches.updates[-1]["ExpressionAttributeValues"][":a"] == {}
+
+
+def test_malformed_answers_are_refused_rather_than_stored(aws):
+    aws(watches=proposed(), targets=one_target())
+    response = call("POST /watches/{id}/confirm",
+                    {"answers": "junior"}, watch_id="w_1")
+
+    assert response["statusCode"] == 400

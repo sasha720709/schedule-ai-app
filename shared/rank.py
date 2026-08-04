@@ -92,14 +92,22 @@ Respond with ONLY a JSON object:
 {"items": [{"n": integer, "score": integer, "why": string, "keep": boolean}]}"""
 
 
-def _prompt_for(request: str, items: list) -> str:
+def _prompt_for(request: str, items: list, criteria: str = "") -> str:
     lines = [f"{n}. {item.get('text', '')[:300]}"
              for n, item in enumerate(items, start=1)]
-    return f"They asked:\n{request}\n\nWhat just appeared:\n" + "\n".join(lines)
+    said = f"\n{criteria.strip()}\n" if criteria and criteria.strip() else ""
+    return (f"They asked:\n{request}\n{said}\nWhat just appeared:\n"
+            + "\n".join(lines))
 
 
-def rank(request: str, items: list, *, client=None) -> tuple:
+def rank(request: str, items: list, *, criteria: str = "", client=None) -> tuple:
     """Score and order `items`. Returns `(items, spend_usd)`.
+
+    `criteria` carries what the user said when they answered the plan card's
+    questions. It is appended to the request rather than applied as a filter,
+    and that is deliberate: those answers were given about *today's* postings,
+    and a future job that misses one should score lower, not vanish. See
+    `shared/questions.py`.
 
     Never raises. On any failure the items come back untouched, in their
     original order, with no scores -- an unranked email is a small
@@ -115,7 +123,7 @@ def rank(request: str, items: list, *, client=None) -> tuple:
             model=llm.READ_MODEL,
             max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT,
-            content=_prompt_for(request, batch),
+            content=_prompt_for(request, batch, criteria),
         )
         verdicts = {int(v["n"]): v for v in reply.get("items", [])
                     if isinstance(v, dict) and "n" in v}

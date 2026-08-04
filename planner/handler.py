@@ -30,6 +30,7 @@ import kinds
 import schedules
 from fetch import fetch_raw
 from plan import resolve_relative_condition
+from questions import build as build_questions
 
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
@@ -112,6 +113,7 @@ def lambda_handler(event, context):
         baseline = None
         baseline_at = baseline_source = None
         target_ids, verified, rejected, windows = [], [], [], []
+        verified_items = []
 
         for target in result["targets"]:
             now = datetime.now(timezone.utc).isoformat()
@@ -155,6 +157,7 @@ def lambda_handler(event, context):
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
             verified.append(resolved["fetch_method"])
+            verified_items.append(resolved.get("verified_items") or [])
             windows.append(resolved.get("window"))
             targets_table.put_item(Item={
                 "target_id": target_id,
@@ -189,6 +192,19 @@ def lambda_handler(event, context):
                 **({"unfiltered_count": _to_decimal(resolved["unfiltered_count"])}
                    if resolved.get("unfiltered_count") is not None else {}),
             })
+
+        # Questions worth asking, built from what the search actually returned
+        # rather than written in advance. A generic form asks about hours that
+        # no posting mentions and a city every result already shares; questions
+        # derived from the live list can only ask what discriminates.
+        #
+        # Never required, and never allowed to fail a plan: no questions is a
+        # perfectly good outcome and is also what any error produces.
+        found = [item for row in verified_items for item in row]
+        questions, questions_spend = build_questions(request, found)
+        if questions:
+            print(f"asked {len(questions)} question(s), "
+                  f"${questions_spend:.4f}")
 
         # Only now is there a real number to be relative to. Doing this before
         # the fetch is what produced `price < 313.93` for "tell me when Apple
@@ -237,7 +253,8 @@ def lambda_handler(event, context):
                 "planner_interval_min = :p, min_interval_min = :f, "
                 # Stored so a wrong fork is visible on the plan card before the
                 # user confirms, rather than discovered weeks later.
-                "watch_kind = :k, planned_at = :t, repeating = :r "
+                "watch_kind = :k, planned_at = :t, repeating = :r, "
+                "questions = :q "
                 "REMOVE plan_error"
             ),
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
@@ -249,6 +266,7 @@ def lambda_handler(event, context):
                 # without touching the class. A vacancy is a stream; a price
                 # crossing a threshold is an event. See Kind.repeating.
                 ":r": bool(kind.repeating),
+                ":q": _to_decimal(questions),
                 ":c": _to_decimal(condition),
                 ":i": _to_decimal(interval),
                 ":p": _to_decimal(proposed),
