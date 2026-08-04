@@ -2,57 +2,110 @@
 
 Context for any Claude Code session working in this repo — read this first.
 
-## Start here (last session: 2026-08-04)
+## Start here (last session: 2026-08-04, a long one)
 
 Everything is committed, pushed, deployed and green. **AWS is idle**: zero
-schedules, so nothing is billing. 414 tests pass in ~2s with
-`python -m pytest -q` from the repo root.
+schedules, zero watches, zero targets, so nothing is billing. **605 tests**
+pass in ~2s with `python -m pytest -q` from the repo root, and every suite also
+passes alone (`for d in */; do pytest $d; done`).
 
-**The next task is Phase 9 step 3b: one-shot schedules, then the `reminder`
-kind.** Plan and reasoning in `docs/phase-9-watch-kinds.md` §10; §8 records
-the decision it depends on (a reminder stores `targets: []` and its schedule
-invokes with `{"watch_id": ...}`, so the Checker's entry point has to branch).
-Everything before it in that phase is done and proven live.
+### What happened today, in order
 
-**2026-08-04 fixed two things a real overnight run found**, written up in
-`docs/phase-9-watch-kinds.md` §10b. The owner made an Apple watch at 23:33
-Israel time and got no email. The schedule was right: 23:33 Israel is 16:33 in
-New York, three minutes past the last slot of the `9-16` window, so the first
-check was 09:00 Tuesday — and the watch was deleted next morning, hours before
-it would ever have run. The defect was that **confirm said `"active"` and
-nothing else**, so correct-and-silent looked identical to broken. There is now
-a `next_check_at` on confirm, PATCH and GET, computed and never stored.
-Separately, `confirm` had returned **500 nine times in twenty minutes** to
-someone reasonably asking for an hourly quote watch: a windowed schedule
-refused any interval ≥ 60. A cron *minute* step cannot express an hour, but a
-cron *hour* step always could — `cron(0 9-16 ? * MON-FRI *)`. Intervals no
-cron grid can express (51 min, which is what the budget floor produces) now
-snap **up**, never down, so a snapped schedule can only cost less than the
-estimate that was approved.
+Twelve commits, `10dcffb` through `f27164b`. Each has a long message; this is
+the map.
 
-Four things carried forward that are easy to lose:
+1. **The missing email** (`10dcffb`). A watch was correct and silent, and the
+   two are indistinguishable from outside. `next_check_at`, plus windowed
+   schedules that can finally express an hour.
+2. **Shares tiers 1–3** (`4cc7297`, `d5837c2`, `d83b04a`). Which instrument,
+   which exchange, which baseline — and noticing when a value stops moving.
+   **Tel Aviv works**, Sunday–Thursday.
+3. **Vacancies, all four steps** (`5e52a3b`, `47e4e84`, `b227a2c`, `dfcfad0`,
+   `b23d9c3`). The email reports the job rather than a count; watches repeat
+   with per-item dedup and a 90-day term; **LinkedIn works keyless**; new
+   postings are ranked against the request; and the plan card asks questions
+   built from what the search actually returned.
+4. **Marketplaces steps 1–2** (`b7c8a04`, `a3722d9`, `f27164b`). A shops
+   registry, an `offers` extractor that prefers schema.org, **Amazon on our
+   own browser**, and answers that *pin* which offer a price watch follows.
+
+### What to do next, in the order I would do it
+
+1. **Marketplaces step 3 — watch-level conditions.** The real engineering
+   left in this phase. Today the Checker evaluates one target per tick and
+   each fires independently, so "cheapest of five shops" cannot be expressed.
+   A threshold already behaves correctly without it (any shop crossing fires
+   the watch), so this is only needed for "tell me the cheapest" and
+   relative-to-best. `docs/marketplaces-roadmap.md` §3.1.
+2. **Marketplaces step 4 — landed price.** An item ₪50 cheaper with ₪60
+   shipping is not cheaper, and comparing sticker prices across shops compares
+   the wrong number. This is the one remaining thing that makes a product
+   watch *wrong* rather than imprecise.
+3. **Calendar reminders.** Two jobs, not one: the `.ics` file is easy
+   (fifteen lines, no OAuth, `ses:SendRawEmail`), but the **trigger** is Phase
+   9 step 3b and does not exist. Build the reminder kind first — attaching an
+   `.ics` to a condition-watch email is near-pointless, because "Apple dropped
+   below $300" already happened and a calendar entry in the past is clutter.
+   `docs/phase-9-watch-kinds.md` §10, and §8 for the decision it depends on
+   (a reminder stores `targets: []` and its schedule invokes with
+   `{"watch_id": ...}`, so the Checker's entry point has to branch).
+4. **Decide the auth shape** — see "Where the product is going". It does not
+   have to be *built* early, it has to be *decided* early.
+5. Then 4c (the designed chat UI) and the deploy half of Phase 7.
+
+### The five roadmap documents, all current
+
+| | |
+|---|---|
+| `docs/shares-roadmap.md` | tiers 1–3 done; tier 4 (history) after the frontend |
+| `docs/vacancies-roadmap.md` | **all four steps done** |
+| `docs/marketplaces-roadmap.md` | steps 1–2 done; 3–4 next |
+| `docs/phase-9-watch-kinds.md` | §10b is the missing-email write-up; §10 is what is left |
+| `docs/architecture-review-2026-07-31.md` | every architectural decision to that date |
+
+### Things carried forward that are easy to lose
 
 1. **The previous-close baseline is settled: it is fine.** Decided by the
-   owner on 2026-08-04 — asked on a Sunday, Friday's close *is* "current".
-   What that exposes instead: **"any change" is a guarantee, not a condition.**
-   A stock never reopens at the previous close, so `relative_change_pct: 0`
-   fires in the first seconds of the next session, every time. Measured
-   in-hours the same day: baseline 306.40, first check 306.49, fired — a 0.03%
-   move on the first tick. Do **not** fix this by inventing a percentage;
-   `plan.py` forbids that on purpose and fabricating 5% is a bug already
-   shipped once. Store `baseline_at`/`baseline_source` and say it at plan time.
-   `docs/shares-roadmap.md` §1.
+   owner — asked on a Sunday, Friday's close *is* "current". What that exposes
+   instead: **"any change" is a guarantee, not a condition.** A stock never
+   reopens at the previous close, so `relative_change_pct: 0` fires in the
+   first seconds of the next session. Measured: baseline 306.40, first check
+   306.49, fired — 0.03% on the first tick. Do **not** fix this by inventing a
+   percentage; `plan.py` forbids that on purpose and fabricating 5% is a bug
+   already shipped once. `docs/shares-roadmap.md` §1.
 2. **The owner wants plain language, not jargon** — see "How the owner wants
    to work". Explain in consequences, not in terms.
-3. **Two ideas the owner raised and does not want lost**: a plain time
-   reminder ("remind me at 9am to learn English") and delivery to calendars /
-   Monday.com. The recommended first step for the second is an `.ics`
-   attachment on the existing email — it works with every calendar and needs
-   no OAuth. Google Calendar is not a bigger adapter; it is per-user OAuth and
-   forces the hardcoded `user_id` gap closed. `docs/phase-9` §6.
-4. **Run the real thing before believing it.** The 2026-08-02 live run found
-   two bugs that 378 offline tests could not, one of them shipped that same
-   morning. Details under Phase 9.
+3. **Run the real thing before believing it.** Today alone, running it found:
+   `fetch.py` never decompressed gzip (paying 45× for nothing); LinkedIn
+   rewrites every link on every response; LinkedIn's guest endpoint alternates
+   between two result sets; Amazon keys on `data-asin` because its links carry
+   the result *position*; and absent-vs-empty `watched_ids` meant a console
+   watch followed a ₪29 game. **None of these was reachable offline.**
+4. **The recurring-watch idea for shares is shelved, not dropped** — "stamp it
+   each time it drops 5%". Decide the re-arm rule before writing code: 5% from
+   the original baseline and 5% from the last alert are different products.
+   `docs/shares-roadmap.md` §6.
+5. **One orphaned target row** was found and removed by hand at the end of the
+   session. Most likely a race in my own testing (deleting a watch while the
+   Planner was still writing its targets), but if `DELETE /watches/{id}` ever
+   leaves a row behind in ordinary use, that is a real leak worth chasing.
+
+### Design rules established today, worth not re-deriving
+
+- **A correct system that explains nothing is a broken product.** The missing
+  email was silence, not a defect.
+- **A guardrail that returns 500 is an outage**, not a guardrail.
+- **Prefer a published standard to a selector.** `schema.org/Product` is a
+  contract shops maintain because Google reads it.
+- **Identity comes from the site's own id, never from a link or from text.**
+  Links carry tracking; text carries "2 days ago".
+- **Answers mean opposite things for a stream and for a thing.** A job that
+  misses a preference ranks lower; a product that is not the pinned one is not
+  the product.
+- **Model calls are paid per notification, not per check.** That is the whole
+  reason ranking does not undo Phase 8b.
+- **Nothing about ranking or questions may block a notification, or block
+  creating a watch.** Any failure degrades to the previous behaviour.
 
 ## Where the product is going (owner, 2026-08-04)
 
@@ -484,11 +537,22 @@ will start to hurt.
 
 ## Current status
 
-**As of 2026-08-04: everything on the roadmap is done except 4c (the
-designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
-0–3, 6, 4a, 4b, 8a, 8b, 8d and 5 are complete; Phase 9 has steps 1, 2a, 2b
-and the schedule *window* built, deployed and proven live. 8c is deferred
-with numbers.
+**As of the end of 2026-08-04.** Phases 0–3, 6, 4a, 4b, 8a, 8b, 8d and 5 are
+complete. Phase 9's kinds and schedule windows are built, deployed and proven
+live; what is left of it is the *time-triggered* half (`once`, `reminder`) and
+delivery channels. The owner's three product features are done except
+marketplaces steps 3–4. 8c is deferred with numbers. Still open: 4c (the
+designed chat UI) and the deploy half of 7.
+
+**Five watch kinds exist**, and three of them never touch a web search:
+
+| kind | where the target comes from | searches? |
+|---|---|---|
+| `quote` | `shared/sources.py` — CNBC, per exchange | no |
+| `jobs` | `shared/job_boards.py` — LinkedIn guest API, drushim | no |
+| `product` | `shared/shops.py` — Ivory, Bug, Amazon | no |
+| `presence` | web search, compiled counter | yes |
+| `value` | web search, compiled extractor | yes |
 
 **605 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
 the repo root. By area — `shared/` 300, `planner/` 116, `api/` 72,
@@ -598,9 +662,18 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
-| 🔨 | **9** · Watch kinds, schedules, delivery | steps 1–2 + windows done, deployed, twice proven live; left: `once`, `reminder`, channels |
+| 🔨 | **9** · Watch kinds, schedules, delivery | kinds + windows done and proven live; left: `once`/`reminder` (time-triggered) and delivery channels |
+| ✅ | **10a** · Shares finished | tiers 1–3 done — exchange, baseline, staleness. Tier 4 (history) after the frontend |
+| ✅ | **10b** · Vacancies finished | all four steps — items, repeating+dedup, ranking, grounded questions |
+| 🔨 | **10c** · Marketplaces | steps 1–2 done (shops, `offers`, Amazon, pinning); **3–4 next** |
+| ⬜ | **11** · Calendar reminders | `.ics` is easy; the *trigger* is Phase 9 step 3b and does not exist |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
+
+**Phases 10a/10b/10c are the owner's product plan**, not a renumbering of the
+original roadmap — see "Where the product is going". They are one engine used
+at five levels of trust in the source: `quote` and `jobs` and `product` are
+registry-driven, `value` and `presence` still search.
 
 9. **Watch kinds — next.** `planner/plan.py` is 634 lines of which ~215 are
    prompts, and `SEARCH_PROMPT` now carries the rules for three request types
