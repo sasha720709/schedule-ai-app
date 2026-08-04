@@ -288,17 +288,47 @@ Grouped so each step ships something provable, cheapest-first within a tier.
    blocked, every share watch breaks at once and it will look like per-watch
    extractor failure. Revisit at the first `source_unavailable` in production.
 
-**Tier 3 — stop being silent.**
+**Tier 3 — stop being silent. ✅ DONE 2026-08-04.**
 
-5. `last_changed_at` and a stale-value signal. (§2.4)
+5. ✅ The Checker records `last_changed_at` and `unchanged_checks` on every
+   successful check; the API computes `stale` at read time; the UI says "last
+   moved 3 h ago" always, and warns when a windowed target has gone a whole
+   session without a tick. (§2.4)
+
+   Three decisions inside that are worth not re-making:
+
+   - **It reports, it never acts.** No degrade, no pause, no schedule
+     deletion. A value sitting still is the *normal* case for most watches —
+     a shop price waiting weeks for a drop, a vacancy count that is zero
+     until the day it is not. Acting on stillness would re-create exactly the
+     false positive the `unavailable` / `failed` split was built to prevent:
+     escalating a watch that is patiently doing its job. 8d escalates a
+     *broken* extractor; this is not that.
+   - **The threshold is one trading session, not a constant.** A fixed number
+     of checks cannot work — a liquid stock ticks every second, an illiquid
+     one may genuinely not trade for an hour, and the interval is per watch.
+     `schedules.checks_per_session()` falls out of the window arithmetic
+     already there, and "the price did not move all day" is a claim anyone
+     can evaluate. A target with **no** window gets no flag at all, because
+     without a session there is no such claim to make.
+   - **Comparison is on the raw text, not the parsed number.**
+     `Decimal("306.49") == 306.49` is **False** — DynamoDB returns an exact
+     decimal and the float is a binary approximation. Comparing those would
+     report a change on every check of a completely static price: fails safe,
+     and makes the field useless.
 
 **Tier 4 — after the frontend, or cheaply now if you want the data.**
 
 6. A `Checks` history table. (§2.6)
 
-Tiers 1 and 2 are what "shares is finished" should mean, and they are done
-apart from the withdrawn item. 3 is shared with the other two kinds and is
-better done once for all of them. 4 is a product decision, not a defect.
+Tiers 1, 2 and 3 are done, apart from the withdrawn second-source item.
+**That is what "shares is finished" was defined to mean.** Tier 4 is a product
+decision rather than a defect, and the recurring-watch feature in §6 is
+shelved as optional at the owner's request (2026-08-04).
+
+Tier 3 was built for shares but is not shares-specific: `last_changed_at` is
+recorded for every kind, since it is data that cannot be backfilled. Only the
+*flag* is quote-shaped, because only a trading window justifies one.
 
 ---
 
@@ -334,9 +364,10 @@ a product decision with no obvious default — "tell me each time it drops 5%"
 means something quite different depending on whether the 5% is measured from
 the original baseline or from the last alert.
 
-**Recommendation: build it, after Tier 3, and decide the re-arm rule first.**
-`last_changed_at` from Tier 3 is a prerequisite anyway — you cannot sensibly
-suppress repeat alerts without knowing when the value last moved.
+**Shelved as optional by the owner, 2026-08-04.** Recorded here rather than
+dropped. When it comes back, decide the re-arm rule before writing any code:
+`last_changed_at` from Tier 3 already exists and is the prerequisite, since
+repeat alerts cannot be suppressed without knowing when the value last moved.
 
 ---
 

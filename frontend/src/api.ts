@@ -139,11 +139,29 @@ async function request<T>(
 export const listWatches = (passcode: string) =>
   request<{ watches: Watch[] }>(passcode, "/watches");
 
+/**
+ * Whether a target has stopped moving, and whether that means anything.
+ *
+ * Reported, never acted on. A value sitting still is the normal case for most
+ * watches -- a shop price waiting weeks for a drop, a vacancy count that is
+ * zero until the day it is not -- so `stale` exists only where a trading
+ * window defines what "should have moved by now" means.
+ */
+export interface Staleness {
+  target_id: string;
+  last_changed_at: string | null;
+  unchanged_checks: number;
+  /** Checks in one full trading session, or null for a continuous schedule. */
+  checks_per_session: number | null;
+  stale: boolean;
+}
+
 export const getWatch = (passcode: string, id: string) =>
   request<{
     watch: Watch;
     targets: Target[];
     cost: CostEstimate | null;
+    staleness: Staleness[];
     /** When the schedule next runs, ISO-8601 UTC. Null when the watch is not
      * active, or when the server cannot say -- never a guess. */
     next_check_at: string | null;

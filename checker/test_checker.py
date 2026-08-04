@@ -513,3 +513,101 @@ def test_degrading_records_why_and_what_it_cost(env, monkeypatch):
         env.module.events.put_events.call_args[1]["Entries"][0]["Detail"])
     assert detail["repair_spend_usd"] > 0.016
     assert env.watches.last_update()["values"][":r"]
+
+
+# --- Did the number actually move? -------------------------------------------
+#
+# Nothing used to ask. A frozen feed -- a halt, a delisting, a plausible but
+# dormant ticker -- read `ok` forever, a `!=` watch never fired, no error was
+# recorded, and the price appeared simply never to have moved.
+
+def test_a_first_reading_counts_as_a_change(env):
+    """There is nothing to have differed from, so the value moved *now*."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=PRICE_SPEC)
+
+    run(env)
+    stored = values_of(env.targets.last_update())
+
+    assert stored[":u"] == 0
+    assert stored[":c"] == stored[":t"]
+
+
+def test_an_unchanged_reading_increments_the_counter_and_keeps_the_timestamp(env):
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=PRICE_SPEC,
+                last_raw="$429.00", last_value=Decimal("429.0"),
+                last_changed_at="2026-08-01T09:00:00+00:00",
+                unchanged_checks=6)
+
+    run(env)
+    stored = values_of(env.targets.last_update())
+
+    assert stored[":u"] == 7
+    # The whole point: the moment it last *moved* must not creep forward on
+    # every check, or "unchanged since" would always read "just now".
+    assert stored[":c"] == "2026-08-01T09:00:00+00:00"
+
+
+def test_a_changed_reading_resets_both(env):
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=PRICE_SPEC,
+                last_raw="$999.99", last_value=Decimal("999.99"),
+                last_changed_at="2026-08-01T09:00:00+00:00",
+                unchanged_checks=41)
+
+    run(env)
+    stored = values_of(env.targets.last_update())
+
+    assert stored[":u"] == 0
+    assert stored[":c"] == stored[":t"]
+
+
+def test_comparison_is_on_the_raw_text_not_the_decimal(env):
+    """`Decimal("429.00") == 429.0` is fine, but `Decimal("306.49") == 306.49`
+    is **False** -- the float is a binary approximation of a value the Decimal
+    holds exactly. Comparing those would report a change on every check of a
+    completely static price, which fails safe and makes the field useless.
+    """
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=PRICE_SPEC,
+                last_raw="$429.00",
+                # Deliberately a Decimal that does not compare equal to the
+                # float the extractor will produce.
+                last_value=Decimal("429.000000000000001"),
+                unchanged_checks=2)
+
+    run(env)
+
+    assert values_of(env.targets.last_update())[":u"] == 3
+
+
+def test_a_legacy_row_without_the_fields_does_not_crash(env):
+    """Every target created before this existed has neither field."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor=PRICE_SPEC, last_raw="$429.00")
+
+    run(env)
+
+    assert values_of(env.targets.last_update())[":u"] == 1
+
+
+def test_a_failed_check_leaves_the_movement_fields_alone(env):
+    """A check that could not read anything has no opinion about whether the
+    value moved. Incrementing on it would count outages as stillness."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("400")})
+    make_target(env, extractor={"kind": "css", "selector": ".nope",
+                                "parse": "currency"},
+                unchanged_checks=5)
+
+    run(env)
+    stored = values_of(env.targets.last_update())
+
+    assert ":u" not in stored
+    assert ":c" not in stored

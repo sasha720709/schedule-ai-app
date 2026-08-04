@@ -82,8 +82,10 @@ Worth knowing before acting on it:
 **`docs/shares-roadmap.md` is the finish-the-shares plan**, written 2026-08-04
 with the arguments and the evidence, including three things it recommends
 *not* building (holiday calendars, quote self-healing, a paid data API).
-**Tiers 1 and 2 are done and proven live**; the second-source item was
-withdrawn by the owner. Next on it is Tier 3, `last_changed_at`.
+**Tiers 1, 2 and 3 are done and proven live**; the second-source item was
+withdrawn by the owner and the recurring-watch idea is shelved as optional.
+What is left on it is Tier 4 (a `Checks` history table), deliberately after
+the frontend.
 
 Two corrections the owner made on 2026-08-04, both recorded in §6:
 
@@ -238,7 +240,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 436 of them (counts
+- **Every Lambda has tests; the chain still does not.** 451 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -259,13 +261,21 @@ will start to hurt.
 
 ### Product shape
 
-- **Nothing keeps a history of what was checked.** `last_value` is
-  overwritten on every tick and there is no `last_changed_at`, so there is no
-  way to draw "the price over the last month," and no way to tell a genuinely
-  stable price from a target that has silently been failing to extract for a
-  week. **For quotes this has teeth**: a frozen CNBC `last` (halt, delisting,
-  a plausible-but-dormant ticker) returns `ok` forever, so a `!=` watch never
-  fires and nothing is ever recorded. `docs/shares-roadmap.md` §2.4.
+- **Nothing keeps a *history* of what was checked.** `last_value` is still
+  overwritten on every tick, so there is no way to draw "the price over the
+  last month". `docs/shares-roadmap.md` §2.6, deliberately after the frontend.
+
+- ~~**Nothing notices a value that has stopped moving.**~~ Fixed 2026-08-04.
+  The Checker records `last_changed_at` and `unchanged_checks`; the API
+  computes `stale` at read time; the UI says "last moved 3 h ago" and warns
+  when a windowed target goes a whole session without a tick. Three things
+  not to undo: it **reports and never acts** (a still value is normal for most
+  watches — acting on it re-creates the false positive `unavailable`/`failed`
+  exists to prevent); the threshold is **one trading session**, derived from
+  the window rather than a constant, and a target with no window gets no flag;
+  and the comparison is on the **raw text**, because
+  `Decimal("306.49") == 306.49` is False and comparing parsed numbers would
+  report a change on every check of a static price.
 
 - ~~**Non-US symbols are silently wrong.**~~ Fixed 2026-08-04.
   `sources.describe()` reads `exchange`, `currencyCode` and `name` out of the
@@ -349,9 +359,9 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**436 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 204, `planner/` 99, `api/` 60,
-`authorizer/` 24, `checker/` 22, `notifier/` 21, `fetcher/` 6. They run on
+**451 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 207, `planner/` 99, `api/` 66,
+`authorizer/` 24, `checker/` 28, `notifier/` 21, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**

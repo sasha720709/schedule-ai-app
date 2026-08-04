@@ -312,3 +312,29 @@ def test_every_registered_window_produces_a_usable_expression():
         assert expr["ScheduleExpressionTimezone"]
         assert schedules.checks_per_month(5, name) > 0
         assert schedules.next_fire_after(_utc(2026, 8, 4, 12, 0), 5, name)
+
+
+def test_a_session_is_a_whole_trading_day_of_checks():
+    """The only non-arbitrary yardstick for "should have moved by now". A fixed
+    threshold cannot work -- a liquid stock ticks every second, an illiquid one
+    may not trade for an hour, and the interval is chosen per watch."""
+    assert schedules.checks_per_session(5, "us_market_hours") == 96    # 8h
+    assert schedules.checks_per_session(5, "tase_hours") == 120        # 10h
+    assert schedules.checks_per_session(60, "us_market_hours") == 8
+
+
+def test_a_continuous_schedule_has_no_session():
+    """A shop's price sitting still for a month is normal, not a fault, so
+    there is nothing to measure it against."""
+    assert schedules.checks_per_session(5) is None
+    assert schedules.checks_per_session(5, "not_a_window") is None
+
+
+def test_a_session_matches_the_expression_it_describes():
+    """Same guarantee as checks_per_month: derived from the cron, not from a
+    parallel constant that could drift away from it."""
+    for name in schedules.WINDOWS:
+        for minutes in (1, 5, 30, 60):
+            per_day = schedules.checks_per_session(minutes, name)
+            per_month = schedules.checks_per_month(minutes, name)
+            assert per_month == per_day * schedules.WINDOWS[name].days_per_month

@@ -22,6 +22,7 @@ import {
   listWatches,
   monthlyCost,
   setWatchStatus,
+  type Staleness,
   type Target,
   type Watch,
 } from "./api";
@@ -41,6 +42,9 @@ export default function App() {
   // because it is computed, not stored: it is correct for about one interval
   // and a stale copy in the table would be worse than no copy at all.
   const [nextChecks, setNextChecks] = useState<Record<string, string | null>>({});
+  // Whether each target has stopped moving. Computed by the server from the
+  // current interval, so it cannot be cached alongside the target row.
+  const [staleness, setStaleness] = useState<Record<string, Staleness[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -209,6 +213,7 @@ export default function App() {
             targets={targets[watch.watch_id]}
             cost={costs[watch.watch_id]}
             nextCheck={nextChecks[watch.watch_id]}
+            staleness={staleness[watch.watch_id]}
             busy={busy}
             onConfirm={(interval) =>
               void act(async () => {
@@ -255,6 +260,10 @@ export default function App() {
                   ...prev,
                   [watch.watch_id]: detail.next_check_at,
                 }));
+                setStaleness((prev) => ({
+                  ...prev,
+                  [watch.watch_id]: detail.staleness,
+                }));
               })
             }
           />
@@ -289,11 +298,22 @@ function describeNextCheck(iso: string): string {
   return `next check ${when}, in ${Math.round(hours / 24)} days`;
 }
 
+/** "3 h ago". Deliberately coarse -- this is context, not a measurement. */
+function describeSince(iso: string): string {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
 function WatchRow({
   watch,
   targets,
   cost,
   nextCheck,
+  staleness,
   busy,
   onConfirm,
   onPause,
@@ -305,6 +325,7 @@ function WatchRow({
   targets?: Target[];
   cost?: CostEstimate | null;
   nextCheck?: string | null;
+  staleness?: Staleness[];
   busy: boolean;
   onConfirm: (interval: number) => void;
   onPause: () => void;
@@ -475,6 +496,23 @@ function WatchRow({
               )}
               {t.last_note && <p className="muted">{t.last_note}</p>}
               {t.last_error && <p className="error">{t.last_error}</p>}
+              {(() => {
+                const s = staleness?.find((x) => x.target_id === t.target_id);
+                if (!s?.last_changed_at) return null;
+                // Stated for every target, flagged only where a trading window
+                // makes "should have moved by now" a claim anyone can check:
+                // a whole session without a single tick is a frozen feed.
+                const moved = describeSince(s.last_changed_at);
+                return s.stale ? (
+                  <p className="error">
+                    unchanged for {s.unchanged_checks} checks — a whole trading
+                    session without a tick. Last moved {moved}; the feed may be
+                    frozen rather than the price.
+                  </p>
+                ) : (
+                  <p className="muted">last moved {moved}</p>
+                );
+              })()}
             </li>
           ))}
         </ul>

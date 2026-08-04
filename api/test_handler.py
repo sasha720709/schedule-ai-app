@@ -631,3 +631,85 @@ def test_an_active_watch_reports_its_next_check_on_get(aws):
         targets=one_target())
     payload = body_of(call("GET /watches/{id}", watch_id="w_1"))
     assert payload["next_check_at"] is not None
+
+
+# --------------------------------------------------------------------------
+# Has it stopped moving, and does that mean anything?
+# --------------------------------------------------------------------------
+
+def _stale_target(**over):
+    target = {"target_id": "t_1", "watch_id": "w_1",
+              "extractor": {"kind": "jsonpath"},
+              "schedule_window": "us_market_hours"}
+    target.update(over)
+    return {"t_1": target}
+
+
+def _active(interval=5):
+    return {"w_1": {"watch_id": "w_1", "status": "active",
+                    "check_interval_min": interval}}
+
+
+def test_a_quote_frozen_for_a_whole_session_is_flagged(aws):
+    """A US window at 5 minutes is 96 checks a session. Ninety-six identical
+    readings in a row means the price did not move all day, which for a
+    traded instrument is a frozen feed, not a stable price."""
+    aws(_active(5), _stale_target(unchanged_checks=96,
+                                  last_changed_at="2026-08-03T13:00:00Z"))
+    stale = body_of(call("GET /watches/{id}", watch_id="w_1"))["staleness"][0]
+
+    assert stale["checks_per_session"] == 96
+    assert stale["stale"] is True
+    assert stale["last_changed_at"] == "2026-08-03T13:00:00Z"
+
+
+def test_a_quote_that_moved_recently_is_not_flagged(aws):
+    aws(_active(5), _stale_target(unchanged_checks=3))
+    assert body_of(call("GET /watches/{id}",
+                        watch_id="w_1"))["staleness"][0]["stale"] is False
+
+
+def test_a_continuous_watch_is_never_called_stale(aws):
+    """A shop price sitting unchanged for a month is the normal case for a
+    `value` watch, not a fault. Without a window there is no session, so there
+    is no claim to make and no flag to raise."""
+    aws(_active(5), _stale_target(unchanged_checks=99999,
+                                  schedule_window=None))
+    stale = body_of(call("GET /watches/{id}", watch_id="w_1"))["staleness"][0]
+
+    assert stale["checks_per_session"] is None
+    assert stale["stale"] is False
+
+
+def test_the_threshold_follows_the_interval(aws):
+    """The judgement is computed at read time precisely because a PATCH can
+    change the interval after the counter was written. At 30 minutes a session
+    is 16 checks, so the same 20 unchanged readings mean something different."""
+    aws(_active(5), _stale_target(unchanged_checks=20))
+    assert body_of(call("GET /watches/{id}",
+                        watch_id="w_1"))["staleness"][0]["stale"] is False
+
+    aws(_active(30), _stale_target(unchanged_checks=20))
+    assert body_of(call("GET /watches/{id}",
+                        watch_id="w_1"))["staleness"][0]["stale"] is True
+
+
+def test_a_target_that_has_never_been_checked_is_not_stale(aws):
+    aws(_active(5), _stale_target())
+    stale = body_of(call("GET /watches/{id}", watch_id="w_1"))["staleness"][0]
+
+    assert stale["unchanged_checks"] == 0
+    assert stale["last_changed_at"] is None
+    assert stale["stale"] is False
+
+
+def test_staleness_never_changes_the_watch(aws):
+    """It reports and a human decides. Acting on stillness would re-create the
+    false positive the unavailable/failed split exists to prevent: escalating a
+    watch that is patiently doing exactly its job."""
+    env = aws(_active(5), _stale_target(unchanged_checks=100000))
+    call("GET /watches/{id}", watch_id="w_1")
+
+    assert env.watches.updates == []
+    assert env.targets.updates == []
+    assert env.scheduler.delete_schedule.call_count == 0

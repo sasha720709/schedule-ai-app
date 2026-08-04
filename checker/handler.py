@@ -146,6 +146,25 @@ def _from_decimal(value):
     return value
 
 
+def _reading_of(source: dict, *, stored: bool = False) -> str:
+    """One reading, as a string, for comparing this check against the last.
+
+    Deliberately the **raw** text rather than the parsed number. `last_value`
+    comes back from DynamoDB as a `Decimal`, and `Decimal("306.49") == 306.49`
+    is *False* -- the float is a binary approximation of a value the Decimal
+    holds exactly. Comparing those would report a change on every single check
+    of an utterly static price, which fails safe but makes the field useless.
+
+    The raw string is what the extractor actually saw, and comparing it is
+    exact. `value` is only a fallback for the model path, which does not always
+    produce a raw.
+    """
+    raw = source.get("last_raw") if stored else source.get("raw")
+    if raw is not None:
+        return str(raw)
+    return str(source.get("last_value") if stored else source.get("value"))
+
+
 def _to_decimal(value):
     """DynamoDB's resource API rejects native floats. Tier 0 produces real
     numbers where the model path only ever produced strings, so this is newly
@@ -433,11 +452,26 @@ def lambda_handler(event, context):
         )
         return {"checked": True, "status": FAILED, "error": result["error"]}
 
+    # Did the number actually move? Nothing in this system used to ask, so a
+    # frozen feed -- a halt, a delisting, a plausible-but-dormant ticker -- read
+    # `ok` forever, a `!=` watch never fired, no error was ever recorded, and
+    # the owner would have concluded the price simply never moved. That is the
+    # same silent rot `condition.py` refuses to permit for an unknown operator,
+    # unguarded one layer up.
+    #
+    # Only the two facts are stored. Whether they *mean* anything is computed
+    # at read time, because it depends on the interval, and the interval can be
+    # changed by a PATCH after this row was written -- the same reason
+    # `next_check_at` is computed rather than stored.
+    moved = _reading_of(result) != _reading_of(target, stored=True)
+    unchanged = 0 if moved else int(target.get("unchanged_checks") or 0) + 1
+
     targets_table.update_item(
         Key={"target_id": target_id},
         UpdateExpression=(
             "SET last_value = :v, last_raw = :r, last_checked_at = :t, "
-            "last_note = :n, last_status = :s, consecutive_failures = :f "
+            "last_note = :n, last_status = :s, consecutive_failures = :f, "
+            "last_changed_at = :c, unchanged_checks = :u "
             "REMOVE last_error"
         ),
         ExpressionAttributeValues={
@@ -447,6 +481,8 @@ def lambda_handler(event, context):
             ":t": now,
             ":n": result["note"],
             ":s": result["status"],
+            ":c": now if moved else (target.get("last_changed_at") or now),
+            ":u": unchanged,
         },
     )
 

@@ -287,6 +287,47 @@ def _next_check_at(interval_min, window) -> str | None:
     return fire.isoformat().replace("+00:00", "Z") if fire else None
 
 
+def _staleness_of(watch: dict, targets: list) -> list:
+    """Has each target stopped moving, and does that mean anything?
+
+    The Checker records two facts -- when the value last changed, and how many
+    checks it has been the same. The judgement lives here because it depends on
+    the current interval, which a PATCH can change long after those rows were
+    written.
+
+    **This never stops, degrades or pauses anything, and that is deliberate.**
+    A value sitting still is the normal case for most watches: a shop price
+    waiting weeks for a drop, a vacancy count that is zero until the day it is
+    not. Acting on stillness would re-create the exact false positive the
+    `unavailable` / `failed` split exists to prevent -- escalating a watch that
+    is patiently doing its job. So this reports, and a human decides.
+
+    It is only ever *notable* for a windowed target, because only a window
+    defines what "should have moved by now" means. `checks_per_session` is one
+    full trading day: a claim anyone can evaluate, rather than a constant.
+    """
+    interval = watch.get("check_interval_min")
+    out = []
+    for target in targets:
+        unchanged = int(target.get("unchanged_checks") or 0)
+        per_session = (
+            schedules.checks_per_session(int(interval),
+                                         target.get("schedule_window"))
+            if interval else None
+        )
+        out.append({
+            "target_id": target.get("target_id"),
+            "last_changed_at": target.get("last_changed_at"),
+            "unchanged_checks": unchanged,
+            "checks_per_session": per_session,
+            # A whole session without a single tick. For a quote that is a
+            # frozen feed; there is no equivalent claim to make without a
+            # window, so there is no flag either.
+            "stale": bool(per_session and unchanged >= per_session),
+        })
+    return out
+
+
 def _next_check_for(watch: dict, targets: list) -> str | None:
     """Only an `active` watch has schedules, so only an active watch has a next
     check. A paused or proposed one answering with a time would be describing a
@@ -305,6 +346,7 @@ def get_watch(event) -> dict:
         "targets": targets,
         "cost": _estimate_for(watch, targets),
         "next_check_at": _next_check_for(watch, targets),
+        "staleness": _staleness_of(watch, targets),
     })
 
 

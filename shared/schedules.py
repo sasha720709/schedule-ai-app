@@ -276,6 +276,27 @@ def _allowed_weekdays(window: Window) -> set:
     return {_DAY_NAMES.index(d) for d in field.split(",")}
 
 
+def checks_per_session(interval_min: int, window_name=None):
+    """How many checks one full trading session contains, or None.
+
+    This is the only non-arbitrary yardstick for "this value should have moved
+    by now". A fixed threshold cannot work: a liquid stock ticks every second
+    while an illiquid small-cap may genuinely not trade for an hour, and the
+    check interval is chosen per watch. One whole session is a claim anybody
+    can evaluate -- *the price did not move all day* -- and it falls out of the
+    window arithmetic already here.
+
+    None for a continuous schedule, deliberately. A shop's price sitting
+    unchanged for a month is the normal case for a `value` watch, not a fault,
+    so there is no session to be measured against and no signal to give.
+    """
+    window = get(window_name)
+    if window is None:
+        return None
+    _, _, slots = _cron_slots(interval_min, window)
+    return len(slots)
+
+
 def in_window(moment: datetime, window_name=None) -> bool:
     """Is this moment inside the window -- i.e. was the market open?
 
