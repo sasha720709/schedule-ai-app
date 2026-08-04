@@ -79,6 +79,27 @@ Worth knowing before acting on it:
   is near-pointless — "Apple dropped below $300" already happened, and a
   calendar entry in the past is clutter. Build the reminder kind first.
 
+**`docs/marketplaces-roadmap.md` is the marketplaces analysis** (2026-08-04),
+written before any code. Three things from it worth knowing:
+
+- **Amazon is no longer out of reach, and Phase 6's note saying so is out of
+  date.** Six consecutive Fetcher renders of an Amazon search returned 16–22
+  product cards with real prices and no captcha. Its official
+  Product Advertising API is **deprecated since 15 May 2026 and closed to new
+  customers**; third-party scrapers cost $0.0074–$0.0147 per Amazon request
+  **on top of a $49/month floor**, which is ten times the whole per-watch
+  budget. Use our own browser: $0.000186/check, $0.13/month hourly.
+- **The hard part is not the source, it is the product.** Today's Amazon render
+  showed *Xbox Series X 1TB $754.94* next to *Xbox Series X 1TB Digital
+  (Renewed) $649.99* — a "cheapest Xbox" watch fires on the refurbished one.
+  A price watch on the wrong variant is confidently wrong, on a schedule, about
+  money. `shared/questions.py` from the vacancies work is the tool for this.
+- **A product watch should watch a product, not a page** — a basket of shops
+  with the condition over the *best offer*. That needs **watch-level
+  conditions**, which do not exist: the Checker evaluates per target, one
+  target per tick, and each fires independently. That is the real engineering
+  in this phase, not the scraping.
+
 **`docs/vacancies-roadmap.md` is the vacancies analysis** (2026-08-04): what
 the `presence` kind does today, what a check costs, and why the owner's
 "personalised, not just any match" idea is affordable. Three things from it
