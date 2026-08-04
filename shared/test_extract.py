@@ -775,3 +775,30 @@ def test_offers_refuses_a_parse_that_is_not_money():
     for parse in ("text", "bool", "int"):
         with pytest.raises(SpecError):
             extract({"kind": "offers", "parse": parse}, LD_PAGE)
+
+
+def test_a_sponsored_link_that_changes_every_request_does_not_change_identity():
+    """Amazon's result links are click redirects carrying a base64 blob that is
+    fresh on every request, and its plain links embed the result's position in
+    the path. Identity keys on `data-asin` instead -- found by watching a
+    pinned console vanish on the next check."""
+    def page(blob, position):
+        return f'''<div data-component-type="s-search-result" data-asin="B09P4GJWD4"
+                        data-uuid="{blob}" data-index="{position}">
+                     <a href="/sspa/click?spc={blob}&url=%2Fdp%2FB09P4GJWD4">
+                       Xbox Series X</a> <span>$529.00</span></div>'''
+
+    spec = {"kind": "offers", "selector": '[data-component-type="s-search-result"]'}
+    first = extract(spec, page("aaaa", "2")).items
+    second = extract(spec, page("zzzz", "7")).items
+
+    assert first[0]["id"] == second[0]["id"]
+
+
+def test_a_per_render_attribute_is_never_used_as_identity():
+    """`data-uuid` and `data-index` are set by Amazon on the same elements and
+    are fresh every time. Using either would make every item new on every
+    check, which is the spam deduplication exists to prevent."""
+    import extract as extract_mod
+    assert "data-uuid" not in extract_mod._ID_ATTRS
+    assert "data-index" not in extract_mod._ID_ATTRS

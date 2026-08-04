@@ -68,7 +68,8 @@ SYSTEM_PROMPT = """You write the few questions worth asking someone about
 results that have just been found for them.
 
 You are given their request and a numbered list of what a search returned --
-job postings, usually: a title, a company, a location, sometimes a date.
+job postings (a title, a company, a location) or things for sale (a product
+name and a price).
 
 Write at most 3 questions that would help pick between THESE results. For each
 option, list the numbers of the items it covers.
@@ -93,9 +94,22 @@ local job the person most wanted.
 Every option must be something you could point at in the list and say: these
 ones are that.
 
-Ask about what a person would actually weigh: seniority, the kind of company,
-the specific role when the results mix several, the city when they differ,
-on-site versus remote when that is visible.
+Ask about what a person would actually weigh.
+
+For jobs: seniority, the kind of company, the specific role when the results
+mix several, the city when they differ, on-site versus remote.
+
+For things being bought, **the first question is almost always which product
+they actually meant**, because a shop search returns accessories alongside the
+thing itself. Searching "xbox series x" returns headsets, controllers and
+games; the console is one line among twenty. Ask:
+
+  - which item -- the console itself, an accessory, a game
+  - which variant -- capacity, size, colour, model year
+  - new or used/refurbished, when the results mix them
+
+A wrong answer there is not a near-miss. The watch would follow the price of a
+headset and announce it as the price of a console.
 
 ASK ABOUT SOMETHING THAT WILL STILL MEAN SOMETHING NEXT MONTH. The answers
 become a lasting preference for a watch that keeps running, so ask about
@@ -228,6 +242,35 @@ def _numbers(raw) -> list:
         except (TypeError, ValueError):
             continue
     return numbers
+
+
+def chosen_ids(questions: list, answers: dict):
+    """Which items survive the answers, or None if nothing was answered.
+
+    An exact set intersection across the answered questions, using the item ids
+    each option already carries -- no re-matching of text, and the same
+    arithmetic the plan card does while the user is clicking, so what they see
+    narrow is what gets watched.
+
+    None means "no preference stated", which is different from "nothing
+    matched": the first must leave the watch exactly as it was, and the second
+    is a real, empty, answerable choice.
+    """
+    if not questions or not isinstance(answers, dict):
+        return None
+
+    keep = None
+    for question in questions:
+        chosen = answers.get(question.get("id"))
+        if not chosen:
+            continue
+        wanted = set(chosen if isinstance(chosen, list) else [chosen])
+        covered = {item_id
+                   for option in question.get("options", [])
+                   if option.get("value") in wanted
+                   for item_id in option.get("items", [])}
+        keep = covered if keep is None else (keep & covered)
+    return keep
 
 
 def as_criteria(questions: list, answers: dict) -> str:

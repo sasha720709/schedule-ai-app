@@ -252,12 +252,76 @@ Each target carries the currency its shop prices in. Ivory quoting ILS and
 Amazon quoting USD are two targets with two thresholds, never one number.
 Silently comparing them is how a watch reports a bargain that is not one.
 
-## 6. Recommended order
+## 6. Step 2, built 2026-08-04 — the watch now follows the product
+
+`questions.py` was already being called for products: the Planner builds
+questions from whatever the targets verified, and a product's verified items
+are its offers. What was missing was the answers *doing* anything.
+
+For jobs an answer is a **preference** handed to the ranker, because tomorrow's
+posting does not exist yet. For a product it is a **pin**, because the thing
+being watched does exist and the question is which of today's offers it is.
+Same machinery, opposite meaning, and saying the wrong one on screen would be
+a lie about what happens next — so the plan card's wording branches on
+`repeating`.
+
+    ? Looking for the console itself?     [4] Console  [26] Games/accessories
+    ? New or refurbished?                 [2] New      [ 2] Refurbished
+
+`questions.chosen_ids()` intersects the answers into an exact set of item ids —
+the same arithmetic the plan card does while the user clicks, so what they see
+narrow is what gets watched. `confirm` writes the surviving ids onto each
+target as `watched_ids`, and the Checker reads the cheapest **pinned** offer
+instead of the cheapest thing on the page.
+
+### Two bugs that only running it could find
+
+**Absent and empty `watched_ids` are different.** Empty means the answers were
+given and *this shop* had nothing matching; absent means no preference was
+stated. Conflating them made bug.co.il and ivory.co.il fall back to the
+cheapest thing on their pages — a ILS 29 game — for a console watch. Empty is
+now `unavailable`: out of stock, delisted, or not carried here. All legitimate,
+and the one thing 8d must never pay a model to repair.
+
+**Amazon's identity is `data-asin`, not its link.** Its result links are
+sponsored-click redirects carrying a base64 blob that is fresh every request,
+and its plain links embed the result's *position* in the path (`/ref=sr_1_3`).
+So the same console at a different position was a different item, and every
+pinned product vanished on the very next check — all three targets read
+`unavailable` on a watch that had just been confirmed. `data-asin` is now
+preferred; `data-uuid` and `data-index`, which Amazon sets on the same
+elements, are deliberately excluded because they are per-render.
+
+### Proven live
+
+    ? Looking for the console itself?  -> "console"
+    amazon   pinned=4
+        218.29  Xbox One S, 1TB Console (Renewed)
+        619.99  Xbox Series X - 1TB Digital Edition (Renewed)
+        859.99  X-box Series-X-1TB Black (Renewed)
+       1289     Xbox Series X - Halo Infinite Limited Edition
+
+    checker: value=218.29 met=True   (condition: price < 900)
+
+The pin survived a **fresh Amazon render**, which is exactly what failed before
+the identity fix.
+
+### What is still imprecise, honestly
+
+The model's "console" grouping put an Xbox **One** S in with the Series X, and
+every pinned offer above is Renewed. The second question — new or refurbished —
+exists to catch that and was simply not answered in this run. So the mechanism
+is right and the grouping is approximate: a user who answers both questions
+gets what they asked for, and one who answers neither gets today's behaviour,
+which is the cheapest thing on the page.
+
+Sharpening the grouping is a prompt problem, not a structural one, and the plan
+card showing every pinned offer before confirming is what makes it correctable.
+
+## 7. Recommended order
 
 1. ✅ **Shops registry + Amazon on our own browser.** Done — §5.
-2. **Particularization via the questions step.** Reuses what exists; turns
-   "the Xbox" into a specific thing before any money is spent. **No longer
-   optional**: §5 shows a watch that would fire on a headset.
+2. ✅ **Particularization via the questions step.** Done — §6.
 3. **Watch-level conditions** — the real engineering, and what makes "cheapest
    of five shops" expressible.
 4. Landed price, and the blocked-render outcome.

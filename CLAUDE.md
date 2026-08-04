@@ -116,6 +116,22 @@ watch would have fired within minutes on an accessory. It was not confirmed.
 Until `questions.py` is wired to products, a "cheapest" product watch watches
 whatever a shop lists first.
 
+**Marketplaces step 2 is built too**: the answers now **pin** which offers a
+product watch follows (`watched_ids` on each target), where for jobs the same
+answers are a ranking *preference*. Same machinery, opposite meaning — a job
+that misses a preference scores lower, a product that is not the pinned one is
+simply not the product. The plan card's wording branches on `repeating` because
+saying the wrong one would be a lie about what happens next.
+
+**Two bugs only the live run could find.** `watched_ids` absent and empty are
+different — empty means "the answers ruled this shop out", and conflating them
+made two Israeli shops fall back to a ₪29 game for a console watch; empty is
+now `unavailable`. And **Amazon's identity is `data-asin`**: its links are
+sponsored-click redirects with a fresh base64 blob every request, and its plain
+links embed the result *position* in the path (`/ref=sr_1_3`), so every pinned
+product vanished on the next check. `data-uuid` and `data-index` are
+deliberately excluded — Amazon sets both, and both are per-render.
+
 **`docs/vacancies-roadmap.md` is the vacancies analysis** (2026-08-04): what
 the `presence` kind does today, what a check costs, and why the owner's
 "personalised, not just any match" idea is affordable. Three things from it
@@ -355,7 +371,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 590 of them (counts
+- **Every Lambda has tests; the chain still does not.** 605 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -474,9 +490,9 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**590 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 292, `planner/` 116, `api/` 72,
-`authorizer/` 24, `checker/` 50, `notifier/` 30, `fetcher/` 6. They run on
+**605 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 300, `planner/` 116, `api/` 72,
+`authorizer/` 24, `checker/` 57, `notifier/` 30, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**

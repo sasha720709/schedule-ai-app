@@ -99,6 +99,11 @@ export interface MatchedItem {
    * skipped, over budget, or failed: it must never block a notification. */
   score?: number;
   why?: string;
+  /** Products only: what this offer costs, and in which currency. Prices from
+   * different shops are never compared as one number. */
+  price?: number;
+  currency?: string;
+  in_stock?: boolean;
 }
 
 export interface Target {

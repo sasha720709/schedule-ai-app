@@ -148,6 +148,49 @@ def _from_decimal(value):
     return value
 
 
+def _only_watched(target: dict, result):
+    """Narrow an offer list to the ones the user actually picked.
+
+    A shop search for "xbox series x" returns headsets, controllers and games,
+    and the console is one line among twenty. Without this the cheapest offer
+    on the page *is* the reading, so a watch for "under 2000 shekels" fires
+    within minutes on a ILS 139 headset and reports it as the price of a
+    console. Measured on real shop pages; it is not a hypothetical.
+
+    `watched_ids` is written at confirm time from the answers to the plan
+    card's questions. **Absent and empty are deliberately different**, and
+    conflating them was a real bug caught by running this rather than reading
+    it: absent means no preference was stated, so the reading is left exactly
+    as it was; empty means the answers were given and *this shop* had nothing
+    matching, so it must not quietly fall back to the cheapest thing on the
+    page -- which is how a console watch ends up following a ILS 29 game.
+
+    Either way, none present today is **`unavailable`, not `failed`**: the
+    product is out of stock, delisted, or not carried here, which is a
+    legitimate state of the world and the one thing 8d must never pay a model
+    to "repair". The watch keeps looking, which is what you want from "tell me
+    when this shop gets it".
+    """
+    raw = target.get("watched_ids")
+    if raw is None or not result.items:
+        return result
+    watched = set(_from_decimal(raw))
+
+    kept = [i for i in result.items if i.get("id") in watched]
+    if not kept:
+        return type(result)(
+            UNAVAILABLE,
+            notes=["none of the offers being watched are listed right now"])
+
+    prices = [i["price"] for i in kept if isinstance(i.get("price"), (int, float))]
+    return type(result)(
+        result.status,
+        value=min(prices) if prices else result.value,
+        raw=str(min(prices)) if prices else result.raw,
+        items=kept,
+    )
+
+
 def _reading_of(source: dict, *, stored: bool = False) -> str:
     """One reading, as a string, for comparing this check against the last.
 
@@ -235,6 +278,17 @@ def _judge_extraction(spec, payload, target, watch_condition) -> dict:
             "condition_met": False,
         }
 
+    result = _only_watched(target, result)
+    if result.status == UNAVAILABLE:
+        return {
+            "status": UNAVAILABLE,
+            "value": None,
+            "raw": None,
+            "note": "; ".join(result.notes),
+            "error": None,
+            "condition_met": False,
+        }
+
     try:
         met = evaluate(watch_condition, result.value)
     except ConditionError as exc:
@@ -255,8 +309,8 @@ def _judge_extraction(spec, payload, target, watch_condition) -> dict:
         "note": "",
         "error": None,
         "condition_met": met,
-        # Only a `count` produces these. They are what a repeating watch
-        # deduplicates on and what the email is written from.
+        # Only a `count` or `offers` extraction produces these. They are what a
+        # repeating watch deduplicates on and what the email is written from.
         "items": result.items,
     }
 

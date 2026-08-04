@@ -185,3 +185,59 @@ def test_garbage_answers_do_not_raise():
     built, _ = build(REQUEST, ITEMS, client=scripted(REPLY))
     for junk in (None, "text", 7, []):
         assert as_criteria(built, junk) == ""
+
+
+# --------------------------------------------------------------------------
+# Which items survive the answers
+#
+# For a price watch this is not a nicety. The cheapest thing a shop lists for
+# "xbox series x" is a headset, so a watch that does not pin the product is
+# confidently wrong about money.
+# --------------------------------------------------------------------------
+
+def test_answers_narrow_to_an_exact_set_of_items():
+    built, _ = build(REQUEST, ITEMS, client=scripted(REPLY))
+    assert questions.chosen_ids(built, {"seniority": ["junior"]}) == {"b", "c"}
+
+
+def test_two_answered_questions_intersect():
+    """Each question narrows further, rather than each adding more."""
+    two = {"questions": [
+        {"id": "level", "question": "Level?",
+         "options": [{"value": "junior", "label": "Junior", "items": [2, 3]},
+                     {"value": "senior", "label": "Senior", "items": [1]}]},
+        {"id": "city", "question": "City?",
+         "options": [{"value": "bs", "label": "Be'er Sheva", "items": [1, 2]},
+                     {"value": "tlv", "label": "Tel Aviv", "items": [3]}]},
+    ]}
+    built, _ = build(REQUEST, ITEMS, client=scripted(two))
+
+    assert questions.chosen_ids(
+        built, {"level": ["junior"], "city": ["bs"]}) == {"b"}
+
+
+def test_several_options_on_one_question_are_a_union():
+    built, _ = build(REQUEST, ITEMS, client=scripted(REPLY))
+    assert questions.chosen_ids(
+        built, {"seniority": ["junior", "senior"]}) == {"a", "b", "c"}
+
+
+def test_no_answer_means_no_preference_not_an_empty_choice():
+    """The two must not be confused. No preference leaves the watch exactly as
+    it was; an empty result is a real answer that happens to match nothing."""
+    built, _ = build(REQUEST, ITEMS, client=scripted(REPLY))
+
+    assert questions.chosen_ids(built, {}) is None
+    assert questions.chosen_ids(built, {"seniority": []}) is None
+    assert questions.chosen_ids([], {"seniority": ["junior"]}) is None
+
+
+def test_an_answer_that_matches_nothing_is_an_empty_set_not_none():
+    built, _ = build(REQUEST, ITEMS, client=scripted(REPLY))
+    assert questions.chosen_ids(built, {"seniority": ["nonexistent"]}) == set()
+
+
+def test_garbage_answers_do_not_raise_here_either():
+    built, _ = build(REQUEST, ITEMS, client=scripted(REPLY))
+    for junk in (None, "text", 7, []):
+        assert questions.chosen_ids(built, junk) is None

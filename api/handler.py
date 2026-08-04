@@ -30,6 +30,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 import cost
+import questions
 import schedules
 
 dynamodb = boto3.resource("dynamodb")
@@ -71,6 +72,17 @@ def _json_default(value):
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
+
+
+def _from_decimal(value):
+    """DynamoDB returns Decimal for every number; undo it at the read edge."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {k: _from_decimal(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_from_decimal(v) for v in value]
+    return value
 
 
 def _to_decimal(value):
@@ -424,13 +436,34 @@ def confirm_watch(event) -> dict:
             f"Use {estimate['min_interval_min']} min or longer.",
         )
 
+    # Which offers the answers left standing, per target. For a price watch
+    # this is the difference between watching a console and watching a headset:
+    # the cheapest thing a shop lists for "xbox series x" is an accessory, so a
+    # watch that does not pin the product is confidently wrong about money.
+    #
+    # Computed here from the questions and answers rather than taken from the
+    # client, using the same set intersection the plan card does while the user
+    # clicks -- so what they saw narrow is what gets watched.
+    kept = questions.chosen_ids(
+        _from_decimal(watch.get("questions") or []), answers or {})
+
     for target in targets:
         arn = _upsert_schedule(target["target_id"], interval,
                                 target.get("schedule_window"))
+        update = "SET schedule_arn = :a"
+        values = {":a": arn}
+        if kept is not None:
+            # Only the ids this target actually has. A target left with none is
+            # one the answers ruled out entirely, and it will read `unavailable`
+            # rather than pretending the cheapest thing on the page is the one.
+            mine = [i["id"] for i in (target.get("verified_items") or [])
+                    if i.get("id") in kept]
+            update += ", watched_ids = :w"
+            values[":w"] = mine
         _targets().update_item(
             Key={"target_id": target["target_id"]},
-            UpdateExpression="SET schedule_arn = :a",
-            ExpressionAttributeValues={":a": arn},
+            UpdateExpression=update,
+            ExpressionAttributeValues=values,
         )
 
     # The single most useful thing to say at this moment, and the thing that

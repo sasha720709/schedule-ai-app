@@ -467,7 +467,16 @@ _TRACKING_PARAMS = {
 # Attributes carrying a site's own stable id for a listing. Preferred over the
 # URL when present: a site that rewrites its links on every request usually
 # still keys its markup on the real thing.
-_ID_ATTRS = ("data-entity-urn", "data-job-id", "data-jobid", "data-id")
+#
+# `data-asin` is Amazon's product id and was added after watching this fail
+# live. Amazon's result links are sponsored-click redirects carrying a base64
+# blob that changes every request, and the plain ones embed the result's
+# *position* in the path (`/ref=sr_1_3`) -- so the same console at a different
+# position was a different item, and a pinned product vanished on the next
+# check. Deliberately NOT here: `data-uuid` and `data-index`, which Amazon also
+# sets and which are per-render.
+_ID_ATTRS = ("data-entity-urn", "data-asin", "data-sku", "data-product-id",
+             "data-job-id", "data-jobid", "data-id")
 
 
 def _stable_key(node, href: str, text: str) -> str:

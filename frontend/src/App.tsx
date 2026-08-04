@@ -321,6 +321,11 @@ function Matches({ items, base }: { items: MatchedItem[]; base: string }) {
           {typeof item.score === "number" && (
             <span className="score">{item.score}/10</span>
           )}
+          {typeof item.price === "number" && (
+            <span className="score">
+              {item.price.toLocaleString()} {item.currency ?? ""}
+            </span>
+          )}
           {item.href ? (
             <a href={new URL(item.href, base).href} target="_blank" rel="noreferrer">
               {item.text || "(untitled)"}
@@ -568,10 +573,13 @@ function WatchRow({
                   ))}
                 </div>
               ))}
+              {/* The two kinds mean genuinely different things by an answer,
+                  and saying the wrong one would be a lie about what happens
+                  next. A stream ranks; a price watch pins. */}
               <p className="muted">
-                Answering narrows what is shown here, and tells the watch what
-                to prefer later — it never hides a future posting, only ranks
-                it lower.
+                {watch.repeating
+                  ? "Answering narrows what is shown here, and tells the watch what to prefer later — it never hides a future posting, only ranks it lower."
+                  : "Answering narrows what is shown here, and pins what gets watched. Leave it blank and the watch follows the cheapest thing on the page, which is usually an accessory."}
               </p>
             </div>
           )}

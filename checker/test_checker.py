@@ -953,3 +953,104 @@ def test_an_unanswered_watch_ranks_exactly_as_before(env, monkeypatch):
     run(env)
 
     assert seen["criteria"] == ""
+
+
+# --- Watching the product, not the cheapest thing on the page ----------------
+
+OFFERS_SPEC = {"kind": "offers", "parse": "float"}
+
+SHOP_HTML = """<html><head>
+<script type="application/ld+json">
+{"@context":"http://schema.org/","@type":"ItemList","itemListElement":[
+ {"@type":"ListItem","item":{"@type":"Product","name":"Xbox headset","sku":"H1",
+  "offers":{"@type":"Offer","priceCurrency":"ILS","price":139,
+  "availability":"http://schema.org/InStock","url":"https://shop/1"}}},
+ {"@type":"ListItem","item":{"@type":"Product","name":"Xbox Series X 1TB","sku":"C9",
+  "offers":{"@type":"Offer","priceCurrency":"ILS","price":1899,
+  "availability":"http://schema.org/InStock","url":"https://shop/2"}}}
+]}
+</script></head><body></body></html>"""
+
+
+def a_shop_watch(env, monkeypatch, *, html=SHOP_HTML, **target):
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("2000")})
+    monkeypatch.setattr(env.module, "fetch_raw", lambda *a, **k: html)
+    return make_target(env, extractor=OFFERS_SPEC, **target)
+
+
+def console_id(html=SHOP_HTML):
+    import extract as extract_mod
+    return next(i["id"] for i in extract_mod.extract(OFFERS_SPEC, html).items
+                if "Series X" in i["text"])
+
+
+def test_without_a_pin_the_cheapest_thing_on_the_page_wins(env, monkeypatch):
+    """The behaviour being fixed, kept as a test so the fix cannot silently
+    regress: ILS 139 is a headset, and this watch would announce it as the
+    price of a console."""
+    a_shop_watch(env, monkeypatch)
+
+    result = run(env)
+
+    assert result["last_value"] == 139.0
+    assert result["condition_met"] is True
+
+
+def test_a_pinned_product_is_the_one_that_is_read(env, monkeypatch):
+    a_shop_watch(env, monkeypatch, watched_ids=[console_id()])
+
+    result = run(env)
+
+    assert result["last_value"] == 1899.0
+    assert values_of(env.targets.last_update())[":v"] == Decimal("1899.0")
+
+
+def test_only_the_pinned_offers_are_carried_forward(env, monkeypatch):
+    a_shop_watch(env, monkeypatch, watched_ids=[console_id()])
+    run(env)
+
+    stored = values_of(env.targets.last_update())[":i"]
+    assert len(stored) == 1
+    assert "Series X" in stored[0]["text"]
+
+
+def test_a_pinned_product_that_is_not_listed_today_is_unavailable(env, monkeypatch):
+    """Not `failed`. It is out of stock or delisted -- a legitimate state of
+    the world, and the one thing 8d must never pay a model to repair."""
+    a_shop_watch(env, monkeypatch, watched_ids=["nolongerhere"])
+
+    result = run(env)
+
+    assert result["status"] == "unavailable"
+    assert result["condition_met"] is False
+    assert values_of(env.targets.last_update()).get(":e") in (None, "")
+
+
+def test_an_empty_pin_means_this_shop_has_none_of_it(env, monkeypatch):
+    """Absent and empty are different, and conflating them was a real bug found
+    by running this: a shop whose offers the answers ruled out entirely must
+    not fall back to the cheapest thing on its page. Observed live -- bug.co.il
+    and ivory.co.il were pinned to nothing for a console search and would have
+    gone on reading a ILS 29 game."""
+    a_shop_watch(env, monkeypatch, watched_ids=[])
+
+    result = run(env)
+
+    assert result["status"] == "unavailable"
+    assert result["condition_met"] is False
+
+
+def test_an_absent_pin_leaves_the_reading_alone(env, monkeypatch):
+    """No answers were given, so there is no preference to apply."""
+    a_shop_watch(env, monkeypatch)
+    assert run(env)["last_value"] == 139.0
+
+
+def test_a_pin_does_not_touch_a_watch_without_items(env, monkeypatch):
+    """A price watch on one page has no offers to choose between."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=PRICE_SPEC, watched_ids=["whatever"])
+
+    assert run(env)["last_value"] == 429.0
