@@ -306,7 +306,99 @@ should be enjoyed.
 Steps 1 and 2 made the feature usable and are done. Steps 3 and 4 are what
 make it the thing the owner actually described.
 
-### One thing 1 and 2 did not fix: target selection
+## 8. Target selection, solved 2026-08-04 — the `jobs` kind
+
+The generic request finally plans. `"tell me when a student job for a cloud
+engineer opens in Beer Sheva"` — the request the `presence` kind was built for
+and could never plan — now produces two targets, both plain HTTP, in about
+four seconds, for **$0.012/month**.
+
+### Why a registry rather than a blacklist
+
+The obvious fix was a blacklist: teach `SEARCH_PROMPT` to avoid boards that do
+not render, the way it already avoids Amazon and Best Buy. That treats the
+symptom. The searching Planner would pick a different unusable board next
+week, and every avoided site has to be discovered by a user first.
+
+`shared/job_boards.py` inverts it — a short list of what *does* work, each
+verified against the live endpoint before being written down. It is the same
+answer `shared/sources.py` gave for stock quotes, to the same failure: the
+model re-deciding a question whose answer never changes, and getting it wrong
+differently each time.
+
+### LinkedIn works, without a key and without a browser
+
+`/jobs-guest/jobs/api/seeMoreJobPostings/search` is the endpoint LinkedIn's own
+public job pages call to fill their result list. No account, no OAuth, no
+Chromium: ten server-rendered `<li>` cards as plain HTML. Verified from a
+Codespace **and** from a real Lambda, so the IP range is not blocked.
+
+    cloud engineer   @ Beer Sheva, Israel     -> 10 cards, all Be'er Sheva
+    student          @ Beer Sheva, Israel     ->  5 cards
+    python developer @ New York, United States-> 10 cards, all New York, NY
+    devops           @ United States          -> 10 cards
+
+**Israel and the US are both covered, and the price does not go up — it goes
+down.** A jobs request no longer pays for Sonnet-with-web-search at plan time,
+and the check itself is an ordinary HTTP GET. No paid scraping API was needed,
+so the owner's cost constraint is met with room to spare.
+
+`drushim.co.il` is added for Israel as well: 25–35 Hebrew-language vacancies in
+the HTML of a plain GET, which LinkedIn does not always carry.
+
+### Two things about LinkedIn that no offline test could have found
+
+**The links are not stable.** Every response carries a fresh `refId` and
+`trackingId`. Identity built from the raw URL changed on every fetch, so a
+repeating watch would have re-reported every job, every tick, forever — the
+exact spam deduplication exists to prevent. `extract.py` now keys on
+`data-entity-urn`, falling back to the link with tracking parameters stripped,
+and only then to the visible text. Text is deliberately *not* mixed into the
+first two levels: a card reads "DevOps Engineer Leidos Be'er Sheva 2 days ago",
+and "2 days ago" becomes "3 days ago".
+
+**The result set alternates.** Five consecutive fetches of one query returned
+two different pages of ten — nineteen distinct jobs, flipping back and forth,
+almost certainly two load-balanced shards. Harmless *because* of
+deduplication: each posting is reported once and remembered, so the flapping
+settles instead of producing an email every other tick. Without step 2 this
+board would have been unusable.
+
+### The unverifiable text filter is gone, not mitigated
+
+§3.7 said the presence kind's worst failure was that a CSS
+`:-soup-contains(...)` filter cannot be verified against a posting that does
+not exist yet. Under `jobs` **the board does the filtering, server-side**, and
+the extractor simply counts what came back. There is no filter to be wrong.
+
+And a board returning **zero** listings is refused at plan time rather than
+stored. Zero is legitimate for `presence` — the job is not posted yet — but
+here it means the board was reshaped or the query is malformed, and it is the
+liveness test a canned counter would otherwise lack.
+
+### Proven live
+
+    status proposed | kind jobs | repeating True | interval 30
+      [http] drushim.co.il/jobs/search/cloud%20engineer/   35 listings now
+      [http] linkedin.com/jobs-guest/...                   10 listings now
+      cost/mo 0.0119
+
+Then, confirmed at one minute:
+
+    18:36  new=10/10   new=25/25   -> 2 emails
+    18:37  new=0/10    new=0/25    -> silence
+    18:38  new=0/10    new=0/25    -> silence
+    18:39  new=0/10    new=0/25    -> silence
+
+### What is still true
+
+`presence` keeps everything that is not a job — restocks, appointment slots,
+tickets — and keeps the compiled counter with its unverifiable filter. The
+`jobs` kind did not fix that class; it removed jobs from it.
+
+---
+
+### Superseded: the target-selection problem as it stood
 
 The generic request — *"tell me when a student job for a cloud engineer opens
 in Beer Sheva"* — still fails to plan. The web search chose

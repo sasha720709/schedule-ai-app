@@ -102,13 +102,29 @@ worth knowing without opening it:
 
 **Vacancies steps 1 and 2 are done** (2026-08-04) — matched items, the
 plan-time preview, repeating watches with per-item dedup, and a 90-day term.
-Proven live on the Python Job Board: `new=6/6` → one email with six links →
-`new=0/6` twice → silence, watch still running. **Two things to know**: the
-generic Beer Sheva request still fails at *target selection* (the search picks
-cookie-walled career pages and LinkedIn; `SEARCH_PROMPT` has no steer for job
-boards), and `shared/fetch.py` had been **paying 45× for nothing** — it never
-decompressed gzip, so ordinary pages arrived as line noise and escalated to
-Chromium. $3.22/mo → $0.003/mo on the same watch. `shared/test_fetch.py` is new.
+**Target selection is solved too** — there is now a `jobs` kind backed by
+`shared/job_boards.py`, a registry exactly like `sources.py`. A blacklist was
+rejected: it treats the symptom, and the searching Planner would pick a
+different unusable board next week. **LinkedIn works keyless and without a
+browser** via `/jobs-guest/jobs/api/seeMoreJobPostings/search` — verified from
+a Lambda for Beer Sheva *and* New York — plus `drushim.co.il` for Hebrew
+listings. A jobs request no longer runs Sonnet-with-web-search at all, so the
+price went **down**: $0.012/month. The unverifiable `:-soup-contains(...)`
+filter is gone rather than mitigated, because the board filters server-side.
+
+The original failing request now plans: `kind jobs, repeating True`, two HTTP
+targets, 35 + 10 listings, $0.0119/mo. Live: `new=10/10 new=25/25` → 2 emails,
+then `new=0/…` three ticks running → silence.
+
+**Three findings no offline test could have produced.** LinkedIn rewrites every
+job link on every response (`refId`), so identity must key on
+`data-entity-urn` — otherwise a repeating watch re-reports every job every
+tick forever. LinkedIn's guest endpoint **alternates between two result sets**
+(19 distinct jobs across 5 fetches), which is harmless only because
+deduplication exists. And `shared/fetch.py` had been **paying 45× for
+nothing** — it never decompressed gzip, so ordinary pages arrived as line
+noise and escalated to Chromium. $3.22/mo → $0.003/mo on the same watch.
+`shared/test_fetch.py` and `shared/test_job_boards.py` are new.
 
 **`docs/shares-roadmap.md` is the finish-the-shares plan**, written 2026-08-04
 with the arguments and the evidence, including three things it recommends
@@ -271,7 +287,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 494 of them (counts
+- **Every Lambda has tests; the chain still does not.** 515 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -390,8 +406,8 @@ designed chat UI), the deploy half of 7, and the tail of Phase 9.** Phases
 and the schedule *window* built, deployed and proven live. 8c is deferred
 with numbers.
 
-**494 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 227, `planner/` 99, `api/` 69,
+**515 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 240, `planner/` 107, `api/` 69,
 `authorizer/` 24, `checker/` 39, `notifier/` 30, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 

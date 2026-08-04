@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.join(_ROOT, "shared"))
 sys.path.insert(0, _HERE)
 
 import kinds  # noqa: E402
+from kinds import jobs as jobs_mod  # noqa: E402
 from kinds import quote as quote_mod  # noqa: E402
 
 QUOTE = kinds.get("quote")
@@ -68,6 +69,20 @@ def wire(monkeypatch):
         return calls
 
     return build
+
+
+def scripted(*replies):
+    """An Anthropic client that returns queued JSON replies, as in
+    test_planner.py -- the model plumbing is the same everywhere."""
+    from types import SimpleNamespace
+
+    queue = list(replies)
+
+    def create(**_kwargs):
+        block = SimpleNamespace(type="text", text=json.dumps(queue.pop(0)))
+        return SimpleNamespace(content=[block])
+
+    return SimpleNamespace(messages=SimpleNamespace(create=create))
 
 
 def never(*_args, **_kwargs):
@@ -378,3 +393,138 @@ def test_the_symbol_suffix_survives_into_the_request(wire):
                   fetch_http=never, fetch_browser=never)
 
     assert "TEVA-IL" in calls[0]
+
+
+# --------------------------------------------------------------------------
+# The `jobs` kind
+#
+# It exists because the searching Planner could not plan the request the
+# `presence` kind was built for: asked about a student cloud engineer vacancy
+# in Beer Sheva it chose a cookie-walled careers page and LinkedIn's ordinary
+# search page, and failed on both.
+# --------------------------------------------------------------------------
+
+JOBS = kinds.get("jobs")
+
+JOB_CARDS = """<!DOCTYPE html>
+<li><div class="base-card job-search-card" data-entity-urn="urn:li:jobPosting:111">
+  <a href="https://il.linkedin.com/jobs/view/devops-111?refId=AAA">DevOps Engineer</a>
+  <h3>DevOps Engineer</h3></div></li>
+<li><div class="base-card job-search-card" data-entity-urn="urn:li:jobPosting:222">
+  <a href="https://il.linkedin.com/jobs/view/cloud-222?refId=BBB">Cloud Engineer</a>
+  <h3>Cloud Engineer</h3></div></li>"""
+
+
+@pytest.fixture
+def board(monkeypatch):
+    def build(body=JOB_CARDS):
+        calls = []
+
+        def fetch_raw(url):
+            calls.append(url)
+            return body
+
+        monkeypatch.setattr(jobs_mod, "fetch_raw", fetch_raw)
+        return calls
+
+    return build
+
+
+def test_a_job_search_never_touches_the_web_search(board):
+    """Same saving as `quote`: the boards are decided, so there is nothing to
+    choose and no Sonnet-with-search to pay for."""
+    board()
+    client = scripted({"keywords": "cloud engineer", "location": "Beer Sheva, Israel",
+                       "country": "IL", "check_interval_min": 30})
+    plan = JOBS.plan("a student cloud engineer job in Beer Sheva", client=client)
+
+    assert len(plan["targets"]) == 2          # linkedin + drushim
+    assert plan["check_interval_min"] == 30
+    assert plan["condition"]["op"] == ">"
+
+
+def test_a_job_watch_repeats(board):
+    """A job search is a stream. It matters more here than anywhere: LinkedIn's
+    guest endpoint alternates between two result sets, so without per-item
+    deduplication this would email every other tick forever."""
+    assert JOBS.repeating is True
+
+
+def test_the_registry_extractor_is_never_repaired():
+    """If a board reshapes, the fix is one line in job_boards.py for every
+    watch at once -- paying Haiku to rediscover it per watch would be slower
+    and would produce inconsistent extractors."""
+    assert JOBS.self_heals is False
+
+
+def test_a_board_is_proved_against_the_wire_before_the_plan_is_offered(board):
+    calls = board()
+    resolved = JOBS.resolve(
+        {"url": "https://www.linkedin.com/jobs-guest/x", "board": "linkedin",
+         "fetch_method": "http", "extract_hint": "jobs",
+         "extractor": {"kind": "count", "selector": "li div.job-search-card",
+                       "parse": "int"}},
+        {}, fetch_http=never, fetch_browser=never)
+
+    assert resolved["verified_value"] == 2
+    assert len(resolved["verified_items"]) == 2
+    assert resolved["fetch_method"] == "http"
+    assert calls == ["https://www.linkedin.com/jobs-guest/x"]
+
+
+def test_identity_survives_linkedins_changing_links(board):
+    """Every response carries a fresh refId, so identity built from the raw URL
+    would change on every check and a repeating watch would re-report every
+    job, every tick, forever. Keyed on data-entity-urn instead."""
+    board()
+    first = JOBS.resolve(
+        {"url": "u", "board": "linkedin", "fetch_method": "http",
+         "extract_hint": "jobs",
+         "extractor": {"kind": "count", "selector": "li div.job-search-card",
+                       "parse": "int"}},
+        {}, fetch_http=never, fetch_browser=never)
+
+    monkeypatched = JOB_CARDS.replace("refId=AAA", "refId=ZZZ").replace(
+        "refId=BBB", "refId=YYY")
+    board(monkeypatched)
+    second = JOBS.resolve(
+        {"url": "u", "board": "linkedin", "fetch_method": "http",
+         "extract_hint": "jobs",
+         "extractor": {"kind": "count", "selector": "li div.job-search-card",
+                       "parse": "int"}},
+        {}, fetch_http=never, fetch_browser=never)
+
+    assert ([i["id"] for i in first["verified_items"]]
+            == [i["id"] for i in second["verified_items"]])
+
+
+def test_a_board_returning_nothing_is_refused(board):
+    """Zero is legitimate for a `presence` watch -- the job is not posted yet.
+    Here it means the board was reshaped or the query is malformed, and a watch
+    built on it could never fire."""
+    board("<!DOCTYPE html><p>no results</p>")
+
+    with pytest.raises(ValueError, match="no listings"):
+        JOBS.resolve(
+            {"url": "u", "board": "linkedin", "fetch_method": "http",
+             "extract_hint": "jobs",
+             "extractor": {"kind": "count", "selector": "li div.job-search-card",
+                           "parse": "int"}},
+            {}, fetch_http=never, fetch_browser=never)
+
+
+def test_a_request_with_no_searchable_role_is_refused(board):
+    board()
+    client = scripted({"keywords": "  ", "location": "Israel", "country": "IL",
+                       "check_interval_min": 30})
+
+    with pytest.raises(ValueError, match="could not work out"):
+        JOBS.plan("something about work", client=client)
+
+
+def test_jobs_is_not_a_compiled_kind():
+    """Nothing to anchor, nothing to compile -- the same structural claim as
+    `quote`. If it ever inherits the four compile methods it has been bent to
+    fit the wrong base class."""
+    assert not isinstance(JOBS, kinds.CompiledKind)
+    assert not hasattr(JOBS, "compile_prompt")

@@ -109,7 +109,8 @@ class Kind:
     # cannot bill forever.
     repeating = False
 
-    def plan(self, request: str, symbol=None, *, client=None) -> dict:
+    def plan(self, request: str, symbol=None, *, hints=None,
+             client=None) -> dict:
         """Turn the request into targets, a condition and an interval.
 
         The default is the web search, which is what every kind did before

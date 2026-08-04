@@ -79,6 +79,7 @@ predicates like "out of stock" that are a phrase rather than an element.
 import hashlib
 import json
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 OK = "ok"
@@ -433,6 +434,62 @@ def _run_count(spec: dict, payload: str):
     return str(len(matches)), None
 
 
+# Query parameters that identify the *request*, not the thing. Stripped before
+# an item's identity is computed.
+#
+# Found the hard way. LinkedIn's job links carry a fresh `refId` and
+# `trackingId` on every single response, so identity built from the raw href
+# changed on every check -- and a repeating watch would have re-reported every
+# job, every tick, forever. That is precisely the spam the deduplication exists
+# to prevent, and no offline test could have seen it: it appears only when the
+# same page is fetched twice.
+#
+# A denylist rather than "strip the whole query", because plenty of sites put
+# the identity *in* the query -- `/jobs?id=123` must stay distinct.
+_TRACKING_PARAMS = {
+    "refid", "trackingid", "position", "pagenum", "trk", "trkinfo",
+    "originaltrackingid", "fbclid", "gclid", "msclkid", "igshid", "ref",
+    "referrer", "source", "src",
+}
+
+# Attributes carrying a site's own stable id for a listing. Preferred over the
+# URL when present: a site that rewrites its links on every request usually
+# still keys its markup on the real thing.
+_ID_ATTRS = ("data-entity-urn", "data-job-id", "data-jobid", "data-id")
+
+
+def _stable_key(node, href: str, text: str) -> str:
+    """What makes this item *this* item, across fetches.
+
+    Three levels, each more reliable than the next one down:
+
+    1. **The site's own id.** Definitive when it exists.
+    2. **The link, with tracking parameters removed.** Stable for most boards.
+    3. **The visible text.** Only when there is no link at all.
+
+    Text is deliberately *not* mixed into the first two. A LinkedIn card reads
+    "DevOps Engineer Leidos Be'er Sheva 2 days ago" -- and "2 days ago" becomes
+    "3 days ago", which would make the same posting a new posting overnight.
+    Volatile text is exactly what the levels above exist to avoid.
+    """
+    for attr in _ID_ATTRS:
+        found = node.get(attr)
+        if not found:
+            inner = node.find(attrs={attr: True})
+            found = inner.get(attr) if inner else None
+        if found:
+            return str(found)
+
+    if href:
+        parsed = urlsplit(href)
+        kept = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                if k.lower() not in _TRACKING_PARAMS]
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                          urlencode(kept), ""))
+
+    return text
+
+
 def _item_href(node) -> str:
     """The link for a matched item.
 
@@ -472,7 +529,8 @@ def _count_items(spec: dict, payload: str) -> list:
         if not text and not href:
             continue
         items.append({
-            "id": hashlib.sha1(f"{text}\n{href}".encode()).hexdigest()[:12],
+            "id": hashlib.sha1(
+                _stable_key(node, href, text).encode()).hexdigest()[:12],
             "text": text,
             "href": href,
         })

@@ -47,9 +47,13 @@ CLASSIFY_PROMPT = """You sort a monitoring request into exactly one kind.
 
   quote     -- an exchange-traded market price: a share, an index, a future,
                an ETF. "Tell me when Apple drops", "watch the S&P".
-  presence  -- something that DOES NOT EXIST YET and the user is waiting for
-               it to APPEAR. A job posting, a restock, an appointment slot, a
-               ticket going on sale.
+  jobs      -- a search for work. "Tell me when a cloud engineer vacancy opens
+               in Beer Sheva", "any part-time job near Haifa", "junior React
+               roles in New York". Job boards are a decided set, like a stock
+               quote's source is, so this never searches the web.
+  presence  -- something else that DOES NOT EXIST YET and the user is waiting
+               for it to APPEAR. A restock, an appointment slot, a ticket
+               going on sale. NOT a job -- that is `jobs`.
   value     -- anything else. Something already on a page that the user is
                waiting to CHANGE: a product price, a rating, a countdown.
 
@@ -79,13 +83,17 @@ Rules:
   shekels" or a request written in Hebrew is "TEVA-IL". When a request names
   an Israeli bank, insurer or any company that is not listed in the US at
   all, assume Tel Aviv and use -IL.
-- If the request is waiting for something to show up, it is `presence`, even
-  if similar things are listed today.
+- If the request is about **work, employment, a vacancy, a position or a
+  role**, it is `jobs` -- including when it names a city, a company or a
+  board. A named "where" rules out `quote` but not `jobs`, because the boards
+  are decided and the place is just a search field.
+- If the request is waiting for something else to show up, it is `presence`,
+  even if similar things are listed today.
 - When genuinely unsure, answer "value". It is the general path and it works
   for everything; a wrong guess here is more expensive than a vague one.
 
 Respond with ONLY a JSON object:
-{"kind": "quote" | "presence" | "value", "symbol": string | null}"""
+{"kind": "quote" | "jobs" | "presence" | "value", "symbol": string | null}"""
 
 
 def _acceptable(decision, known: tuple) -> str:

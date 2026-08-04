@@ -12,6 +12,7 @@ a suboptimal plan, not a rejected request.
 
 from kinds.base import (Kind, CompiledKind, build_with_cheapest_fetch,
                         compile_and_verify, read_value, tidy)
+from kinds.jobs import JobsKind
 from kinds.presence import PresenceKind
 from kinds.quote import QuoteKind
 from kinds.value import ValueKind
@@ -20,6 +21,7 @@ REGISTRY = {
     "value": ValueKind(),
     "presence": PresenceKind(),
     "quote": QuoteKind(),
+    "jobs": JobsKind(),
 }
 
 DEFAULT = REGISTRY["value"]
