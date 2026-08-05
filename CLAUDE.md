@@ -5,16 +5,40 @@ Context for any Claude Code session working in this repo — read this first.
 ## Start here (last session: 2026-08-05)
 
 Everything is committed, deployed and green. **AWS is idle**: zero schedules,
-zero watches, zero targets, so nothing is billing. **837 tests** pass in ~3s
+zero watches, zero targets, so nothing is billing. **867 tests** pass in ~3s
 with `python -m pytest -q` from the repo root, and every suite also passes
 alone (`for d in */; do pytest $d; done`).
 
-**Proven live 2026-08-05 and deleted afterwards:** a reminder asked for "in
-four minutes" planned as `kind reminder`, `fire_at 20:58:15 +03:00`, scheduled
-`at(2026-08-05T20:58:15)` / `Asia/Jerusalem` / `DELETE` addressed to
-`{"watch_id": ...}`, fired at 17:58:26Z with `TIME REACHED`, emailed with the
-`.ics` attached (no fallback in the log), and **left no schedule behind** —
-`deleted 0 schedule(s)`, because `at(...)` had already removed its own.
+**Reminders repeat, and the open case is asked about.** "Set a reminder for
+9pm to learn English" and the same sentence ending "every day" are different
+products; the model answers `null` when a request could be either, and `null`
+puts *"Once, or every day?"* on the plan card. Confirming without answering
+keeps it a one-off, which is the recoverable direction. A repeat is a **cron**,
+never `rate(1 day)` — a rate counts from creation, so "every day at 9pm" would
+drift — with no `ActionAfterCompletion` and a 90-day term.
+
+**Two bugs that only a real run could produce, both on 2026-08-05:**
+
+- **A raw email with no `Date` header is accepted and never delivered.** Both
+  of the first two reminders logged `emailed` and neither arrived: SES accepts
+  the message and returns a MessageId, and Gmail drops it with no bounce.
+  `Date` and `Message-ID` are mandatory in RFC 5322 and are exactly what
+  `send_email` adds for you — `SendRawEmail` sends what it is handed. **A send
+  that is accepted and never delivered reports success**, which is the worst
+  failure shape this project has and the same one as the missing email of
+  2026-08-04.
+- **`repeat` is a DynamoDB reserved word.** Written bare it fails the entire
+  update with a `ValidationException` and leaves the watch in `failed`. No test
+  double knows the reserved list. Every time-triggered field is aliased now.
+
+**Proven live and deleted afterwards.** One-off: planned `fire_at 20:58:15
++03:00`, scheduled `at(...)` / `Asia/Jerusalem` / `DELETE` addressed to
+`{"watch_id": ...}`, fired at 17:58:26Z, emailed, and **left no schedule
+behind** — `at(...)` had already removed its own. Daily: asked the question,
+answered `daily`, got `cron(24 21 * * ? *)` / `Asia/Jerusalem` /
+`ActionAfterCompletion: NONE`, fired at 18:24:38Z as `(repeating)`, emailed,
+`schedules left in place`, and stayed `active` with `trigger_count: 1` and a
+term of 2026-11-03.
 
 **Marketplaces is finished** (all five steps — `docs/marketplaces-roadmap.md`
 §5–§9), **and so is Phase 9's time-triggered half**: a watch can now be
@@ -612,7 +636,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 837 of them (counts
+- **Every Lambda has tests; the chain still does not.** 867 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -769,9 +793,9 @@ designed chat UI) and the deploy half of 7.
 | `reminder` | nowhere — the clock is the trigger | no |
 | `value` | web search, compiled extractor | yes |
 
-**837 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 426, `planner/` 145, `api/` 89,
-`authorizer/` 24, `checker/` 95, `notifier/` 52, `fetcher/` 6. They run on
+**867 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 434, `planner/` 151, `api/` 96,
+`authorizer/` 24, `checker/` 103, `notifier/` 53, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
