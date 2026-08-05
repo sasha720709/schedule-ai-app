@@ -14,6 +14,16 @@ sign-in. One schedule, a Lambda invocation a week, effectively free. It is the
 first row in this project that carries a real `user_id` rather than
 `"default"`. Leave it; delete it from the UI if it stops being wanted.
 
+**Sign-in is real now, and the passcode is gone.** Google, federated through
+a Cognito user pool, with API Gateway verifying the ID token itself --
+signature, issuer, audience, expiry -- before a request reaches any code in
+this repo. The 76-line authorizer Lambda was **deleted**, which is the largest
+security change of the day and is a subtraction. `user_id` is the token's
+`sub`; `gatekeeper/` is a pre-sign-up allow-list, because enabling Google
+sign-in enables it for everyone who has a Google account. Mail is per-user,
+signed with DKIM from a domain the owner controls, and SES is out of the
+sandbox. Full detail lower down and in the commits from `846813a` onward.
+
 **Reminders repeat, and the open case is asked about.** "Set a reminder for
 9pm to learn English" and the same sentence ending "every day" are different
 products; the model answers `null` when a request could be either, and `null`
@@ -234,44 +244,53 @@ the map.
 
 ### What to do next, in the order I would do it
 
-**The product the owner described is built.** Three ways to watch and then
-stop -- a share price, a job vacancy, a thing for sale -- plus calendar
-reminders. All four are done, deployed and proven live. What remains is the
-two things that were always going to come last, and one of them is a decision
-rather than a build.
+**The product the owner described is built, and so is the thing that was
+always going to come before the interface.** Three ways to watch and then stop
+-- a share price, a job vacancy, a thing for sale -- plus calendar reminders,
+plus real accounts. All of it deployed and proven live.
 
-1. **Decide the auth shape.** The largest thing left, and **four** features
-   now lean on its absence: `user_id` is `"default"`, `NOTIFY_EMAIL` is one
-   recipient, `DEFAULT_TIMEZONE` is one zone, and a product watch drops shops
-   priced in a currency nobody knows the user uses. It does not have to be
-   *built* now. It has to be *decided* now, because 4c is the last cheap
-   moment -- a designed UI built on a single-user assumption gets rebuilt.
+**Only one thing of consequence is left: the interface.**
 
-   The current plan of record is a single shared passcode, which is what
-   exists. The question is whether the eventual answer is per-user records
-   (real accounts, per-user email and timezone) or permanently single-user
-   with the passcode. Everything above resolves differently depending on that.
+1. **4c -- the designed interface.** Read `docs/frontend-strategy.md` before
+   opening a component. It is not a style guide; it is an argument about why
+   generated UI looks generated and what to do about it in *this* codebase,
+   and it was written because the owner named the problem exactly: "I don't
+   want it to look AI-ish."
 
-2. **4c -- the designed chat interface.** The only product surface left. The
-   current React app is deliberately unstyled and exists to prove hosting,
-   CORS and the deploy path. Everything it needs from the backend now exists,
-   which is exactly why 4c was put last: it is better built against the data
-   model Phase 8 and 9 left behind than retrofitted to it.
+   The short version, so it is not lost if that file is skipped: **this app's
+   advantage is that it has something true and specific to say on every
+   screen**, and a whole day was spent making those sentences precise. Design
+   it from the sentences outward. Do not start from a component library.
 
-3. **Shares tier 4 -- a `Checks` history table.** `last_value` is overwritten
-   every tick, so "the price over the last month" cannot be drawn. Deliberately
-   after the frontend, because the frontend is what makes a history worth
-   having. `docs/shares-roadmap.md` §2.6.
+2. **Shares tier 4 -- a `Checks` history table.** `last_value` is overwritten
+   every tick, so "the price over the last month" cannot be drawn.
+   Deliberately after the frontend, because the frontend is what makes a
+   history worth having. `docs/shares-roadmap.md` §2.6.
 
-4. **Phase 7's deploy half.** Tests-on-push is done. The deploy pipeline stays
+3. **Username and password sign-in.** Deliberately deferred 2026-08-05 with
+   the reasoning written down: Cognito supports it, basic use is free, but the
+   protections that make a password *comparable* to Google -- compromised
+   credential detection, adaptive auth -- are the Plus tier at $0.020/MAU with
+   no free allowance. It also hands you four responsibilities you do not have
+   today (brute force, MFA, account recovery, more forms). **Adding it later
+   costs nothing now**: same pool, same authorizer, same `sub`; only the
+   frontend gains a form. So it belongs with 4c, when the form is drawn once
+   rather than twice. If the goal is a second way in rather than passwords
+   specifically, a second federated provider is cheaper and safer.
+
+4. **A per-user timezone.** The last thing still leaning on single-user:
+   `DEFAULT_TIMEZONE` is a deployment setting, and Google's token does not
+   carry a zone. It becomes a profile setting in 4c.
+
+5. **Phase 7's deploy half.** Tests-on-push is done. The deploy pipeline stays
    last on purpose: its value scales with frequency x blast radius x team size,
    and all three are small here. Fix the Fetcher's `:latest` tag first -- a
    pipeline would report success while the running code stayed stale.
 
-5. **8c stays deferred**, with numbers: ~$0.05/month saved, and unsound on
+6. **8c stays deferred**, with numbers: ~$0.05/month saved, and unsound on
    browser targets where the HTML can be byte-identical while the price moves.
 
-### The five roadmap documents, all current
+### The roadmap documents, all current
 
 | | |
 |---|---|
@@ -280,6 +299,7 @@ rather than a build.
 | `docs/marketplaces-roadmap.md` | **all five steps done**; §7–§9 are the write-ups |
 | `docs/phase-9-watch-kinds.md` | §10b is the missing-email write-up; §10 is what is left |
 | `docs/architecture-review-2026-07-31.md` | every architectural decision to that date |
+| `docs/frontend-strategy.md` | **read before 4c** — why generated UI looks generated, and what to do in this codebase |
 
 ### Things carried forward that are easy to lose
 
