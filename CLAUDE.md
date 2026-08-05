@@ -684,8 +684,8 @@ designed chat UI) and the deploy half of 7.
 | `value` | web search, compiled extractor | yes |
 
 **720 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 366, `planner/` 132, `api/` 80,
-`authorizer/` 24, `checker/` 71, `notifier/` 41, `fetcher/` 6. They run on
+the repo root. By area — `shared/` 367, `planner/` 132, `api/` 80,
+`authorizer/` 24, `checker/` 71, `notifier/` 40, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
