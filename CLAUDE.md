@@ -2,16 +2,57 @@
 
 Context for any Claude Code session working in this repo — read this first.
 
-## Start here (last session: 2026-08-05, short)
+## Start here (last session: 2026-08-05)
 
 Everything is committed, deployed and green. **AWS is idle**: zero schedules,
-zero watches, zero targets, so nothing is billing. **673 tests** pass in ~2s
+zero watches, zero targets, so nothing is billing. **720 tests** pass in ~2s
 with `python -m pytest -q` from the repo root, and every suite also passes
 alone (`for d in */; do pytest $d; done`).
 
-### What happened on 2026-08-05
+**Marketplaces is finished except the blocked-render outcome.** Steps 1–4 are
+done, deployed and proven live; `docs/marketplaces-roadmap.md` §9 is what
+remains and it is small.
 
-One commit, `f39bee5`: **marketplaces step 3**. It was written down as
+### Step 4 (`b381ca4`): delivery, and one much larger bug
+
+The step said "read the shipping cost and add it to the price". **Measured
+before building**, because the roadmap asserted it was reachable and never
+checked — and mostly it is not. Two Israeli shops and 38 Amazon cards:
+`deliveryTime` at Ivory is a *duration*; Bug publishes only a site-wide
+threshold in an image's `alt`; Amazon has a real delivery element, free on 11
+of 16 console cards, **one at $35**, and conditional on all 22 cheap ones.
+
+So `shared/shipping.py` produces **what is known** in three states — `free`,
+`extra`, `unknown` — and never a number where none exists. Where delivery is
+known the price is landed and the ordering is right; where it is not, the
+email says "before delivery". That is the point: the harm is the *claim* as
+much as the arithmetic, and "cheapest at Bug" reads as a comparison of totals
+either way.
+
+**"FREE delivery" is usually not free delivery** — 14 of 14 cheap Amazon cards
+say it and mean "if you join Prime" or "on $35 of items". Free is believed only
+when the claim carries no condition. And delivery is read from an element that
+means delivery and nothing else, never from card text: Ivory sells three wheels
+whose *names* end in "משלוח חינם", which is the whole-document `unavailable_if`
+bug in a new costume.
+
+**The bug it uncovered is worse than the feature.** `MAX_ITEM_TEXT` truncated a
+card *before* the price was searched for, and Amazon opens every card with
+boilerplate longer than 200 characters. **7 of 15 priced console cards
+survived, and 1 of 22 cables.** A "cheapest on Amazon" watch was reading a
+near-random subset and saying "cheapest" about it, and a pinned offer outside
+the subset read as `unavailable` — delisted, as far as the watch could tell.
+Pre-existing, invisible to every test, found by running the extractor over a
+page already fetched for something else. Now 15 of 15 and 22 of 22, confirmed
+live. The *stored* text stays truncated, because item ids derive from it.
+
+Proven live and deleted afterwards: an Amazon watch planned **15 offers** where
+it would have found 7, and an Israeli two-shop watch produced exactly the mixed
+case — `bug 179 free` (its ₪179 threshold, to the shekel) and `ivory 229
+unknown` — logged `[across] bug 179.0 ILS | ivory 229.0 ILS`, emailed, and tore
+both schedules down.
+
+### Step 3 (`f39bee5`): the watch has one reading It was written down as
 "watch-level conditions" and turned out to be about the *reading*, not the
 condition — see `docs/marketplaces-roadmap.md` §7 for the argument and the
 numbers. The short version, because three of these are bugs about money:
@@ -81,10 +122,10 @@ the map.
 
 ### What to do next, in the order I would do it
 
-1. **Marketplaces step 4 — landed price.** An item ₪50 cheaper with ₪60
-   shipping is not cheaper, and comparing sticker prices across shops compares
-   the wrong number. This is the one remaining thing that makes a product
-   watch *wrong* rather than imprecise.
+1. **The blocked-render outcome**, the last of marketplaces. Amazon's
+   blocking is probabilistic; the day it starts refusing should be **one
+   visible signal** rather than every Amazon watch degrading separately and
+   looking like a broken extractor. Small. `docs/marketplaces-roadmap.md` §9.
 3. **Calendar reminders.** Two jobs, not one: the `.ics` file is easy
    (fifteen lines, no OAuth, `ses:SendRawEmail`), but the **trigger** is Phase
    9 step 3b and does not exist. Build the reminder kind first — attaching an
@@ -103,7 +144,7 @@ the map.
 |---|---|
 | `docs/shares-roadmap.md` | tiers 1–3 done; tier 4 (history) after the frontend |
 | `docs/vacancies-roadmap.md` | **all four steps done** |
-| `docs/marketplaces-roadmap.md` | steps 1–3 done; **step 4 (landed price) next**; §7 is the step-3 write-up |
+| `docs/marketplaces-roadmap.md` | steps 1–4 done; **only the blocked-render outcome left** (§9); §7–§8 are the write-ups |
 | `docs/phase-9-watch-kinds.md` | §10b is the missing-email write-up; §10 is what is left |
 | `docs/architecture-review-2026-07-31.md` | every architectural decision to that date |
 
@@ -486,7 +527,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 673 of them (counts
+- **Every Lambda has tests; the chain still does not.** 720 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -551,6 +592,17 @@ will start to hurt.
   looks like per-watch extractor failure. **Judged not a real risk by the
   owner on 2026-08-04**; the second-source work is withdrawn, not forgotten.
   `docs/shares-roadmap.md` §2.2 and Tier 2 item 4.
+
+- **A delivery cost is `unknown` most of the time, and that is the answer.**
+  Nothing may turn it into a number. Ivory publishes no threshold reachable
+  over plain HTTP, so every Ivory offer is unknown; below a shop's threshold
+  the cost is a figure this system has never seen. The three states are in
+  `shared/shipping.py` and the email says which. Filling in a plausible
+  shipping figure would be the same class of bug as the fabricated 5%.
+
+- **The first money-shaped number in a card is not always the price.** *"Xbox
+  Series X & $100 Gift Card"* reads as $100. Pre-existing and orthogonal to
+  delivery; the questions step is what corrects it.
 
 - **A `product` watch drops shops that price in another currency**, and this
   is the right behaviour only until there is a user. Nothing converts money,
@@ -631,9 +683,9 @@ designed chat UI) and the deploy half of 7.
 | `presence` | web search, compiled counter | yes |
 | `value` | web search, compiled extractor | yes |
 
-**673 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 325, `planner/` 132, `api/` 80,
-`authorizer/` 24, `checker/` 71, `notifier/` 35, `fetcher/` 6. They run on
+**720 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 366, `planner/` 132, `api/` 80,
+`authorizer/` 24, `checker/` 71, `notifier/` 41, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
@@ -740,7 +792,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | 🔨 | **9** · Watch kinds, schedules, delivery | kinds + windows done and proven live; left: `once`/`reminder` (time-triggered) and delivery channels |
 | ✅ | **10a** · Shares finished | tiers 1–3 done — exchange, baseline, staleness. Tier 4 (history) after the frontend |
 | ✅ | **10b** · Vacancies finished | all four steps — items, repeating+dedup, ranking, grounded questions |
-| 🔨 | **10c** · Marketplaces | steps 1–3 done (shops, `offers`, Amazon, pinning, one reading); **4 next** |
+| 🔨 | **10c** · Marketplaces | steps 1–4 done; **only the blocked-render outcome left** |
 | ⬜ | **11** · Calendar reminders | `.ics` is easy; the *trigger* is Phase 9 step 3b and does not exist |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
