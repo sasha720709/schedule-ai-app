@@ -1,10 +1,12 @@
 /**
  * Client for the watch lifecycle API.
  *
- * The passcode travels in an Authorization header on every request -- there
- * is no session, no cookie and no refresh. Note that API Gateway answers 401
- * when the header is absent and 403 when it is present but wrong, so both
- * have to be treated as "the passcode is bad".
+ * A Cognito ID token travels in an Authorization header on every request.
+ * API Gateway verifies it -- signature, issuer, audience, expiry -- before the
+ * api Lambda runs, so nothing here validates it and nothing here should.
+ *
+ * Note API Gateway answers 401 when the header is absent and 403 when it is
+ * present but rejected, so both have to be treated as "sign in again".
  */
 
 const BASE = import.meta.env.VITE_API_BASE as string;
@@ -160,7 +162,7 @@ export interface Target {
   currency?: string;
 }
 
-/** Thrown for any non-2xx. `unauthorized` means the passcode needs re-entering. */
+/** Thrown for any non-2xx. `unauthorized` means the session is over. */
 export class ApiError extends Error {
   status: number;
   unauthorized: boolean;
@@ -173,7 +175,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(
-  passcode: string,
+  token: string,
   path: string,
   init?: RequestInit,
 ): Promise<T> {
@@ -181,7 +183,7 @@ async function request<T>(
     ...init,
     headers: {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      Authorization: passcode,
+      Authorization: `Bearer ${token}`,
       ...init?.headers,
     },
   });
@@ -202,8 +204,8 @@ async function request<T>(
   return response.json() as Promise<T>;
 }
 
-export const listWatches = (passcode: string) =>
-  request<{ watches: Watch[] }>(passcode, "/watches");
+export const listWatches = (token: string) =>
+  request<{ watches: Watch[] }>(token, "/watches");
 
 /**
  * Whether a target has stopped moving, and whether that means anything.
@@ -222,7 +224,7 @@ export interface Staleness {
   stale: boolean;
 }
 
-export const getWatch = (passcode: string, id: string) =>
+export const getWatch = (token: string, id: string) =>
   request<{
     watch: Watch;
     targets: Target[];
@@ -231,16 +233,16 @@ export const getWatch = (passcode: string, id: string) =>
     /** When the schedule next runs, ISO-8601 UTC. Null when the watch is not
      * active, or when the server cannot say -- never a guess. */
     next_check_at: string | null;
-  }>(passcode, `/watches/${id}`);
+  }>(token, `/watches/${id}`);
 
-export const createWatch = (passcode: string, prompt: string) =>
-  request<{ watch_id: string; status: Status }>(passcode, "/watches", {
+export const createWatch = (token: string, prompt: string) =>
+  request<{ watch_id: string; status: Status }>(token, "/watches", {
     method: "POST",
     body: JSON.stringify({ request: prompt }),
   });
 
 export const confirmWatch = (
-  passcode: string,
+  token: string,
   id: string,
   checkIntervalMin: number,
   /** Optional throughout. Confirming without answering behaves exactly as it
@@ -256,7 +258,7 @@ export const confirmWatch = (
     repeating: boolean;
     expires_at: string | null;
   }>(
-    passcode,
+    token,
     `/watches/${id}/confirm`,
     {
       method: "POST",
@@ -268,17 +270,17 @@ export const confirmWatch = (
   );
 
 export const setWatchStatus = (
-  passcode: string,
+  token: string,
   id: string,
   status: "paused" | "active",
 ) =>
-  request<{ watch: Watch; next_check_at: string | null }>(passcode, `/watches/${id}`, {
+  request<{ watch: Watch; next_check_at: string | null }>(token, `/watches/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ status }),
   });
 
-export const deleteWatch = (passcode: string, id: string) =>
-  request<{ deleted: boolean }>(passcode, `/watches/${id}`, {
+export const deleteWatch = (token: string, id: string) =>
+  request<{ deleted: boolean }>(token, `/watches/${id}`, {
     method: "DELETE",
   });
 

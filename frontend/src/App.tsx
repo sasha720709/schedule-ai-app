@@ -13,6 +13,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  completeSignIn,
+  currentToken,
+  signIn,
+  signOut as forgetSession,
+} from "./auth";
+import {
   ApiError,
   confirmWatch,
   createWatch,
@@ -29,12 +35,13 @@ import {
   type Watch,
 } from "./api";
 
-const PASSCODE_KEY = "schedule-ai-passcode";
-
 export default function App() {
-  const [passcode, setPasscode] = useState(
-    () => localStorage.getItem(PASSCODE_KEY) ?? "",
-  );
+  // The token is held in state only so React re-renders when it appears or
+  // goes. It is never *sent* from here -- `auth()` below asks auth.ts for a
+  // current one on every call, because the one in state may have expired
+  // while the tab sat open.
+  const [token, setToken] = useState<string | null>(null);
+  const [checkedSession, setCheckedSession] = useState(false);
   const [watches, setWatches] = useState<Watch[]>([]);
   const [targets, setTargets] = useState<Record<string, Target[]>>({});
   // The per-check rate is the server's to know: it depends on the fetch
@@ -53,8 +60,8 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
 
   const signOut = useCallback(() => {
-    localStorage.removeItem(PASSCODE_KEY);
-    setPasscode("");
+    forgetSession();
+    setToken(null);
     setWatches([]);
     setTargets({});
     setNextChecks({});
@@ -65,7 +72,7 @@ export default function App() {
     (err: unknown) => {
       if (err instanceof ApiError && err.unauthorized) {
         // 401 (header absent) and 403 (header wrong) both land here.
-        setError("That passcode was rejected.");
+        setError("Your session ended. Sign in again.");
         signOut();
         return;
       }
@@ -74,10 +81,35 @@ export default function App() {
     [signOut],
   );
 
+  // One place that answers "what token do I send right now", so a session
+  // that expired while the tab was open refreshes instead of failing.
+  const auth = useCallback(async () => {
+    const fresh = await currentToken();
+    if (!fresh) {
+      setToken(null);
+      throw new ApiError(401, "Your session ended. Sign in again.");
+    }
+    return fresh;
+  }, []);
+
+  // Finish a sign-in if this page load is the return leg from Google, then
+  // settle on whether there is a usable session.
+  useEffect(() => {
+    void (async () => {
+      try {
+        await completeSignIn();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      setToken(await currentToken());
+      setCheckedSession(true);
+    })();
+  }, []);
+
   const refresh = useCallback(async () => {
-    if (!passcode) return;
+    if (!token) return;
     try {
-      const listed = await listWatches(passcode);
+      const listed = await listWatches(await auth());
       setWatches(listed.watches);
       setError(null);
       setLoaded(true);
@@ -85,12 +117,13 @@ export default function App() {
       // Targets carry the per-check detail the list rows do not: last value,
       // the extraction hint, http vs browser. Pull them for anything the user
       // has to act on or read.
+      const tokenForBatch = await auth();
       const interesting = listed.watches.filter(
         (w) => w.status === "proposed" || w.status === "triggered",
       );
       const fetched = await Promise.all(
         interesting.map((w) =>
-          getWatch(passcode, w.watch_id).then(
+          getWatch(tokenForBatch, w.watch_id).then(
             (r) => [w.watch_id, r] as const,
           ),
         ),
@@ -106,7 +139,7 @@ export default function App() {
     } catch (err) {
       handle(err);
     }
-  }, [passcode, handle]);
+  }, [token, auth, handle]);
 
   useEffect(() => {
     void refresh();
@@ -142,37 +175,33 @@ export default function App() {
     const text = prompt.trim();
     if (!text) return;
     await act(async () => {
-      await createWatch(passcode, text);
+      await createWatch(await auth(), text);
       setPrompt("");
     });
   }
 
-  if (!passcode) {
+  // Deliberately a button and nothing else. 4c designs this properly; until
+  // then a login screen is the easiest place in a project to spend an
+  // afternoon on work that gets deleted. The security lives in auth.ts, which
+  // is not throwaway -- this is.
+  if (!checkedSession) {
     return (
       <main>
         <h1>ScheduleAI</h1>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const value = new FormData(e.currentTarget).get("passcode");
-            if (typeof value === "string" && value.trim()) {
-              localStorage.setItem(PASSCODE_KEY, value.trim());
-              setPasscode(value.trim());
-              setError(null);
-            }
-          }}
-        >
-          <label>
-            Passcode{" "}
-            <input
-              name="passcode"
-              type="password"
-              autoFocus
-              autoComplete="off"
-            />
-          </label>{" "}
-          <button type="submit">Enter</button>
-        </form>
+        <p className="muted">Checking your session…</p>
+      </main>
+    );
+  }
+
+  if (!token) {
+    return (
+      <main>
+        <h1>ScheduleAI</h1>
+        <p className="muted">
+          Sign in with the Google account this app was set up for. Anyone else
+          is turned away before an account is created.
+        </p>
+        <button onClick={() => void signIn()}>Sign in with Google</button>
         {error && <p className="error">{error}</p>}
       </main>
     );
@@ -182,7 +211,7 @@ export default function App() {
     <main>
       <header>
         <h1>ScheduleAI</h1>
-        <button onClick={signOut}>Forget passcode</button>
+        <button onClick={signOut}>Sign out</button>
       </header>
 
       <form onSubmit={onCreate}>
@@ -220,7 +249,7 @@ export default function App() {
             onConfirm={(interval, answers) =>
               void act(async () => {
                 const done = await confirmWatch(
-                  passcode,
+                  await auth(),
                   watch.watch_id,
                   interval,
                   answers,
@@ -232,12 +261,12 @@ export default function App() {
               })
             }
             onPause={() =>
-              void act(() => setWatchStatus(passcode, watch.watch_id, "paused"))
+              void act(() => auth().then((t) => setWatchStatus(t, watch.watch_id, "paused")))
             }
             onResume={() =>
               void act(async () => {
                 const done = await setWatchStatus(
-                  passcode,
+                  await auth(),
                   watch.watch_id,
                   "active",
                 );
@@ -247,10 +276,10 @@ export default function App() {
                 }));
               })
             }
-            onDelete={() => void act(() => deleteWatch(passcode, watch.watch_id))}
+            onDelete={() => void act(() => auth().then((t) => deleteWatch(t, watch.watch_id)))}
             onExpand={() =>
               void act(async () => {
-                const detail = await getWatch(passcode, watch.watch_id);
+                const detail = await getWatch(await auth(), watch.watch_id);
                 setTargets((prev) => ({
                   ...prev,
                   [watch.watch_id]: detail.targets,

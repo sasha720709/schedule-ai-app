@@ -93,6 +93,23 @@ resource "aws_cognito_identity_provider" "google" {
     client_id        = var.google_client_id
     client_secret    = var.google_client_secret
     authorize_scopes = "openid email profile"
+
+    # Cognito fills these in itself when a Google provider is created, and
+    # Terraform then wants to remove them because they are absent from the
+    # configuration -- which would strip Google's own endpoints out of the
+    # provider and break sign-in. Caught by reading a plan rather than by
+    # applying one: the diff said "update in-place", and what it meant was
+    # six deletions.
+    #
+    # They are Google's published, stable OAuth endpoints. Writing them down
+    # makes the configuration describe what actually exists, which is the
+    # point of having one.
+    attributes_url                = "https://people.googleapis.com/v1/people/me?personFields="
+    attributes_url_add_attributes = "true"
+    authorize_url                 = "https://accounts.google.com/o/oauth2/v2/auth"
+    oidc_issuer                   = "https://accounts.google.com"
+    token_request_method          = "POST"
+    token_url                     = "https://www.googleapis.com/oauth2/v4/token"
   }
 
   # Map Google's claims onto the pool's attributes. Without `email` the pool
