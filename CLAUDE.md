@@ -4,10 +4,15 @@ Context for any Claude Code session working in this repo — read this first.
 
 ## Start here (last session: 2026-08-05)
 
-Everything is committed, deployed and green. **AWS is idle**: zero schedules,
-zero watches, zero targets, so nothing is billing. **867 tests** pass in ~3s
-with `python -m pytest -q` from the repo root, and every suite also passes
-alone (`for d in */; do pytest $d; done`).
+Everything is committed, deployed and green. **882 tests** pass in ~3s with
+`python -m pytest -q` from the repo root, and every suite also passes alone
+(`for d in */; do pytest $d; done`).
+
+**AWS is not idle.** One watch is live and deliberate: `w_355a0d83`, the
+owner's own weekly reminder at 22:42 Israel time, created through the new
+sign-in. One schedule, a Lambda invocation a week, effectively free. It is the
+first row in this project that carries a real `user_id` rather than
+`"default"`. Leave it; delete it from the UI if it stops being wanted.
 
 **Reminders repeat, and the open case is asked about.** "Set a reminder for
 9pm to learn English" and the same sentence ending "every day" are different
