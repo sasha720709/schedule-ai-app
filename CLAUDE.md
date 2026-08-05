@@ -5,9 +5,16 @@ Context for any Claude Code session working in this repo — read this first.
 ## Start here (last session: 2026-08-05)
 
 Everything is committed, deployed and green. **AWS is idle**: zero schedules,
-zero watches, zero targets, so nothing is billing. **720 tests** pass in ~2s
+zero watches, zero targets, so nothing is billing. **837 tests** pass in ~3s
 with `python -m pytest -q` from the repo root, and every suite also passes
 alone (`for d in */; do pytest $d; done`).
+
+**Proven live 2026-08-05 and deleted afterwards:** a reminder asked for "in
+four minutes" planned as `kind reminder`, `fire_at 20:58:15 +03:00`, scheduled
+`at(2026-08-05T20:58:15)` / `Asia/Jerusalem` / `DELETE` addressed to
+`{"watch_id": ...}`, fired at 17:58:26Z with `TIME REACHED`, emailed with the
+`.ics` attached (no fallback in the log), and **left no schedule behind** —
+`deleted 0 schedule(s)`, because `at(...)` had already removed its own.
 
 **Marketplaces is finished** (all five steps — `docs/marketplaces-roadmap.md`
 §5–§9), **and so is Phase 9's time-triggered half**: a watch can now be
@@ -605,7 +612,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 720 of them (counts
+- **Every Lambda has tests; the chain still does not.** 837 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -762,9 +769,9 @@ designed chat UI) and the deploy half of 7.
 | `reminder` | nowhere — the clock is the trigger | no |
 | `value` | web search, compiled extractor | yes |
 
-**720 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 367, `planner/` 132, `api/` 80,
-`authorizer/` 24, `checker/` 71, `notifier/` 40, `fetcher/` 6. They run on
+**837 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 426, `planner/` 145, `api/` 89,
+`authorizer/` 24, `checker/` 95, `notifier/` 52, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
