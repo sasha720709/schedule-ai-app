@@ -4,6 +4,13 @@
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+# Committed on purpose, and checked. It holds no secrets -- only the structural
+# flags whose defaults mean "off", which is why leaving it out of git turned an
+# ordinary `terraform apply` into something that would destroy the Cognito pool
+# and the DKIM records and call it a plan. The blanket *.tfvars rule is the
+# right default and this is the deliberate exception; see the file's own header
+# for what is in it and what is not.
+!terraform/app/terraform.tfvars
 crash.log
 crash.*.log
 
