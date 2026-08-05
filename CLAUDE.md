@@ -304,12 +304,23 @@ rather than a build.
    /watches/{id}` ever leaves a row behind in ordinary use, that is a real leak
    worth chasing. **Not seen again on 2026-08-05** — both deletes reported the
    right target counts and a scan afterwards returned zero.
-6. **`terraform plan` needs two variables that live nowhere in the repo.**
-   `TF_VAR_anthropic_api_key="$ANTHROPIC_API_KEY"` and
-   `TF_VAR_notify_email=...` (read it back with `aws lambda
-   get-function-configuration --function-name schedule-ai-app-notifier --query
-   'Environment.Variables.NOTIFY_EMAIL'` rather than guessing). There is no
-   committed `.tfvars`, on purpose.
+6. **The structural Terraform variables are committed now, and that is a
+   safety fix rather than a convenience.** `terraform/app/terraform.tfvars`
+   holds `auth_enabled`, `sender_domain`, `sender_zone_id` and the domain
+   prefix, because every one of them defaults to "off" — so an apply that
+   forgot them silently destroyed the Cognito pool and the DKIM records that
+   make email arrive, and reported it as an ordinary plan. **A default that
+   disables a live feature is a landmine when the value lives only in
+   someone's shell history.**
+
+   Passed at apply time and absent from the repo on purpose: the two secrets
+   (`TF_VAR_anthropic_api_key`, `TF_VAR_google_client_secret`) and the two
+   addresses (`TF_VAR_notify_email`, `TF_VAR_allowed_emails`) — this repo is
+   public and an address in it is an address in a scraper's list. Read the
+   notify address back with `aws lambda get-function-configuration
+   --function-name schedule-ai-app-notifier --query
+   'Environment.Variables.NOTIFY_EMAIL'` rather than guessing. Forgetting
+   `allowed_emails` is safe: an empty list denies everyone.
 
 ### Design rules established today, worth not re-deriving
 
