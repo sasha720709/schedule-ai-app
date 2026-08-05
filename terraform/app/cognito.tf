@@ -77,8 +77,13 @@ resource "aws_cognito_user_pool_domain" "users" {
   user_pool_id = aws_cognito_user_pool.users[0].id
 }
 
+# Created only once the Google credentials exist, which is deliberately a
+# second apply. The redirect URI Google needs contains the hosted domain, and
+# the hosted domain does not exist until the first apply has run -- so the pool
+# comes up without a provider, its URL is read off an output, and the provider
+# is added afterwards. Trying to do it in one pass means guessing the domain.
 resource "aws_cognito_identity_provider" "google" {
-  count = var.auth_enabled ? 1 : 0
+  count = var.auth_enabled && var.google_client_id != "" ? 1 : 0
 
   user_pool_id  = aws_cognito_user_pool.users[0].id
   provider_name = "Google"
@@ -111,7 +116,12 @@ resource "aws_cognito_user_pool_client" "web" {
   # Cognito requires PKCE for clients without a secret.
   generate_secret = false
 
-  supported_identity_providers = ["Google"]
+  # "COGNITO" until Google exists, because a client may not name a provider
+  # the pool does not have. Nobody can sign in during that window, which is
+  # correct: the pool is built and the door is not open yet.
+  supported_identity_providers = var.google_client_id == "" ? ["COGNITO"] : ["Google"]
+
+  depends_on = [aws_cognito_identity_provider.google]
 
   allowed_oauth_flows_user_pool_client = true
   # `code`, never `implicit`. Implicit puts the token in the URL fragment,
