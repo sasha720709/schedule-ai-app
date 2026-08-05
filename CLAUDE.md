@@ -823,9 +823,9 @@ designed chat UI) and the deploy half of 7.
 | `reminder` | nowhere — the clock is the trigger | no |
 | `value` | web search, compiled extractor | yes |
 
-**872 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
+**882 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
 the repo root. By area — `shared/` 434, `planner/` 151, `api/` 106,
-`gatekeeper/` 15, `checker/` 103, `notifier/` 57, `fetcher/` 6. They run on
+`gatekeeper/` 15, `checker/` 107, `notifier/` 63, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
@@ -892,11 +892,14 @@ pre-sign-up trigger with an allow-list, because turning on Google sign-in
 turns it on for everyone who has a Google account. An empty list denies
 everyone, deliberately.
 
-**Written but not yet read: `notify_email` on the watch row.** The Notifier
-still sends to one `NOTIFY_EMAIL`, because **SES is in the sandbox**
-(`ProductionAccess: false`, 200 sends/day) and may only send to verified
-addresses -- a second user's mail would be rejected. Requesting production
-access is a free support ticket and is what unblocks per-user delivery.
+**Mail is per-user and SES is out of the sandbox** (granted immediately on
+2026-08-05 via `sesv2 put-account-details`; 200 sends/day became 50,000, and
+`ses:PutAccountDetails` had to be added to the deploy policy first). Every
+event the Checker publishes carries `notify_email`, and the Notifier sends
+there, falling back to `NOTIFY_EMAIL` for rows created before sign-in existed
+-- a notification with nowhere to go is worse than one sent to the owner. The
+*sender* never varies with the recipient: letting it would put us back to
+sending as gmail.com, which is what landed eight emails in spam.
 
 **The API is live** at the `api_endpoint` Terraform output
 (`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request

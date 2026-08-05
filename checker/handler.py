@@ -585,6 +585,11 @@ def _expire(watches_table, watch: dict, target: dict, now: str) -> dict:
             "target_id": target["target_id"],
             "url": target["url"],
             "prompt": watch.get("prompt", ""),
+            # Who to tell. Carried on the event rather than read from one
+            # environment variable at send time -- a watch belongs to whoever
+            # asked for it, and NOTIFY_EMAIL was the last place in this system
+            # that assumed there is only ever one person.
+            "notify_email": watch.get("notify_email"),
             "reason_kind": "expired",
             "reason": f"the watch reached the end of its term "
                       f"({watch.get('expires_at')})",
@@ -678,6 +683,11 @@ def _fire_on_time(watch_id: str) -> dict:
             "target_id": None,
             "url": None,
             "prompt": watch.get("prompt", ""),
+            # Who to tell. Carried on the event rather than read from one
+            # environment variable at send time -- a watch belongs to whoever
+            # asked for it, and NOTIFY_EMAIL was the last place in this system
+            # that assumed there is only ever one person.
+            "notify_email": watch.get("notify_email"),
             "last_value": None,
             "note": watch.get("reminder_note") or "",
             "items": [],
@@ -806,6 +816,11 @@ def _degrade(watches_table, targets_table, watch: dict, target: dict,
             "target_id": target["target_id"],
             "url": target["url"],
             "prompt": watch.get("prompt", ""),
+            # Who to tell. Carried on the event rather than read from one
+            # environment variable at send time -- a watch belongs to whoever
+            # asked for it, and NOTIFY_EMAIL was the last place in this system
+            # that assumed there is only ever one person.
+            "notify_email": watch.get("notify_email"),
             "reason": str(result["error"])[:500],
             # Which email to write. Nothing about the plumbing cares, and the
             # user-facing wording is the whole difference: "your watch broke"
@@ -1129,6 +1144,11 @@ def lambda_handler(event, context):
                 "target_id": target_id,
                 "url": target["url"],
                 "prompt": watch.get("prompt", ""),
+            # Who to tell. Carried on the event rather than read from one
+            # environment variable at send time -- a watch belongs to whoever
+            # asked for it, and NOTIFY_EMAIL was the last place in this system
+            # that assumed there is only ever one person.
+            "notify_email": watch.get("notify_email"),
                 "last_value": result["raw"] if result["raw"] is not None
                 else result["value"],
                 "note": result["note"],

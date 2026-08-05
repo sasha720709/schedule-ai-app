@@ -1674,3 +1674,46 @@ def test_a_one_off_reminder_ignores_a_term_it_should_not_have(env):
     a_timed_watch(env, expires_at="2020-01-01T00:00:00+00:00")
 
     assert fire(env)["notified"] is True
+
+
+# --- who gets told ------------------------------------------------------------
+
+def test_a_firing_watch_says_who_to_tell(env, monkeypatch):
+    """Carried on the event rather than read from one environment variable at
+    send time. NOTIFY_EMAIL was the last place assuming one person exists."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    env.watches.items["w_1"]["notify_email"] = "owner@example.com"
+    make_target(env, extractor=PRICE_SPEC)
+
+    run(env)
+
+    assert emitted(env)["notify_email"] == "owner@example.com"
+
+
+def test_a_reminder_says_who_to_tell(env):
+    a_timed_watch(env, notify_email="owner@example.com")
+    fire(env)
+
+    assert emitted(env)["notify_email"] == "owner@example.com"
+
+
+def test_a_degraded_watch_says_who_to_tell(env, monkeypatch):
+    a_blocked_watch(env, monkeypatch,
+                    consecutive_blocks=Decimal(h.BLOCKED_DEGRADE_AFTER - 1))
+    env.watches.items["w_1"]["notify_email"] = "owner@example.com"
+    run(env)
+
+    assert emitted(env)["notify_email"] == "owner@example.com"
+
+
+def test_a_watch_from_before_sign_in_carries_no_address(env, monkeypatch):
+    """Null rather than absent, so the Notifier's fallback is reached rather
+    than a KeyError."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=PRICE_SPEC)
+
+    run(env)
+
+    assert emitted(env)["notify_email"] is None

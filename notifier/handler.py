@@ -481,7 +481,11 @@ def lambda_handler(event, context):
     else:
         subject, body = _format_email(detail)
 
-    to = os.environ["NOTIFY_EMAIL"]
+    # Whoever asked for this watch, falling back to the one configured
+    # address. The fallback is not decoration: watches created before sign-in
+    # existed carry no address, and a notification with nowhere to go is worse
+    # than one sent to the account owner.
+    to = detail.get("notify_email") or os.environ["NOTIFY_EMAIL"]
     sender = _sender(to)
 
     if not (timed and _send_with_calendar(sender, to, subject, body, detail)):

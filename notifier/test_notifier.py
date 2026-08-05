@@ -993,3 +993,66 @@ def test_the_message_id_is_built_from_the_sending_domain(aws, monkeypatch):
     message, _ = parts_of(env)
 
     assert message["Message-ID"].endswith("@example.org>")
+
+
+# --------------------------------------------------------------------------
+# Who the email goes to
+#
+# NOTIFY_EMAIL was the last place in this system that assumed there is only
+# ever one person. SES left the sandbox on 2026-08-05, so a second user's
+# address can finally be sent to at all.
+# --------------------------------------------------------------------------
+
+def test_a_watch_is_delivered_to_whoever_asked_for_it(aws):
+    env = aws()
+    handler.lambda_handler(triggered(notify_email="second@example.com"), None)
+
+    call = env.ses.send_email.call_args.kwargs
+    assert call["Destination"]["ToAddresses"] == ["second@example.com"]
+
+
+def test_a_reminder_goes_to_its_owner_too(aws):
+    env = aws()
+    handler.lambda_handler(reminder(notify_email="second@example.com"), None)
+
+    assert env.ses.send_raw_email.call_args.kwargs["Destinations"] \
+        == ["second@example.com"]
+    message, _ = parts_of(env)
+    assert message["To"] == "second@example.com"
+
+
+def test_a_degraded_watch_reaches_its_owner(aws):
+    env = aws()
+    handler.lambda_handler(degraded(notify_email="second@example.com"), None)
+
+    assert env.ses.send_email.call_args.kwargs[
+        "Destination"]["ToAddresses"] == ["second@example.com"]
+
+
+def test_a_watch_from_before_sign_in_still_reaches_someone(aws):
+    """Rows created before there were accounts carry no address, and a
+    notification with nowhere to go is worse than one sent to the owner."""
+    env = aws()
+    handler.lambda_handler(triggered(), None)
+
+    assert env.ses.send_email.call_args.kwargs[
+        "Destination"]["ToAddresses"] == ["owner@example.com"]
+
+
+def test_an_explicit_null_falls_back_rather_than_crashing(aws):
+    env = aws()
+    handler.lambda_handler(triggered(notify_email=None), None)
+
+    assert env.ses.send_email.call_args.kwargs[
+        "Destination"]["ToAddresses"] == ["owner@example.com"]
+
+
+def test_the_sender_does_not_change_with_the_recipient(aws, monkeypatch):
+    """From is a domain we control and sign; To is whoever asked. Letting the
+    recipient drive the sender would put us back to sending as gmail.com."""
+    monkeypatch.setenv("SENDER_EMAIL", "notifications@example.org")
+    env = aws()
+    handler.lambda_handler(triggered(notify_email="second@example.com"), None)
+
+    assert env.ses.send_email.call_args.kwargs["Source"] \
+        == "notifications@example.org"
