@@ -2,14 +2,64 @@
 
 Context for any Claude Code session working in this repo — read this first.
 
-## Start here (last session: 2026-08-04, a long one)
+## Start here (last session: 2026-08-05, short)
 
-Everything is committed, pushed, deployed and green. **AWS is idle**: zero
-schedules, zero watches, zero targets, so nothing is billing. **605 tests**
-pass in ~2s with `python -m pytest -q` from the repo root, and every suite also
-passes alone (`for d in */; do pytest $d; done`).
+Everything is committed, deployed and green. **AWS is idle**: zero schedules,
+zero watches, zero targets, so nothing is billing. **673 tests** pass in ~2s
+with `python -m pytest -q` from the repo root, and every suite also passes
+alone (`for d in */; do pytest $d; done`).
 
-### What happened today, in order
+### What happened on 2026-08-05
+
+One commit, `f39bee5`: **marketplaces step 3**. It was written down as
+"watch-level conditions" and turned out to be about the *reading*, not the
+condition — see `docs/marketplaces-roadmap.md` §7 for the argument and the
+numbers. The short version, because three of these are bugs about money:
+
+1. **Currencies really were being compared**, despite §5 saying they were not.
+   One condition, applied to every target, with `currency` a label copied off
+   the first shop that answered — so `price < 2000` shekels was true of
+   Amazon's $34.99. A shop in another currency is now **refused at plan time**,
+   with the reason stored on the watch (`rejected`) and shown on the plan card.
+   No exchange rate: the owner ruled on 2026-08-05 that the real answer is the
+   user's own country, arriving with auth.
+2. **The baseline came from whichever shop loaded first.** Now the *best*
+   verified reading — cheapest for `<`, dearest for `>`.
+3. **The baseline described the wrong object.** The Planner takes it before the
+   questions are answered, so "xbox series x" measured 10% off a ₪139 headset
+   while following a ₪1,899 console. `confirm` re-derives it from the pinned
+   offers; `resolve_relative_condition` moved to `shared/condition.py` so the
+   arithmetic can be run twice.
+4. **Two emails for one event.** All of a watch's schedules are created in the
+   same second, so EventBridge fires them together and two shops crossing the
+   same threshold both published. The `triggered` transition is a conditional
+   write now.
+5. The email lists **every shop, best first**, with when each price was read;
+   a quiet shop is shown and flagged, never dropped. Built only when the watch
+   speaks, like ranking.
+
+**Do not "finish" this by evaluating the condition against the aggregate.**
+That was considered and rejected, and `shared/across.py` opens with why:
+`min(prices) < X` is true exactly when some price is under X and every shop is
+on the same interval, so it fires at the same instant — and where it would
+differ it would be worse, because it would fire on a sibling's reading that is
+up to an interval old. **Fire on your own fresh reading, report the picture.**
+
+**Proven live, 2026-08-05, both halves.** A USD Amazon watch pinned to a new
+Series X moved its baseline `429.98 → 1289` and its threshold `386.98 →
+1160.10` at confirm — 429.98 was a *refurbished Series S*. An Israeli watch
+planned `across: best`, kept Ivory and Bug, and **rejected Amazon** with the
+reason on the row; the Checker logged
+`[across] ivory 229.0 ILS | bug 2679.0 ILS`, emailed, and tore both schedules
+down. Everything was deleted afterwards.
+
+`planner/handler.py` **had no tests at all** before this — everything under
+`planner/` went through `plan.py` with its collaborators injected, the exact
+shape that hid both live bugs of 2026-08-02. `planner/test_planner_handler.py`
+drives the Lambda itself. Note the file basename: `planner/test_handler.py`
+collides with `api/test_handler.py` and pytest refuses to collect both.
+
+### What happened on 2026-08-04, in order
 
 Twelve commits, `10dcffb` through `f27164b`. Each has a long message; this is
 the map.
@@ -31,13 +81,7 @@ the map.
 
 ### What to do next, in the order I would do it
 
-1. **Marketplaces step 3 — watch-level conditions.** The real engineering
-   left in this phase. Today the Checker evaluates one target per tick and
-   each fires independently, so "cheapest of five shops" cannot be expressed.
-   A threshold already behaves correctly without it (any shop crossing fires
-   the watch), so this is only needed for "tell me the cheapest" and
-   relative-to-best. `docs/marketplaces-roadmap.md` §3.1.
-2. **Marketplaces step 4 — landed price.** An item ₪50 cheaper with ₪60
+1. **Marketplaces step 4 — landed price.** An item ₪50 cheaper with ₪60
    shipping is not cheaper, and comparing sticker prices across shops compares
    the wrong number. This is the one remaining thing that makes a product
    watch *wrong* rather than imprecise.
@@ -59,7 +103,7 @@ the map.
 |---|---|
 | `docs/shares-roadmap.md` | tiers 1–3 done; tier 4 (history) after the frontend |
 | `docs/vacancies-roadmap.md` | **all four steps done** |
-| `docs/marketplaces-roadmap.md` | steps 1–2 done; 3–4 next |
+| `docs/marketplaces-roadmap.md` | steps 1–3 done; **step 4 (landed price) next**; §7 is the step-3 write-up |
 | `docs/phase-9-watch-kinds.md` | §10b is the missing-email write-up; §10 is what is left |
 | `docs/architecture-review-2026-07-31.md` | every architectural decision to that date |
 
@@ -86,9 +130,17 @@ the map.
    the original baseline and 5% from the last alert are different products.
    `docs/shares-roadmap.md` §6.
 5. **One orphaned target row** was found and removed by hand at the end of the
-   session. Most likely a race in my own testing (deleting a watch while the
-   Planner was still writing its targets), but if `DELETE /watches/{id}` ever
-   leaves a row behind in ordinary use, that is a real leak worth chasing.
+   2026-08-04 session. Most likely a race in my own testing (deleting a watch
+   while the Planner was still writing its targets), but if `DELETE
+   /watches/{id}` ever leaves a row behind in ordinary use, that is a real leak
+   worth chasing. **Not seen again on 2026-08-05** — both deletes reported the
+   right target counts and a scan afterwards returned zero.
+6. **`terraform plan` needs two variables that live nowhere in the repo.**
+   `TF_VAR_anthropic_api_key="$ANTHROPIC_API_KEY"` and
+   `TF_VAR_notify_email=...` (read it back with `aws lambda
+   get-function-configuration --function-name schedule-ai-app-notifier --query
+   'Environment.Variables.NOTIFY_EMAIL'` rather than guessing). There is no
+   committed `.tfvars`, on purpose.
 
 ### Design rules established today, worth not re-deriving
 
@@ -175,6 +227,16 @@ answers are a ranking *preference*. Same machinery, opposite meaning — a job
 that misses a preference scores lower, a product that is not the pinned one is
 simply not the product. The plan card's wording branches on `repeating` because
 saying the wrong one would be a lie about what happens next.
+
+**Marketplaces step 3 is built** (2026-08-05): a watch with several shops now
+has **one reading**, `shared/across.py`. The condition is still judged against
+the ticking target's own fresh number and the aggregate is what gets *reported*
+— read the module docstring before "finishing" that, the split is deliberate.
+Three money bugs fell out of building it: currencies were being compared after
+all, the relative baseline came from whichever shop loaded first, and it was
+taken *before* the answers pinned the product, so "10% cheaper" measured a
+headset while the watch followed a console. All three are fixed, all three were
+invisible offline, and the third only shows up at `confirm`.
 
 **Two bugs only the live run could find.** `watched_ids` absent and empty are
 different — empty means "the answers ruled this shop out", and conflating them
@@ -424,7 +486,7 @@ will start to hurt.
   `_all_targets()` follows `LastEvaluatedKey`. It was unreachable with 1–3
   targets per watch, but the failure mode — half a watch's schedules left
   alive and billing forever — was worth four lines.
-- **Every Lambda has tests; the chain still does not.** 605 of them (counts
+- **Every Lambda has tests; the chain still does not.** 673 of them (counts
   in "Current status"). What is missing is any test that runs the whole chain
   end to end — Planner → schedule → Checker → event → Notifier is still
   verified only by invoking real Lambdas, and the 2026-08-02 live run found
@@ -490,6 +552,21 @@ will start to hurt.
   owner on 2026-08-04**; the second-source work is withdrawn, not forgotten.
   `docs/shares-roadmap.md` §2.2 and Tier 2 item 4.
 
+- **A `product` watch drops shops that price in another currency**, and this
+  is the right behaviour only until there is a user. Nothing converts money,
+  deliberately — a stale exchange rate is a confident email about a bargain
+  that is not one. The real fix is the user's own country and currency, which
+  the owner decided on 2026-08-05 belongs with auth: ask at sign-up, or read
+  it off the Google account. Until then an Israeli watch simply has no Amazon
+  in it, and says so on the plan card. `docs/marketplaces-roadmap.md` §7.
+
+- **"Just tell me the cheapest, every morning" is still inexpressible**, on
+  purpose. There is no threshold in that sentence, so it is not a condition
+  watch — it is a scheduled report, and the trigger it needs is Phase 9 step
+  3b, the same one calendar reminders need. The `readings` payload the email
+  now carries is what it will use. Building a second firing mechanism to serve
+  one phrasing would have been the expensive way there.
+
 - **A watch cannot be edited.** No changing the threshold, the interval,
   or a bad target URL — the only recourse is delete and re-plan, which
   pays for a fresh Sonnet call and web search.
@@ -554,9 +631,9 @@ designed chat UI) and the deploy half of 7.
 | `presence` | web search, compiled counter | yes |
 | `value` | web search, compiled extractor | yes |
 
-**605 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 300, `planner/` 116, `api/` 72,
-`authorizer/` 24, `checker/` 57, `notifier/` 30, `fetcher/` 6. They run on
+**673 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 325, `planner/` 132, `api/` 80,
+`authorizer/` 24, `checker/` 71, `notifier/` 35, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
@@ -599,11 +676,9 @@ SNS topic with a confirmed email subscription and three CloudWatch
 alarms; and seven IAM roles (one per Lambda, plus
 `schedule-ai-app-scheduler-invoke-checker` that schedules assume).
 
-**There are no schedules** as of 2026-08-04, so the system is idle and
-billing nothing. One `triggered` row is left in `Watches` on purpose —
-`w_46310d2d`, the 2026-08-04 verification run — so the owner can see it in
-the UI. A terminal watch has no schedule and costs nothing; delete it from
-the UI whenever.
+**There are no schedules** as of 2026-08-05, and the tables are empty —
+verified by scan after the step-3 live run, which deleted both of its watches.
+The system is idle and billing nothing.
 
 **The API is live** at the `api_endpoint` Terraform output
 (`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request
@@ -665,7 +740,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | 🔨 | **9** · Watch kinds, schedules, delivery | kinds + windows done and proven live; left: `once`/`reminder` (time-triggered) and delivery channels |
 | ✅ | **10a** · Shares finished | tiers 1–3 done — exchange, baseline, staleness. Tier 4 (history) after the frontend |
 | ✅ | **10b** · Vacancies finished | all four steps — items, repeating+dedup, ranking, grounded questions |
-| 🔨 | **10c** · Marketplaces | steps 1–2 done (shops, `offers`, Amazon, pinning); **3–4 next** |
+| 🔨 | **10c** · Marketplaces | steps 1–3 done (shops, `offers`, Amazon, pinning, one reading); **4 next** |
 | ⬜ | **11** · Calendar reminders | `.ics` is easy; the *trigger* is Phase 9 step 3b and does not exist |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
