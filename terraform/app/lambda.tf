@@ -146,6 +146,10 @@ resource "aws_lambda_function" "notifier" {
     variables = {
       NOTIFY_EMAIL        = var.notify_email
       WATCH_TARGETS_TABLE = aws_dynamodb_table.watch_targets.name
+      # Who the mail is FROM. Empty until a sender domain exists, and the
+      # Notifier falls back to the recipient -- which is what it always did,
+      # and what made every notification fail SPF. See terraform/app/ses.tf.
+      SENDER_EMAIL = var.sender_domain == "" ? "" : "${var.sender_local_part}@${var.sender_domain}"
     }
   }
 }

@@ -390,7 +390,26 @@ Delete the watch whenever you want it to stop.
     return f"Reminder: {title[:60]}", body
 
 
-def _send_with_calendar(address: str, subject: str, body: str,
+def _sender(fallback: str) -> str:
+    """Who the email is *from*, which is not who it is to.
+
+    These were the same address until 2026-08-05, and that was the whole
+    delivery bug. Sending "from" the owner's own gmail.com address, via AWS,
+    is mail that claims a gmail.com origin and arrives from somewhere that is
+    not Google. `gmail.com` publishes `v=spf1 redirect=_spf.google.com`, which
+    does not include SES, so every one of those messages failed SPF; its DMARC
+    policy is `p=none`, so Gmail accepted them all -- CloudWatch showed
+    Send 8, Delivery 8, Bounce 0 -- and filed them as spam.
+
+    A sender on a domain we control, with DKIM, is the fix. Falling back to
+    the recipient keeps the old behaviour for a deployment that has not set
+    one up, because a watch that fires and cannot email is worse than one
+    whose email might be filtered.
+    """
+    return os.environ.get("SENDER_EMAIL") or fallback
+
+
+def _send_with_calendar(sender: str, to: str, subject: str, body: str,
                         detail: dict) -> bool:
     """Email with the `.ics` attached, or say it could not be done.
 
@@ -412,8 +431,8 @@ def _send_with_calendar(address: str, subject: str, body: str,
 
         message = MIMEMultipart("mixed")
         message["Subject"] = subject
-        message["From"] = address
-        message["To"] = address
+        message["From"] = sender
+        message["To"] = to
         # `Date` and `Message-ID` are mandatory in RFC 5322 and are the two
         # headers `send_email` adds for you. `SendRawEmail` sends **exactly**
         # what it is handed, so leaving them off produces a message SES
@@ -426,7 +445,7 @@ def _send_with_calendar(address: str, subject: str, body: str,
         # accepted and never delivered is the worst shape of failure this
         # project has: it reports success.
         message["Date"] = formatdate(localtime=False)
-        message["Message-ID"] = make_msgid(domain=address.split("@")[-1])
+        message["Message-ID"] = make_msgid(domain=sender.split("@")[-1])
         message.attach(MIMEText(body, "plain", "utf-8"))
 
         # text/calendar with METHOD=PUBLISH is what makes a mail client offer
@@ -439,7 +458,7 @@ def _send_with_calendar(address: str, subject: str, body: str,
                         filename=ics.filename(title))
         message.attach(part)
 
-        ses.send_raw_email(Source=address, Destinations=[address],
+        ses.send_raw_email(Source=sender, Destinations=[to],
                            RawMessage={"Data": message.as_string()})
         return True
     except Exception as exc:  # noqa: BLE001
@@ -462,18 +481,19 @@ def lambda_handler(event, context):
     else:
         subject, body = _format_email(detail)
 
-    address = os.environ["NOTIFY_EMAIL"]
+    to = os.environ["NOTIFY_EMAIL"]
+    sender = _sender(to)
 
-    if not (timed and _send_with_calendar(address, subject, body, detail)):
+    if not (timed and _send_with_calendar(sender, to, subject, body, detail)):
         ses.send_email(
-            Source=address,
-            Destination={"ToAddresses": [address]},
+            Source=sender,
+            Destination={"ToAddresses": [to]},
             Message={
                 "Subject": {"Data": subject},
                 "Body": {"Text": {"Data": body}},
             },
         )
-    print(f"emailed {address} for watch {watch_id}")
+    print(f"emailed {to} from {sender} for watch {watch_id}")
 
     # A repeating watch survives its own notification -- that is the entire
     # difference. Tearing its schedules down here would turn "tell me about

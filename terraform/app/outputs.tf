@@ -33,3 +33,8 @@ output "frontend_distribution_id" {
   description = "Distribution frontend/deploy.sh invalidates after a sync."
   value       = aws_cloudfront_distribution.frontend.id
 }
+
+output "sender_email" {
+  description = "The From address notifications are sent with, once a sender domain is configured."
+  value       = var.sender_domain == "" ? "(none — sending from notify_email, which fails SPF)" : "${var.sender_local_part}@${var.sender_domain}"
+}

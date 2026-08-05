@@ -937,3 +937,59 @@ def test_the_raw_message_carries_the_headers_ses_would_have_added(aws):
     assert message["Date"]
     assert message["Message-ID"]
     assert message["From"] and message["To"] and message["Subject"]
+
+
+# --------------------------------------------------------------------------
+# Who the email is from, which is not who it is to
+#
+# These were the same address until 2026-08-05, and that was the whole
+# delivery bug: mail claiming a gmail.com origin, arriving from AWS. gmail.com
+# publishes `v=spf1 redirect=_spf.google.com`, which does not include SES, so
+# every message failed SPF; DMARC `p=none` meant Gmail accepted them all --
+# CloudWatch showed Send 8, Delivery 8, Bounce 0 -- and filed them as spam.
+# --------------------------------------------------------------------------
+
+def test_the_sender_defaults_to_the_recipient(aws, monkeypatch):
+    """A deployment with no sender identity keeps working. A watch that fires
+    and cannot email is worse than one whose email might be filtered."""
+    monkeypatch.delenv("SENDER_EMAIL", raising=False)
+    env = aws()
+    handler.lambda_handler(triggered(), None)
+
+    call = env.ses.send_email.call_args.kwargs
+    assert call["Source"] == "owner@example.com"
+    assert call["Destination"]["ToAddresses"] == ["owner@example.com"]
+
+
+def test_a_configured_sender_is_used_for_from_only(aws, monkeypatch):
+    monkeypatch.setenv("SENDER_EMAIL", "notifications@example.org")
+    env = aws()
+    handler.lambda_handler(triggered(), None)
+
+    call = env.ses.send_email.call_args.kwargs
+    assert call["Source"] == "notifications@example.org"
+    assert call["Destination"]["ToAddresses"] == ["owner@example.com"]
+
+
+def test_a_reminder_uses_the_sender_too(aws, monkeypatch):
+    monkeypatch.setenv("SENDER_EMAIL", "notifications@example.org")
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    message, _ = parts_of(env)
+
+    assert message["From"] == "notifications@example.org"
+    assert message["To"] == "owner@example.com"
+    kwargs = env.ses.send_raw_email.call_args.kwargs
+    assert kwargs["Source"] == "notifications@example.org"
+    assert kwargs["Destinations"] == ["owner@example.com"]
+
+
+def test_the_message_id_is_built_from_the_sending_domain(aws, monkeypatch):
+    """A Message-ID claiming a domain the mail did not come from is one more
+    thing for a receiver to hold against it."""
+    monkeypatch.setenv("SENDER_EMAIL", "notifications@example.org")
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    message, _ = parts_of(env)
+
+    assert message["Message-ID"].endswith("@example.org>")

@@ -56,3 +56,27 @@ variable "default_timezone" {
   type        = string
   default     = "Asia/Jerusalem"
 }
+
+variable "sender_domain" {
+  description = <<-EOT
+    A domain this account controls, used as the From address for every
+    notification. Empty disables it and keeps sending from notify_email.
+
+    Not cosmetic. Sending from the recipient's own gmail.com address means
+    every message fails SPF and is filed as spam -- measured, 8 accepted and
+    8 invisible. A domain with Easy DKIM is signed and aligned, which is what
+    DMARC asks for.
+
+    Whatever the domain is *for* does not matter; a website and a mail sender
+    share a name and nothing else. It must have a public hosted zone in this
+    account, because the DKIM records are written into it.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "sender_local_part" {
+  description = "The mailbox half of the From address. Nothing receives here."
+  type        = string
+  default     = "notifications"
+}
