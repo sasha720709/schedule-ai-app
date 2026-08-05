@@ -229,23 +229,42 @@ the map.
 
 ### What to do next, in the order I would do it
 
-1. **Decide the auth shape.** Now the largest thing left, and three features
-   are already leaning on its absence: `user_id` is `"default"`, `NOTIFY_EMAIL`
-   is one address, `DEFAULT_TIMEZONE` is one zone, and a product watch drops
-   shops priced in another currency because nobody knows where the user is.
-   It does not have to be *built* early. It has to be *decided* early, or the
-   polish gets redone on top of a single-user assumption.
-3. **Calendar reminders.** Two jobs, not one: the `.ics` file is easy
-   (fifteen lines, no OAuth, `ses:SendRawEmail`), but the **trigger** is Phase
-   9 step 3b and does not exist. Build the reminder kind first — attaching an
-   `.ics` to a condition-watch email is near-pointless, because "Apple dropped
-   below $300" already happened and a calendar entry in the past is clutter.
-   `docs/phase-9-watch-kinds.md` §10, and §8 for the decision it depends on
-   (a reminder stores `targets: []` and its schedule invokes with
-   `{"watch_id": ...}`, so the Checker's entry point has to branch).
-4. **Decide the auth shape** — see "Where the product is going". It does not
-   have to be *built* early, it has to be *decided* early.
-5. Then 4c (the designed chat UI) and the deploy half of Phase 7.
+**The product the owner described is built.** Three ways to watch and then
+stop -- a share price, a job vacancy, a thing for sale -- plus calendar
+reminders. All four are done, deployed and proven live. What remains is the
+two things that were always going to come last, and one of them is a decision
+rather than a build.
+
+1. **Decide the auth shape.** The largest thing left, and **four** features
+   now lean on its absence: `user_id` is `"default"`, `NOTIFY_EMAIL` is one
+   recipient, `DEFAULT_TIMEZONE` is one zone, and a product watch drops shops
+   priced in a currency nobody knows the user uses. It does not have to be
+   *built* now. It has to be *decided* now, because 4c is the last cheap
+   moment -- a designed UI built on a single-user assumption gets rebuilt.
+
+   The current plan of record is a single shared passcode, which is what
+   exists. The question is whether the eventual answer is per-user records
+   (real accounts, per-user email and timezone) or permanently single-user
+   with the passcode. Everything above resolves differently depending on that.
+
+2. **4c -- the designed chat interface.** The only product surface left. The
+   current React app is deliberately unstyled and exists to prove hosting,
+   CORS and the deploy path. Everything it needs from the backend now exists,
+   which is exactly why 4c was put last: it is better built against the data
+   model Phase 8 and 9 left behind than retrofitted to it.
+
+3. **Shares tier 4 -- a `Checks` history table.** `last_value` is overwritten
+   every tick, so "the price over the last month" cannot be drawn. Deliberately
+   after the frontend, because the frontend is what makes a history worth
+   having. `docs/shares-roadmap.md` §2.6.
+
+4. **Phase 7's deploy half.** Tests-on-push is done. The deploy pipeline stays
+   last on purpose: its value scales with frequency x blast radius x team size,
+   and all three are small here. Fix the Fetcher's `:latest` tag first -- a
+   pipeline would report success while the running code stayed stale.
+
+5. **8c stays deferred**, with numbers: ~$0.05/month saved, and unsound on
+   browser targets where the HTML can be byte-identical while the price moves.
 
 ### The five roadmap documents, all current
 
