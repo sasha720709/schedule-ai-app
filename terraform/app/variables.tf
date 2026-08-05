@@ -80,3 +80,15 @@ variable "sender_local_part" {
   type        = string
   default     = "notifications"
 }
+
+variable "sender_zone_id" {
+  description = <<-EOT
+    The Route 53 hosted zone that serves sender_domain, by id.
+
+    Named rather than looked up: a data source would need ListHostedZones,
+    GetHostedZone and ListTagsForResource across the account, to save typing
+    an id that never changes.
+  EOT
+  type        = string
+  default     = ""
+}

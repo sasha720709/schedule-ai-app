@@ -32,12 +32,14 @@ resource "aws_ses_email_identity" "notify" {
 # exactly, so this cannot break a deployment that has no domain.
 # ---------------------------------------------------------------------------
 
-data "aws_route53_zone" "sender" {
-  count = var.sender_domain == "" ? 0 : 1
-
-  name         = "${var.sender_domain}."
-  private_zone = false
-}
+# The zone is named rather than looked up, on purpose.
+#
+# `data "aws_route53_zone"` would need ListHostedZones, GetHostedZone *and*
+# ListTagsForResource -- the provider reads tags whether you want them or not
+# -- which is three account-wide permissions granted to save typing an id that
+# never changes. Naming it keeps the deploy user's Route 53 access to writing
+# records in one zone, which is the same scoping argument as every other
+# policy in this project.
 
 resource "aws_ses_domain_identity" "sender" {
   count = var.sender_domain == "" ? 0 : 1
@@ -57,11 +59,36 @@ resource "aws_ses_domain_dkim" "sender" {
 resource "aws_route53_record" "sender_dkim" {
   count = var.sender_domain == "" ? 0 : 3
 
-  zone_id = data.aws_route53_zone.sender[0].zone_id
+  zone_id = var.sender_zone_id
   name    = "${aws_ses_domain_dkim.sender[0].dkim_tokens[count.index]}._domainkey.${var.sender_domain}"
   type    = "CNAME"
   ttl     = 600
   records = ["${aws_ses_domain_dkim.sender[0].dkim_tokens[count.index]}.dkim.amazonses.com"]
+}
+
+# A DMARC record, added once the zone could actually be looked at.
+#
+# The earlier reasoning refused this sight-unseen, on the grounds that every
+# extra record in a live zone is a risk. Reading the zone settled it: there is
+# no TXT of any kind and no `_dmarc` name, so this collides with nothing.
+#
+# `p=none` asks receivers to do nothing differently -- it is not a policy, it
+# is a statement that the domain is configured on purpose. Without any DMARC
+# record at all, a receiver has nothing to evaluate the DKIM alignment
+# *against*, which is the entire point of signing in the first place.
+#
+# No SPF record is added, deliberately. Without a custom MAIL FROM subdomain
+# SES uses its own envelope domain, so SPF is checked against amazonses.com
+# and an SPF record here would be consulted by nobody -- a record that does no
+# work is a record that misleads whoever reads the zone next.
+resource "aws_route53_record" "sender_dmarc" {
+  count = var.sender_domain == "" ? 0 : 1
+
+  zone_id = var.sender_zone_id
+  name    = "_dmarc.${var.sender_domain}"
+  type    = "TXT"
+  ttl     = 600
+  records = ["v=DMARC1; p=none;"]
 }
 
 # Blocks until AWS has seen the DKIM records and marked the domain verified,

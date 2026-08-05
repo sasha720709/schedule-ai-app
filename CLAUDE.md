@@ -842,6 +842,16 @@ alarms; and seven IAM roles (one per Lambda, plus
 verified by scan after the step-3 live run, which deleted both of its watches.
 The system is idle and billing nothing.
 
+**Notifications are sent from `notifications@beer7.click`**, a domain the
+owner already owned, verified in SES with Easy DKIM and its three
+`_domainkey` CNAMEs written into the same Route 53 zone that serves their
+website. `_dmarc` carries `v=DMARC1; p=none;`. `NOTIFY_EMAIL` is still the
+recipient; `SENDER_EMAIL` is the sender, and the two being one address is what
+made every notification fail SPF and land in spam. The zone is named by id
+(`sender_zone_id`) rather than looked up, because a `data "aws_route53_zone"`
+needs `ListHostedZones`, `GetHostedZone` **and** `ListTagsForResource` across
+the account to save typing an id that never changes.
+
 **The API is live** at the `api_endpoint` Terraform output
 (`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request
 needs an `Authorization` header carrying the passcode. That passcode is a
@@ -860,6 +870,15 @@ $0.0057, of which ~97% is the Haiku call — the browser is not the
 expensive part. The expensive part is `check_interval_min`, which the
 Planner chooses on its own: a single target at 5-minute intervals is
 about $50/month, at 10 minutes about $25, at 60 minutes about $4.
+
+**A zip Lambda does not redeploy either, unless you rebuild the zip first.**
+Terraform hashes the file on disk, so `terraform apply` after a code change
+that skipped `./x/build.sh` reports "updated in-place" — for the environment
+variables — and leaves the old code running. Cost twenty minutes on
+2026-08-05: the Notifier had `SENDER_EMAIL` set and was still sending from the
+recipient's address, and the only thing that gave it away was a log line
+missing a word the new code prints. **Rebuild every zip whose source changed
+before applying**, or check that `source_code_hash` appears in the plan.
 
 **Container-image Lambdas do not redeploy via `terraform apply`.**
 Terraform stores only the image *URI*. Push a new image to the same
