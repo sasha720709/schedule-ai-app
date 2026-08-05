@@ -92,3 +92,57 @@ variable "sender_zone_id" {
   type        = string
   default     = ""
 }
+
+variable "auth_enabled" {
+  description = <<-EOT
+    Whether Google sign-in via Cognito replaces the shared passcode.
+
+    Off leaves the passcode path exactly as it is, so the auth work can be
+    merged and deployed before the Google OAuth client exists without locking
+    anyone out of a working API.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "auth_domain_prefix" {
+  description = <<-EOT
+    Prefix for the Cognito hosted sign-in domain, which becomes
+    <prefix>.auth.<region>.amazoncognito.com. Globally unique across AWS.
+  EOT
+  type        = string
+  default     = "schedule-ai-app"
+}
+
+variable "google_client_id" {
+  description = "OAuth 2.0 client id from Google Cloud Console. Not a secret."
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = <<-EOT
+    OAuth 2.0 client secret from Google Cloud Console.
+
+    Used by Cognito server-side and never by the browser, which is why the app
+    client itself has no secret. Note that `sensitive` hides a value from CLI
+    output and NOT from the state file -- the same known gap as
+    anthropic_api_key, recorded in CLAUDE.md.
+  EOT
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "allowed_emails" {
+  description = <<-EOT
+    Comma-separated addresses permitted to sign in. Everyone else is refused
+    before an account is created.
+
+    Not optional. Enabling Google sign-in enables it for everyone with a
+    Google account; an empty list denies everybody, deliberately, because the
+    other reading turns a misconfiguration into a public API.
+  EOT
+  type        = string
+  default     = ""
+}
