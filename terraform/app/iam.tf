@@ -338,7 +338,16 @@ resource "aws_iam_role_policy_attachment" "notifier_lambda_basic_execution" {
 
 data "aws_iam_policy_document" "notifier_lambda" {
   statement {
-    actions   = ["ses:SendEmail"]
+    # SendRawEmail is a separate action and is not implied by SendEmail. It is
+    # what an attachment needs, and the attachment is a reminder's calendar
+    # entry. Granted before the code that uses it ships -- the Phase 5 lesson,
+    # where a permission added after the fact failed an invocation *after* the
+    # email had gone out and EventBridge retried it into three copies.
+    #
+    # The Notifier falls back to a plain send if this call fails, so a missing
+    # permission costs the attachment and never the notification. This grant
+    # is what makes the attachment actually arrive.
+    actions   = ["ses:SendEmail", "ses:SendRawEmail"]
     resources = ["*"]
   }
 

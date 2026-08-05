@@ -946,3 +946,87 @@ def test_a_watch_with_no_condition_at_all_still_confirms(aws):
 
     assert response["statusCode"] == 200
     assert stored_condition(env) == {}
+
+
+# --------------------------------------------------------------------------
+# Confirming a watch whose trigger is the clock
+#
+# Almost nothing the ordinary path does applies: no interval to snap, no
+# window to fit, no targets to pin, and no budget gate -- a watch that fires
+# exactly once cannot exceed a monthly allowance however the arithmetic is
+# arranged, so running the gate would be theatre.
+# --------------------------------------------------------------------------
+
+def a_reminder(**extra):
+    row = {"watch_id": "w_1", "status": "proposed",
+           "fire_at": "2026-08-06T09:00:00+03:00",
+           "fire_timezone": "Asia/Jerusalem",
+           "reminder_title": "Call the dentist"}
+    row.update(extra)
+    return {"w_1": row}
+
+
+def test_a_reminder_confirms_with_no_targets_at_all(aws):
+    """The 409 that used to guard this was right for everything that polls
+    and wrong for the one kind that does not."""
+    env = aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert body_of(response)["status"] == "active"
+    assert body_of(response)["targets_scheduled"] == 0
+
+
+def test_the_schedule_is_addressed_to_the_watch_not_a_target(aws):
+    env = aws(watches=a_reminder(), targets={})
+    call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["Name"] == "schedule-ai-app-w_1"
+    assert json.loads(args["Target"]["Input"]) == {"watch_id": "w_1"}
+
+
+def test_the_schedule_fires_once_and_deletes_itself(aws):
+    env = aws(watches=a_reminder(), targets={})
+    call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"] == "at(2026-08-06T09:00:00)"
+    assert args["ActionAfterCompletion"] == "DELETE"
+    assert args["ScheduleExpressionTimezone"] == "Asia/Jerusalem"
+
+
+def test_confirming_a_reminder_says_exactly_when_it_will_fire(aws):
+    """The same field the ordinary path returns, meaning the same thing --
+    just exact rather than estimated, which is the one place in this product
+    where it is."""
+    aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert body_of(response)["next_check_at"] == "2026-08-06T09:00:00+03:00"
+
+
+def test_a_reminder_costs_nothing_and_says_so(aws):
+    """Omitting the field would leave the client guessing whether it was
+    missing or the answer was nothing."""
+    aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert body_of(response)["cost"]["estimated_monthly_usd"] == 0.0
+
+
+def test_a_reminder_gets_no_expiry(aws):
+    """It already has one: the moment it fires."""
+    aws(watches=a_reminder(), targets={})
+    assert body_of(call("POST /watches/{id}/confirm",
+                        watch_id="w_1"))["expires_at"] is None
+
+
+def test_an_ordinary_watch_still_needs_targets(aws):
+    aws(watches=proposed(), targets={})
+    assert call("POST /watches/{id}/confirm", watch_id="w_1")["statusCode"] == 409
+
+
+def test_confirming_a_reminder_twice_conflicts_like_anything_else(aws):
+    aws(watches=a_reminder(status="active"), targets={})
+    assert call("POST /watches/{id}/confirm", watch_id="w_1")["statusCode"] == 409

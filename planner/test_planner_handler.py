@@ -87,6 +87,9 @@ class FakeKind:
     name = "product"
     repeating = False
     window = None
+    # Every real kind inherits this from Kind. A double that lacks it would
+    # let the handler's dispatch pass here and fail in the Lambda.
+    trigger = "condition"
 
     def __init__(self, targets, condition, readings, relative_pct=None):
         self.targets = targets

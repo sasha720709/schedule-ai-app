@@ -333,20 +333,62 @@ phase starts editing them, it has gone wrong.
    `schedule_window` so the api schedules it inside market hours. Proven live:
    `cron(*/5 9-16 ? * MON-FRI *)` / `America/New_York` on a real schedule.
 
-   **3b — `once` — is the next task.** `at(2026-08-03T09:00:00)` plus
-   `--action-after-completion DELETE`, so a one-shot removes its own schedule
-   instead of leaking one. Both flags verified present on the CLI. This is
-   also where §8 lands: a one-shot belongs to a watch, not to a target, so
-   `_upsert_schedule` and the Checker's entry point both have to learn the
-   `{"watch_id": ...}` shape. Do this **before** step 4 — the reminder is
-   unbuildable without it, and doing them together would mix a plumbing
-   change with a product change in one diff.
-4. **`reminder`** — the kind that proves axis A. No target, no extractor, no
-   condition; the schedule firing *is* the event. Expect `Kind` to need a
-   `trigger` distinction at this point, the way step 2 forced `CompiledKind`
-   out of `Kind`. If it does not, be suspicious.
-5. **The `Channel` seam**, with email and `.ics`. See §6 for why `.ics` first
-   and why Google Calendar is a different project.
+   **3b — `once` — done 2026-08-05**, in its own commit, before step 4,
+   exactly as this list said. `shared/schedules.once_expression` builds
+   `at(...)` plus `ActionAfterCompletion: DELETE`, so a one-shot removes its
+   own schedule instead of leaking one; §8 landed with it, so a schedule can
+   belong to a watch and the Checker dispatches on which key it was handed.
+
+   Two details that were more than one line. `at()` takes a **naive local
+   time** with the zone in a separate field — an offset or a trailing `Z` is
+   rejected — so an aware datetime keeps its wall-clock reading rather than
+   being converted; converting *and* naming the zone would apply the offset
+   twice, and "9am" has to stay 9am after the clocks change. And **teardown
+   had to learn the same shape in two places**: a watch with no targets would
+   otherwise have had nothing walked and left a schedule billing, which is the
+   unpaginated-query failure arriving by a different road.
+4. **`reminder` — done 2026-08-05.** The prediction in this list held: `Kind`
+   needed the `trigger` distinction, and `plan()` returning no targets and no
+   condition broke assumptions in the Planner's handler and in `confirm` that
+   nobody had written down. Both now branch on `trigger == "time"` rather than
+   on the kind's name.
+
+   **The clock the model is given must be the clock its answer is read in.**
+   Found by trying to run one: the prompt handed the model UTC and the answer
+   was interpreted in `DEFAULT_TIMEZONE`, so "remind me in four minutes"
+   resolved to three hours in the past and was refused — for a request that
+   was perfectly reasonable. No offline test would have produced it, because
+   every test that mattered used an explicit datetime.
+
+   `DEFAULT_TIMEZONE` is a deployment setting beside `NOTIFY_EMAIL`, and a
+   placeholder for the same missing thing. The resolved local time **and its
+   zone** are on the plan card, so a wrong one costs a glance rather than a
+   reminder at 6am.
+5. **`.ics`, done 2026-08-05.** `shared/ics.py`, attached with
+   `SendRawEmail` — a separate IAM action that `ses:SendEmail` does not imply,
+   granted before the code shipped. A failure to attach **falls back to a
+   plain send**: a missing permission must cost the attachment, never the
+   notification. That is the Phase 5 lesson stated forwards rather than
+   learned again.
+
+   The format is the whole difficulty, and all of it is about files that some
+   calendars open and others silently reject. UTC rather than `TZID`, because
+   a named zone is legal only alongside a full `VTIMEZONE` block that goes
+   stale when a country changes its DST law. Escaping, because "Call Dr. Levi,
+   ext. 4" is a plausible title and an unescaped comma splits one value into
+   two. Folding at 75 **octets**, not characters, because a Hebrew title is
+   three bytes a character and a limit counted in characters produces lines
+   three times too long — which works everywhere in testing and fails on one
+   person's calendar.
+
+   The module is `ics.py` and not `calendar.py` on purpose: the zip is flat,
+   so it would have shadowed the standard library's module. The same trap
+   recorded for `kinds.py` in step 1, and it would have surfaced as a broken
+   email rather than an import error.
+
+   A `Channel` abstraction was **not** built. There are two deliveries — an
+   email, and an email with a file attached — and inventing a seam for two
+   cases is how `plan.py` reached 634 lines. It goes in when a third arrives.
 
 Steps 1 and 3 have no user-visible output, which makes them the ones most
 likely to get skipped. They are also the ones the rest depends on.

@@ -419,6 +419,49 @@ def get_watch(event) -> dict:
     })
 
 
+def _confirm_reminder(watch_id: str, watch: dict) -> dict:
+    """Commit a watch whose trigger is the clock.
+
+    Almost nothing the ordinary path does applies. There is no interval to
+    snap, no window to fit, no targets to write `watched_ids` onto, and no
+    budget gate -- a watch that fires exactly once cannot exceed a monthly
+    allowance however the arithmetic is arranged, so running the gate would
+    be theatre.
+
+    What is left is the one thing that matters: create the schedule, and say
+    when it will go off. `next_check_at` is the same field the ordinary path
+    returns and means the same thing here -- it is just exact rather than
+    estimated, which is the one place in this product where it is.
+    """
+    fire_at = watch["fire_at"]
+    zone = watch.get("fire_timezone") or None
+
+    arn = _upsert_once(watch_id, fire_at, zone)
+
+    _watches().update_item(
+        Key={"watch_id": watch_id},
+        UpdateExpression=("SET #s = :s, confirmed_at = :t, schedule_arn = :a"),
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "active", ":t": _now(), ":a": arn},
+    )
+
+    print(f"confirmed {watch_id}: reminder at {fire_at}"
+          f"{f' ({zone})' if zone else ''}")
+    return _response(200, {
+        "watch_id": watch_id,
+        "status": "active",
+        "next_check_at": fire_at,
+        "fire_at": fire_at,
+        "fire_timezone": zone,
+        "targets_scheduled": 0,
+        "repeating": False,
+        "expires_at": None,
+        # Named, and zero. Omitting it would leave the client to guess whether
+        # the field was missing or the answer was nothing.
+        "cost": {"estimated_monthly_usd": 0.0, "within_budget": True},
+    })
+
+
 def _repin_baseline(watch: dict, targets: list, kept) -> dict:
     """Re-derive a relative threshold from the offer the user actually picked.
 
@@ -482,6 +525,14 @@ def confirm_watch(event) -> dict:
     status = watch.get("status")
     if status not in CONFIRMABLE:
         raise HttpError(409, f"watch {watch_id} is {status}, not proposed")
+
+    # A time-triggered watch has nothing to poll, so it takes the short path
+    # and returns before any of this. Everything below is about an interval, a
+    # window, targets and a budget, and none of those has a meaning for a watch
+    # that fires once -- `check_interval_min` in particular is absent on the
+    # row, and the ordinary path rejects that as a 400.
+    if watch.get("fire_at"):
+        return _confirm_reminder(watch_id, watch)
 
     # "field absent" and "field present but null" are deliberately different.
     # Silently substituting the Planner's interval for an explicit null would

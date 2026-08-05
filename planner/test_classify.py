@@ -97,12 +97,20 @@ def test_classification_costs_one_small_cheap_call():
 # The gates -- everything unrecognised becomes the path we already had
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("kind", ["reminder", "stock", "", None, "VALUE ", 7])
+@pytest.mark.parametrize("kind", ["calendar", "stock", "", None, "VALUE ", 7])
 def test_a_kind_that_is_not_registered_falls_back_to_value(kind):
-    """Includes kinds that are planned but not built yet: `reminder` is in the
-    design doc and not in the registry, and answering it must not break."""
+    """Includes kinds that are planned but not built yet, and every shape a
+    model can return that is not a string naming a real kind. A wrong guess
+    must cost a suboptimal plan, never a rejected request."""
     decision, _ = decide({"kind": kind, "symbol": None})
     assert decision["kind"] == "value"
+
+
+def test_reminder_is_a_registered_kind_now(): 
+    """It was in the design doc and not in the registry for three phases, and
+    this test asserted the fallback. Built 2026-08-05."""
+    decision, _ = decide({"kind": "reminder", "symbol": None})
+    assert decision["kind"] == "reminder"
 
 
 @pytest.mark.parametrize("symbol", ["", None, "Apple Inc", "AAPL; rm -rf",

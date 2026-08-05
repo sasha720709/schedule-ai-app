@@ -58,6 +58,11 @@ CLASSIFY_PROMPT = """You sort a monitoring request into exactly one kind.
                costs and where to buy it. "Tell me when the Xbox Series X
                drops below 2000", "watch the price of AirPods Pro 2". Shops
                are a decided set, so this never searches the web either.
+  reminder  -- nothing is being watched at all. The user wants to be told at
+               a TIME they have chosen. "Remind me at 9am tomorrow to call the
+               dentist", "in two hours", "next Monday morning: renew the
+               passport". The giveaway is that no outcome is being waited for
+               -- only a moment.
   value     -- anything else. Something already on a page that the user is
                waiting to CHANGE: a rating, a countdown, a specific page's
                number. Use this when the request names ONE page and means
@@ -100,11 +105,16 @@ Rules:
   sense anywhere else.
 - If the request is waiting for something else to show up, it is `presence`,
   even if similar things are listed today.
+- `reminder` is ONLY for "tell me at this time". If the user wants to be told
+  *when something happens* -- a price moves, a job appears, a slot opens --
+  that is one of the other kinds, however the sentence is phrased. "Remind me
+  when Apple drops below $300" is a `quote`: the reminder word is not the
+  signal, the absence of anything to check is.
 - When genuinely unsure, answer "value". It is the general path and it works
   for everything; a wrong guess here is more expensive than a vague one.
 
 Respond with ONLY a JSON object:
-{"kind": "quote" | "jobs" | "product" | "presence" | "value",
+{"kind": "quote" | "jobs" | "product" | "presence" | "reminder" | "value",
  "symbol": string | null}"""
 
 

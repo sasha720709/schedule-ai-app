@@ -9,6 +9,12 @@ rm -rf build dist
 mkdir -p build dist
 
 cp handler.py build/
+# Shared modules, vendored flat -- the same layout the other zips use. `ics.py`
+# is deliberately not called `calendar.py`: the zip is flat, so it would shadow
+# the standard library's module of that name.
+for module in ics.py; do
+  cp "../shared/$module" build/
+done
 
 cd build
 zip -r ../dist/notifier.zip . --quiet

@@ -90,6 +90,16 @@ class Kind:
     # `sources.py` for every watch at once.
     self_heals = True
 
+    # What makes a watch of this kind fire.
+    #
+    #   "condition"  something is read and judged -- every kind but one
+    #   "time"       the schedule going off IS the event
+    #
+    # This is axis A of Phase 9, and it stayed hypothetical until `reminder`
+    # arrived: a time-triggered watch has no targets, no condition and nothing
+    # to repair, which every caller downstream had assumed was impossible.
+    trigger = "condition"
+
     # A recurring slice of the week this kind is confined to, by name (see
     # shared/schedules.py). None means "every minute of every day", which is
     # right for a shop's price and wrong for anything with a calendar.

@@ -88,6 +88,10 @@ def _fail(watches_table, watch_id: str, exc: Exception) -> dict:
     return {"watch_id": watch_id, "status": "failed", "error": message}
 
 
+# What a time-triggered watch stores instead of targets and a condition.
+_TIME_FIELDS = ("fire_at", "fire_timezone", "reminder_title", "reminder_note")
+
+
 def _baseline(baselines: list, condition: dict) -> dict:
     """Which reading "the current price" means, across several shops.
 
@@ -277,7 +281,10 @@ def lambda_handler(event, context):
             condition, relative_pct, chosen["value"],
             baseline_at=chosen["at"], baseline_source=chosen["source"])
 
-        if not target_ids:
+        # A time-triggered watch has nothing to verify, on purpose: the
+        # schedule firing is the event. Every other kind must produce at least
+        # one working target or the plan is not a plan.
+        if not target_ids and kind.trigger != "time":
             raise RuntimeError(
                 "no target could be verified: "
                 + "; ".join(f"{r['url']} ({r['reason']})" for r in rejected)
@@ -299,13 +306,21 @@ def lambda_handler(event, context):
         # interval that was affordable, which is recoverable; understating it
         # creates a schedule that bills more than the budget allowed.
         window = windows[0] if len(set(windows)) == 1 else None
-        floor = cost.min_interval_for_budget(
-            targets=len(target_ids),
-            fetch_method="browser" if browser else "http",
-            uses_model=False,
-            window=window,
-        )
-        interval = max(proposed, floor)
+
+        if kind.trigger == "time":
+            # Nothing is polled, so the floor -- a monthly allowance divided by
+            # a per-check cost -- has nothing to divide. Skipping it is not a
+            # loophole: a watch that runs exactly once cannot exceed a monthly
+            # budget however the arithmetic is arranged.
+            interval = floor = proposed
+        else:
+            floor = cost.min_interval_for_budget(
+                targets=len(target_ids),
+                fetch_method="browser" if browser else "http",
+                uses_model=False,
+                window=window,
+            )
+            interval = max(proposed, floor)
 
         # Flip to "proposed" only once the targets exist, so the status
         # never promises a plan the client cannot yet read.
@@ -317,8 +332,9 @@ def lambda_handler(event, context):
                 # Stored so a wrong fork is visible on the plan card before the
                 # user confirms, rather than discovered weeks later.
                 "watch_kind = :k, planned_at = :t, repeating = :r, "
-                "questions = :q, rejected = :rej "
-                "REMOVE plan_error"
+                "questions = :q, rejected = :rej"
+                + "".join(f", {k} = :{k}" for k in _TIME_FIELDS if k in result)
+                + " REMOVE plan_error"
             ),
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
             ExpressionAttributeValues={
@@ -342,6 +358,13 @@ def lambda_handler(event, context):
                 ":p": _to_decimal(proposed),
                 ":f": _to_decimal(floor),
                 ":t": datetime.now(timezone.utc).isoformat(),
+                # A time-triggered watch's whole plan: when, where in the
+                # world, and what to put on the calendar. Absent for every
+                # other kind, which is why they are written as their own
+                # clause rather than folded into `condition` -- a reminder has
+                # no condition, and pretending otherwise is how the `targets`
+                # assumption got made in the first place.
+                **{f":{k}": result[k] for k in _TIME_FIELDS if k in result},
             },
         )
     except Exception as exc:  # noqa: BLE001

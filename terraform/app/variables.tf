@@ -42,3 +42,17 @@ variable "enable_alarms" {
   type    = bool
   default = true
 }
+
+variable "default_timezone" {
+  description = <<-EOT
+    Where "9am" is, when a reminder request does not name a place.
+
+    A deployment setting, exactly like notify_email, and a placeholder for the
+    same missing thing: there is no user record, so the one person using this
+    has to be described in configuration. The resolved local time and its zone
+    are shown on the plan card before anything is confirmed, so a wrong value
+    costs a glance rather than a reminder at the wrong hour.
+  EOT
+  type        = string
+  default     = "Asia/Jerusalem"
+}

@@ -24,6 +24,11 @@ import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+# build.sh vendors shared/*.py next to handler.py in the zip, so at runtime
+# these are flat imports. Reproduce that rather than reach for a package
+# layout the Lambda does not have.
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
+
 # `handler.py` builds its boto3 clients at module scope, which is right for a
 # Lambda -- they get reused across warm invocations -- and impossible in a test
 # process with no credentials and no region. So boto3 is replaced before the
@@ -783,3 +788,132 @@ def test_a_blocked_watch_still_has_its_schedules_deleted(aws):
     handler.lambda_handler(degraded(reason_kind="blocked", reason="x"), None)
 
     assert [step for step in env.log if step[0] == "delete_schedule"]
+
+
+# --------------------------------------------------------------------------
+# A reminder: the time arrived, and nothing was found
+#
+# `_format_email`'s whole vocabulary -- "your watch just came true", "what was
+# found", "why this counts" -- is about an outcome, and there is no outcome
+# here. Reusing it would produce a grammatical email that says the wrong thing.
+# --------------------------------------------------------------------------
+
+def reminder(**overrides):
+    """Exactly the shape checker/handler.py publishes when a clock fires."""
+    detail = {
+        "watch_id": "w_1",
+        "target_id": None,
+        "url": None,
+        "prompt": "remind me at 9am tomorrow to call the dentist",
+        "last_value": None,
+        "note": "bring the X-ray",
+        "items": [],
+        "readings": [],
+        "repeating": False,
+        "trigger_kind": "time",
+        "reminder_title": "Call the dentist",
+        "fire_at": "2026-08-06T09:00:00+03:00",
+        "fire_timezone": "Asia/Jerusalem",
+        "triggered_at": "2026-08-06T06:00:00Z",
+    }
+    detail.update(overrides)
+    return {"detail-type": "WatchTriggered", "detail": detail}
+
+
+def raw_sent(env):
+    """The raw MIME message that was sent, as text."""
+    return env.ses.send_raw_email.call_args.kwargs["RawMessage"]["Data"]
+
+
+def parts_of(env):
+    """The message, parsed. MIMEText base64-encodes a utf-8 body, so asserting
+    on the raw string would be asserting on the transfer encoding rather than
+    on what the person reads."""
+    import email
+
+    message = email.message_from_string(raw_sent(env))
+    found = {}
+    for part in message.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        found[part.get_content_type()] = part.get_payload(decode=True)
+    return message, found
+
+
+def test_a_reminder_does_not_claim_anything_came_true(aws):
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    message, parts = parts_of(env)
+
+    assert b"came true" not in parts["text/plain"]
+    assert b"What was found" not in parts["text/plain"]
+    assert "Reminder: Call the dentist" in message["Subject"]
+
+
+def test_a_reminder_carries_a_calendar_entry(aws):
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    message = raw_sent(env)
+
+    assert "text/calendar" in message
+    assert 'method="PUBLISH"' in message or "method=PUBLISH" in message
+    assert "Call-the-dentist.ics" in message
+
+
+def test_the_calendar_entry_is_at_the_moment_that_was_asked_for(aws):
+    """9am in Jerusalem is 06:00Z. Getting this backwards puts the reminder
+    three hours out, which is the whole feature failing quietly."""
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    _, parts = parts_of(env)
+
+    assert b"DTSTART:20260806T060000Z" in parts["text/calendar"]
+
+
+def test_the_note_reaches_both_the_email_and_the_entry(aws):
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    _, parts = parts_of(env)
+
+    assert b"bring the X-ray" in parts["text/plain"]
+    assert b"bring the X-ray" in parts["text/calendar"]
+
+
+def test_a_missing_permission_costs_the_attachment_not_the_email(aws):
+    """The Phase 5 lesson stated forwards. SendRawEmail is a separate IAM
+    action; if it is not granted, the person must still be told."""
+    env = aws()
+    env.ses.send_raw_email.side_effect = RuntimeError(
+        "AccessDenied: ses:SendRawEmail")
+
+    handler.lambda_handler(reminder(), None)
+
+    subject, body = sent(env)
+    assert "Reminder: Call the dentist" in subject
+    assert "call the dentist" in body.lower()
+
+
+def test_a_broken_calendar_entry_never_blocks_the_reminder(aws):
+    env = aws()
+    handler.lambda_handler(reminder(fire_at="not a date"), None)
+
+    assert env.ses.send_email.call_count == 1
+
+
+def test_a_reminder_tears_its_schedule_down(aws):
+    """`at(...)` deletes itself when it fires, so this is belt to that braces
+    -- but a reminder that left a schedule behind would bill forever."""
+    env = aws(watch_schedule=True, pages=[[]])
+    result = handler.lambda_handler(reminder(), None)
+
+    assert result["schedules_deleted"] == ["schedule-ai-app-w_1"]
+
+
+def test_an_ordinary_watch_still_goes_out_as_a_plain_email(aws):
+    """No attachment, no raw send, no change at all to the path everything
+    else uses."""
+    env = aws()
+    handler.lambda_handler(triggered(), None)
+
+    assert env.ses.send_raw_email.call_count == 0
+    assert env.ses.send_email.call_count == 1

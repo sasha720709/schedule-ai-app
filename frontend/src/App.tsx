@@ -286,6 +286,23 @@ export default function App() {
  * broken look identical from the outside. The relative half matters more than
  * the clock time: "16:00" alone still reads like something is wrong.
  */
+/** A moment, in the reader's own locale, with how far off it is. */
+function describeMoment(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const minutes = Math.round((at.getTime() - Date.now()) / 60000);
+  const when = at.toLocaleString(undefined, {
+    weekday: Math.abs(minutes) > 12 * 60 ? "short" : undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (minutes <= 0) return when;
+  if (minutes < 60) return `${when}, in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return `${when}, in ${hours} h`;
+  return `${when}, in ${Math.round(hours / 24)} days`;
+}
+
 function describeNextCheck(iso: string): string {
   const at = new Date(iso);
   const minutes = Math.round((at.getTime() - Date.now()) / 60000);
@@ -416,6 +433,25 @@ function WatchRow({
         <span className={`status ${watch.status}`}>{watch.status}</span>
         <span className="prompt">{watch.prompt}</span>
       </div>
+
+      {/* A reminder has no condition to show, and showing none would leave the
+          card blank where every other watch explains itself. The zone is
+          named on purpose: it is a deployment setting until a user record
+          exists, so a wrong one has to be visible in the second before
+          confirming rather than at 6am. */}
+      {watch.fire_at && (
+        <p className="muted">
+          reminds you at {describeMoment(watch.fire_at)}
+          {watch.fire_timezone && <> ({watch.fire_timezone})</>}
+          {watch.reminder_title && <> — {watch.reminder_title}</>}
+        </p>
+      )}
+      {watch.fire_at && (
+        <p className="muted">
+          a calendar entry is attached to the email, so your own calendar does
+          the reminding
+        </p>
+      )}
 
       {watch.condition && (
         <p className="muted">

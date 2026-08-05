@@ -16,6 +16,7 @@ from kinds.jobs import JobsKind
 from kinds.presence import PresenceKind
 from kinds.product import ProductKind
 from kinds.quote import QuoteKind
+from kinds.reminder import ReminderKind
 from kinds.value import ValueKind
 
 REGISTRY = {
@@ -24,6 +25,7 @@ REGISTRY = {
     "quote": QuoteKind(),
     "jobs": JobsKind(),
     "product": ProductKind(),
+    "reminder": ReminderKind(),
 }
 
 DEFAULT = REGISTRY["value"]

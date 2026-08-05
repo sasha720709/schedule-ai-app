@@ -7,10 +7,16 @@ duplicate check than a match nobody hears about."""
 
 import os
 from datetime import datetime, timezone
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from urllib.parse import urljoin
 
 import boto3
 from boto3.dynamodb.conditions import Key
+
+import ics
 
 ses = boto3.client("ses")
 dynamodb = boto3.resource("dynamodb")
@@ -335,23 +341,108 @@ Detected at {detail.get('degraded_at', 'unknown time')}.
     return subject, body
 
 
+def _format_reminder_email(detail: dict) -> tuple:
+    """The time arrived. Nothing was found, because nothing was being sought.
+
+    Kept away from `_format_email` rather than folded into it with a flag. That
+    function's whole vocabulary -- "your watch just came true", "what was
+    found", "why this counts" -- is about an outcome, and there is no outcome
+    here. Reusing it would produce a grammatical email that says the wrong
+    thing, which is worse than an ugly one.
+    """
+    title = detail.get("reminder_title") or detail.get("prompt") or "Reminder"
+    note = (detail.get("note") or "").strip()
+
+    body = f"""{title}
+
+This is the reminder you asked for.
+{f"{chr(10)}  {note}{chr(10)}" if note else ""}
+A calendar entry is attached. Opening it puts this in your calendar, which
+will then remind you with your own alert settings, on your own devices.
+
+You asked for it like this:
+  {detail.get('prompt', '(unknown request)')}
+
+It was due at {detail.get('fire_at') or detail.get('triggered_at', 'unknown time')}"""
+    zone = detail.get("fire_timezone")
+    body += f" ({zone}).\n" if zone else ".\n"
+    body += """
+This reminder has now finished and is no longer costing anything.
+
+-- schedule-ai-app
+"""
+    return f"Reminder: {title[:60]}", body
+
+
+def _send_with_calendar(address: str, subject: str, body: str,
+                        detail: dict) -> bool:
+    """Email with the `.ics` attached, or say it could not be done.
+
+    Uses `SendRawEmail`, which needs its own IAM action -- `ses:SendEmail`
+    does not cover it. The caller falls back to a plain send if this returns
+    False, and that fallback is the point: **a missing permission must cost
+    the attachment, never the notification.** This is the Phase 5 lesson
+    stated forwards instead of learned again -- there, a tidy-up needing a
+    permission the role lacked failed the invocation *after* the email, and
+    EventBridge retried it into three copies in a real inbox.
+    """
+    when = detail.get("fire_at") or detail.get("triggered_at")
+    title = detail.get("reminder_title") or detail.get("prompt") or "Reminder"
+
+    try:
+        entry = ics.event(uid=detail["watch_id"], when=when, title=title,
+                          note=detail.get("note") or "")
+
+        message = MIMEMultipart("mixed")
+        message["Subject"] = subject
+        message["From"] = address
+        message["To"] = address
+        message.attach(MIMEText(body, "plain", "utf-8"))
+
+        # text/calendar with METHOD=PUBLISH is what makes a mail client offer
+        # "add to calendar" inline. The same bytes also go as an attachment
+        # part, because clients that ignore the inline form still show a file.
+        part = MIMEBase("text", "calendar", method="PUBLISH", charset="utf-8")
+        part.set_payload(entry.encode("utf-8"))
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment",
+                        filename=ics.filename(title))
+        message.attach(part)
+
+        ses.send_raw_email(Source=address, Destinations=[address],
+                           RawMessage={"Data": message.as_string()})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not send the calendar entry ({type(exc).__name__}: "
+              f"{exc}); falling back to a plain email")
+        return False
+
+
 def lambda_handler(event, context):
     detail = event["detail"]
     watch_id = detail["watch_id"]
 
     degraded = event.get("detail-type") == "WatchDegraded"
-    subject, body = (_format_degraded_email(detail) if degraded
-                     else _format_email(detail))
+    timed = not degraded and detail.get("trigger_kind") == "time"
+
+    if degraded:
+        subject, body = _format_degraded_email(detail)
+    elif timed:
+        subject, body = _format_reminder_email(detail)
+    else:
+        subject, body = _format_email(detail)
+
     address = os.environ["NOTIFY_EMAIL"]
 
-    ses.send_email(
-        Source=address,
-        Destination={"ToAddresses": [address]},
-        Message={
-            "Subject": {"Data": subject},
-            "Body": {"Text": {"Data": body}},
-        },
-    )
+    if not (timed and _send_with_calendar(address, subject, body, detail)):
+        ses.send_email(
+            Source=address,
+            Destination={"ToAddresses": [address]},
+            Message={
+                "Subject": {"Data": subject},
+                "Body": {"Text": {"Data": body}},
+            },
+        )
     print(f"emailed {address} for watch {watch_id}")
 
     # A repeating watch survives its own notification -- that is the entire

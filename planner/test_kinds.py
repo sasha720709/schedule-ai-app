@@ -661,3 +661,114 @@ def test_a_price_watch_does_not_repeat():
 
 def test_product_is_not_a_compiled_kind():
     assert not isinstance(PRODUCT, kinds.CompiledKind)
+
+
+# --- the reminder kind: the one whose trigger is the clock --------------------
+#
+# Every other kind answers "is it true yet". This one has no page, no
+# extractor, no condition and no target -- the schedule going off IS the event.
+# It is the only thing in the product that exercises Phase 9's first axis.
+
+import kinds.reminder as reminder_module  # noqa: E402
+from kinds.reminder import ReminderKind  # noqa: E402
+
+NOW_ISO = "2026-08-05T12:00:00+00:00"
+
+
+def reminder_client(**overrides):
+    answer = {"when": "2026-08-06T09:00:00", "timezone": None,
+              "title": "Call the dentist", "note": "bring the X-ray"}
+    answer.update(overrides)
+    return Scripted(answer)
+
+
+def test_a_reminder_produces_no_targets_and_no_condition():
+    """The two things every caller downstream assumed could not be empty."""
+    plan = ReminderKind().plan("remind me at 9am tomorrow",
+                               client=reminder_client())
+
+    assert plan["targets"] == []
+    assert plan["condition"] == {}
+
+
+def test_the_trigger_is_time_not_a_condition():
+    assert ReminderKind().trigger == "time"
+
+
+def test_nothing_is_compiled_so_nothing_can_break():
+    assert ReminderKind().self_heals is False
+
+
+def test_the_moment_keeps_its_wall_clock_reading():
+    """9am has to stay 9am. Converting to UTC here and naming the zone as well
+    would apply the offset twice."""
+    plan = ReminderKind().plan("remind me at 9am tomorrow",
+                               client=reminder_client())
+
+    assert plan["fire_at"].startswith("2026-08-06T09:00:00")
+
+
+def test_a_named_zone_in_the_request_is_used():
+    plan = ReminderKind().plan("9am New York time",
+                               client=reminder_client(timezone="America/New_York"))
+
+    assert plan["fire_timezone"] == "America/New_York"
+
+
+def test_an_unnamed_zone_falls_back_to_the_deployments_own():
+    """There is no user profile, so "9am" has to mean 9am somewhere chosen in
+    advance. The plan card shows which."""
+    plan = ReminderKind().plan("9am tomorrow", client=reminder_client())
+
+    assert plan["fire_timezone"] == reminder_module.DEFAULT_TIMEZONE
+
+
+def test_a_zone_the_model_invented_degrades_rather_than_failing():
+    """"Israel/Tel_Aviv" should cost an hour's imprecision on a card the user
+    is about to read, not a rejected request."""
+    plan = ReminderKind().plan(
+        "9am", client=reminder_client(timezone="Israel/Tel_Aviv"))
+
+    assert plan["fire_timezone"] == reminder_module.DEFAULT_TIMEZONE
+
+
+def test_a_moment_in_the_past_is_refused_with_a_sentence():
+    """EventBridge refuses a past `at(...)` at create time, which would surface
+    as a 500 from confirm long after the plan looked fine. A guardrail that
+    returns 500 is an outage."""
+    with pytest.raises(ValueError, match="already passed"):
+        ReminderKind().plan("remind me yesterday",
+                            client=reminder_client(when="2020-01-01T09:00:00"))
+
+
+def test_a_wildly_distant_moment_is_refused_as_a_misread_year():
+    with pytest.raises(ValueError, match="years"):
+        ReminderKind().plan("remind me",
+                            client=reminder_client(when="2126-01-01T09:00:00"))
+
+
+def test_an_unreadable_time_says_so():
+    with pytest.raises(ValueError, match="date and time"):
+        ReminderKind().plan("remind me", client=reminder_client(when="soonish"))
+
+
+def test_a_title_is_never_empty_because_a_calendar_entry_needs_one():
+    plan = ReminderKind().plan("call the dentist at 9",
+                               client=reminder_client(title=""))
+
+    assert plan["reminder_title"]
+
+
+def test_the_model_is_told_the_current_time_in_the_zone_it_answers_in():
+    """It has no clock, so "tomorrow" is unanswerable without this. And the
+    clock it is given must be the clock its answer is read in: handing it UTC
+    and then interpreting "in four minutes" as local time puts the reminder
+    hours in the past, and the request is refused. Found by trying to run one.
+    """
+    client = reminder_client()
+    ReminderKind().plan("remind me tomorrow", client=client)
+
+    prompt = client.calls[0]["messages"][0]["content"]
+    assert "current local time is" in prompt
+    assert reminder_module.DEFAULT_TIMEZONE in prompt
+    assert "UTC" not in prompt

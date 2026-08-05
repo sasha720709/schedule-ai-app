@@ -30,6 +30,7 @@ resource "aws_lambda_function" "planner" {
       WATCH_TARGETS_TABLE  = aws_dynamodb_table.watch_targets.name
       MONTHLY_BUDGET_USD   = var.monthly_budget_usd
       FETCHER_FUNCTION_ARN = aws_lambda_function.fetcher.arn
+      DEFAULT_TIMEZONE     = var.default_timezone
     }
   }
 }

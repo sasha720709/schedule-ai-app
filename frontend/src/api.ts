@@ -58,6 +58,14 @@ export interface Watch {
    * true for a vacancy -- a job search is a stream, not an event. */
   repeating?: boolean;
   questions?: PlanQuestion[];
+  /** A time-triggered watch: no targets, no condition, and the schedule
+   * firing IS the event. `fire_at` is the local wall-clock moment and
+   * `fire_timezone` is the zone it is read in -- shown together, because
+   * there is no user profile yet and the zone is a deployment setting. */
+  fire_at?: string;
+  fire_timezone?: string;
+  reminder_title?: string;
+  reminder_note?: string;
   /** Places that were looked at and not kept. A watch that quietly became two
    * shops instead of three tells the user nothing, and "Amazon prices in USD"
    * is information they can act on. */

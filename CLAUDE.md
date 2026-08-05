@@ -9,8 +9,54 @@ zero watches, zero targets, so nothing is billing. **720 tests** pass in ~2s
 with `python -m pytest -q` from the repo root, and every suite also passes
 alone (`for d in */; do pytest $d; done`).
 
-**Marketplaces is finished.** All five steps are done, deployed and proven
-live — see `docs/marketplaces-roadmap.md` §5–§9.
+**Marketplaces is finished** (all five steps — `docs/marketplaces-roadmap.md`
+§5–§9), **and so is Phase 9's time-triggered half**: a watch can now be
+triggered by a clock instead of a condition, and it arrives as a calendar
+entry. That was the last structural gap in the product.
+
+### Reminders: steps 3b, 4 and 5 of Phase 9
+
+Three commits, deliberately separate — the roadmap said do the plumbing
+before the product and not to mix them in one diff.
+
+**3b, plumbing.** `at(...)` is the third schedule shape after `rate` and
+`cron`, with `ActionAfterCompletion: DELETE` so a one-shot removes itself. A
+schedule can now belong to a **watch** rather than a target (decided
+2026-08-02, §8): the payload carries `watch_id`, the Checker dispatches on
+which key it was handed, and teardown in both the api and the Notifier tries
+the watch-level name too. Without that last part a reminder would have had
+nothing walked and left a schedule billing.
+
+**4, the kind.** `planner/kinds/reminder.py`. The doc predicted `Kind` would
+need a `trigger` distinction here and said to be suspicious if it did not —
+it did, and `plan()` returning no targets and no condition broke assumptions
+in the Planner's handler and in `confirm` that nobody had written down.
+
+**5, the calendar entry.** `shared/ics.py`, attached via `SendRawEmail` — a
+separate IAM action that `ses:SendEmail` does not imply, granted before the
+code shipped. **A failure to attach falls back to a plain send**: a missing
+permission must cost the attachment, never the notification.
+
+Four things worth not re-deriving:
+
+- **The clock the model is given must be the clock its answer is read in.**
+  Found by trying to run one. The prompt handed the model UTC and the answer
+  was interpreted in `DEFAULT_TIMEZONE`, so "remind me in four minutes"
+  resolved to three hours in the past and was refused — for a perfectly
+  reasonable request. No offline test would have produced it: every test that
+  mattered used an explicit datetime.
+- **`DEFAULT_TIMEZONE` is a deployment setting beside `NOTIFY_EMAIL`**, and a
+  placeholder for the same missing thing. The resolved local time *and its
+  zone* are on the plan card, so a wrong one costs a glance rather than a
+  reminder at 6am.
+- **`ics.py` is not called `calendar.py`** because the zip is flat and it
+  would shadow the standard library's module — the trap recorded for
+  `kinds.py`, which would have surfaced as a broken email rather than an
+  import error. Folding is counted in **octets**, because a Hebrew title is
+  three bytes a character.
+- **No `Channel` abstraction was built.** There are two deliveries — an email,
+  and an email with a file attached — and inventing a seam for two cases is
+  how `plan.py` reached 634 lines. It goes in when a third arrives.
 
 ### Step 5: being refused, as a state of its own
 
@@ -152,10 +198,12 @@ the map.
 
 ### What to do next, in the order I would do it
 
-1. **Calendar reminders / time-triggered watches.** The next real feature and
-   the owner's stated priority: "tell me at 9am". Two jobs, not one — the
-   `.ics` file is fifteen lines with no OAuth, but the **trigger** is Phase 9
-   step 3b and does not exist. Build the reminder kind first.
+1. **Decide the auth shape.** Now the largest thing left, and three features
+   are already leaning on its absence: `user_id` is `"default"`, `NOTIFY_EMAIL`
+   is one address, `DEFAULT_TIMEZONE` is one zone, and a product watch drops
+   shops priced in another currency because nobody knows where the user is.
+   It does not have to be *built* early. It has to be *decided* early, or the
+   polish gets redone on top of a single-user assumption.
 3. **Calendar reminders.** Two jobs, not one: the `.ics` file is easy
    (fifteen lines, no OAuth, `ses:SendRawEmail`), but the **trigger** is Phase
    9 step 3b and does not exist. Build the reminder kind first — attaching an
@@ -703,7 +751,7 @@ delivery channels. The owner's three product features are done except
 marketplaces steps 3–4. 8c is deferred with numbers. Still open: 4c (the
 designed chat UI) and the deploy half of 7.
 
-**Five watch kinds exist**, and three of them never touch a web search:
+**Six watch kinds exist**, and four of them never touch a web search:
 
 | kind | where the target comes from | searches? |
 |---|---|---|
@@ -711,6 +759,7 @@ designed chat UI) and the deploy half of 7.
 | `jobs` | `shared/job_boards.py` — LinkedIn guest API, drushim | no |
 | `product` | `shared/shops.py` — Ivory, Bug, Amazon | no |
 | `presence` | web search, compiled counter | yes |
+| `reminder` | nowhere — the clock is the trigger | no |
 | `value` | web search, compiled extractor | yes |
 
 **720 offline tests**, ~2s, no AWS and no cost: `python -m pytest -q` from
@@ -819,11 +868,11 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ⏸️ | **8c** · Conditional GET | **deferred** — saves ~$0.05/mo, unsound on browser |
 | ✅ | **8d** · Tiered self-heal | done — verified live, repair $0.008 |
 | ✅ | **5** · Production hygiene | done — 3 alarms live, IAM unblocked, 4 gaps closed |
-| 🔨 | **9** · Watch kinds, schedules, delivery | kinds + windows done and proven live; left: `once`/`reminder` (time-triggered) and delivery channels |
+| ✅ | **9** · Watch kinds, schedules, delivery | all five steps — kinds, windows, `once`, `reminder`, `.ics` |
 | ✅ | **10a** · Shares finished | tiers 1–3 done — exchange, baseline, staleness. Tier 4 (history) after the frontend |
 | ✅ | **10b** · Vacancies finished | all four steps — items, repeating+dedup, ranking, grounded questions |
 | ✅ | **10c** · Marketplaces | all five steps done — shops, `offers`, Amazon, pinning, one reading, delivery, blocked |
-| ⬜ | **11** · Calendar reminders | `.ics` is easy; the *trigger* is Phase 9 step 3b and does not exist |
+| ✅ | **11** · Calendar reminders | done with Phase 9 steps 3b–5; the trigger existed by the time the `.ics` was written |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
