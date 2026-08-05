@@ -772,3 +772,54 @@ def test_the_model_is_told_the_current_time_in_the_zone_it_answers_in():
     assert "current local time is" in prompt
     assert reminder_module.DEFAULT_TIMEZONE in prompt
     assert "UTC" not in prompt
+
+
+# --- once, or every day? ------------------------------------------------------
+#
+# The owner's own framing: "there should be, depending on the case, a question
+# -- daily, or one time?" Asked only when the request left it open, because
+# guessing "once" for something meant to repeat is a reminder that silently
+# never comes again.
+
+def test_an_explicit_daily_request_needs_no_question():
+    plan = ReminderKind().plan("every day at 9pm, learn English",
+                               client=reminder_client(repeat="daily"))
+
+    assert plan["repeat"] == "daily"
+    assert plan["questions"] == []
+
+
+def test_an_explicit_one_off_needs_no_question_either():
+    plan = ReminderKind().plan("tomorrow at 9, dentist",
+                               client=reminder_client(repeat="once"))
+
+    assert plan["repeat"] == "once"
+    assert plan["questions"] == []
+
+
+def test_an_open_request_is_asked_about_rather_than_guessed():
+    """"Remind me at 9pm to learn English" is a habit and a single evening,
+    equally. The model is told to answer null rather than pick."""
+    plan = ReminderKind().plan("at 9pm, learn English",
+                               client=reminder_client(repeat=None))
+
+    assert [q["id"] for q in plan["questions"]] == ["repeat"]
+    assert {o["value"] for o in plan["questions"][0]["options"]} == {
+        "once", "daily", "weekly"}
+
+
+def test_an_unasked_reminder_defaults_to_once_not_to_repeating():
+    """The safe direction: a reminder that came once is easier to fix than one
+    arriving every evening that was never wanted."""
+    plan = ReminderKind().plan("at 9pm, learn English",
+                               client=reminder_client(repeat=None))
+
+    assert plan["repeat"] == "once"
+
+
+def test_a_repeat_the_model_invented_is_asked_about_not_coerced():
+    plan = ReminderKind().plan("at 9pm",
+                               client=reminder_client(repeat="sometimes"))
+
+    assert plan["repeat"] == "once"
+    assert plan["questions"]

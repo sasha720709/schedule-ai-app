@@ -448,8 +448,16 @@ function WatchRow({
       )}
       {watch.fire_at && (
         <p className="muted">
-          a calendar entry is attached to the email, so your own calendar does
-          the reminding
+          {watch.repeat === "daily"
+            ? "every day at this time"
+            : watch.repeat === "weekly"
+              ? "every week on this day"
+              : "once"}
+          {watch.expires_at && watch.repeat && watch.repeat !== "once" && (
+            <> · stops {new Date(watch.expires_at).toLocaleDateString()}</>
+          )}
+          {" · "}a calendar entry is attached to the email, so your own
+          calendar does the reminding
         </p>
       )}
 

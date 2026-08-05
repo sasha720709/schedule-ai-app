@@ -75,6 +75,8 @@ class FakeTable:
         self.updates.append({
             "key": next(iter(Key.values())),
             "values": ExpressionAttributeValues or {},
+            "expression": UpdateExpression,
+            "names": ExpressionAttributeNames or {},
         })
 
     def last(self):
@@ -348,3 +350,32 @@ def test_nothing_refused_is_an_empty_list_not_a_missing_field(run):
         readings={"ivory": 1890.0},
     )
     assert watches.last()["values"][":rej"] == []
+
+
+def test_reserved_words_are_aliased_in_the_update(run, monkeypatch):
+    """`repeat` is a DynamoDB reserved word. Writing it bare fails the whole
+    update with a ValidationException -- and no test double knows the reserved
+    list, so this was found by planning a real reminder and getting a watch
+    stuck in `failed`. Aliasing every one of them removes the need to remember
+    which words are on the list."""
+    kind = FakeKind([shop("ivory", "ILS")], ILS_UNDER_2000, {"ivory": 1.0})
+    kind.plan = lambda request, symbol=None, **kw: {
+        "condition": {}, "relative_change_pct": None,
+        "check_interval_min": 1440, "targets": [],
+        "fire_at": "2026-08-06T21:00:00+03:00", "repeat": "daily",
+    }
+    kind.trigger = "time"
+
+    watches = FakeTable()
+    monkeypatch.setattr(h.dynamodb, "Table",
+                        lambda name: {"watches": watches,
+                                      "targets": FakeTable()}[name])
+    monkeypatch.setattr(h.classify_mod, "classify",
+                        lambda request, names: {"kind": "reminder"})
+    monkeypatch.setattr(h.kinds, "get", lambda name: kind)
+    monkeypatch.setattr(h, "build_questions", lambda request, found: ([], 0.0))
+    h.lambda_handler({"watch_id": "w_t", "request": "remind me"}, None)
+
+    written = watches.updates[-1]
+    assert " repeat = " not in written["expression"]
+    assert "#repeat = :repeat" in written["expression"]

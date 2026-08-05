@@ -625,25 +625,47 @@ def _fire_on_time(watch_id: str) -> dict:
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # The same conditional transition a condition watch uses. A one-shot
-    # cannot race with a sibling target because it has none, but it *can* be
-    # retried by EventBridge after a downstream failure, and firing twice
-    # means telling a person twice.
-    try:
+    # A repeating reminder is the second thing here that does not stop by
+    # itself. Checked before anything else, exactly as a repeating vacancy
+    # watch is, so an expired one costs a read rather than an email.
+    repeating = (watch.get("repeat") or "once") != "once"
+    expires_at = watch.get("expires_at")
+    if repeating and expires_at and now >= expires_at:
+        return _expire(watches_table, watch, {"target_id": None, "url": None},
+                       now)
+
+    if repeating:
+        # It stays `active`: this reminder is not finished, it just spoke.
+        # Marking it `triggered` would stop it -- and would make the Notifier
+        # tear down a schedule that has to survive.
         watches_table.update_item(
             Key={"watch_id": watch_id},
-            UpdateExpression="SET #s = :s, triggered_at = :t",
-            ConditionExpression="#s = :active",
-            ExpressionAttributeNames={"#s": "status"},
+            UpdateExpression=("SET last_triggered_at = :t, trigger_count = :n"),
             ExpressionAttributeValues={
-                ":s": "triggered", ":t": now, ":active": "active",
+                ":t": now,
+                ":n": int(watch.get("trigger_count") or 0) + 1,
             },
         )
-    except Exception as exc:  # noqa: BLE001
-        if not _already_fired(exc):
-            raise
-        print(f"watch {watch_id} has already fired -- not repeating it")
-        return {"skipped": True, "status": "triggered"}
+    else:
+        # The same conditional transition a condition watch uses. A one-shot
+        # cannot race with a sibling target because it has none, but it *can*
+        # be retried by EventBridge after a downstream failure, and firing
+        # twice means telling a person twice.
+        try:
+            watches_table.update_item(
+                Key={"watch_id": watch_id},
+                UpdateExpression="SET #s = :s, triggered_at = :t",
+                ConditionExpression="#s = :active",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":s": "triggered", ":t": now, ":active": "active",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not _already_fired(exc):
+                raise
+            print(f"watch {watch_id} has already fired -- not repeating it")
+            return {"skipped": True, "status": "triggered"}
 
     events.put_events(Entries=[{
         "Source": "schedule-ai-app.checker",
@@ -660,7 +682,15 @@ def _fire_on_time(watch_id: str) -> dict:
             "note": watch.get("reminder_note") or "",
             "items": [],
             "readings": [],
-            "repeating": False,
+            # Tells the Notifier whether to tear the schedule down. A daily
+            # reminder must survive its own notification, exactly as a
+            # repeating vacancy watch does.
+            "repeating": repeating,
+            "repeat": watch.get("repeat") or "once",
+            "fire_at": watch.get("fire_at"),
+            "fire_timezone": watch.get("fire_timezone"),
+            "reminder_title": watch.get("reminder_title") or "",
+            "expires_at": expires_at,
             # What the Notifier branches on to write a reminder rather than a
             # "your watch came true" email. The two are not the same message:
             # nothing was found, and nothing was being looked for.
@@ -668,9 +698,10 @@ def _fire_on_time(watch_id: str) -> dict:
             "triggered_at": now,
         }),
     }])
-    print(f"TIME REACHED for watch {watch_id} -- event emitted")
+    print(f"TIME REACHED for watch {watch_id} -- event emitted"
+          + (" (repeating)" if repeating else ""))
     return {"checked": True, "status": "fired", "notified": True,
-            "trigger_kind": "time"}
+            "trigger_kind": "time", "repeating": repeating}
 
 
 def _record_blocked(targets_table, watches_table, watch: dict, target: dict,

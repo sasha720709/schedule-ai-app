@@ -1603,3 +1603,74 @@ def test_a_condition_watch_is_completely_unaffected_by_the_new_dispatch(env,
 
     assert result["last_value"] == 429.0
     assert result["condition_met"] is True
+
+
+# --- a reminder that comes back ----------------------------------------------
+
+def test_a_daily_reminder_stays_active_after_it_speaks(env):
+    """Marking it `triggered` would stop it, and would make the Notifier tear
+    down a schedule that has to survive."""
+    a_timed_watch(env, repeat="daily")
+
+    result = fire(env)
+
+    assert result["repeating"] is True
+    assert env.watches.items["w_1"]["status"] == "active"
+
+
+def test_a_daily_reminder_counts_how_often_it_has_spoken(env):
+    a_timed_watch(env, repeat="daily", trigger_count=Decimal("4"))
+    fire(env)
+
+    assert values_of(env.watches.last_update())[":n"] == 5
+
+
+def test_the_event_tells_the_notifier_to_leave_the_schedule_alone(env):
+    a_timed_watch(env, repeat="daily")
+    fire(env)
+
+    assert emitted(env)["repeating"] is True
+    assert emitted(env)["repeat"] == "daily"
+
+
+def test_a_one_off_reminder_is_still_terminal(env):
+    a_timed_watch(env, repeat="once")
+    fire(env)
+
+    assert env.watches.items["w_1"]["status"] == "triggered"
+    assert emitted(env)["repeating"] is False
+
+
+def test_a_reminder_with_no_repeat_field_behaves_as_a_one_off(env):
+    """Rows written before repeating reminders existed must keep working."""
+    a_timed_watch(env)
+    fire(env)
+
+    assert env.watches.items["w_1"]["status"] == "triggered"
+
+
+def test_a_daily_reminder_stops_at_the_end_of_its_term(env):
+    """The second thing here that does not stop by itself. A forgotten one
+    would arrive every evening for years."""
+    a_timed_watch(env, repeat="daily", expires_at="2020-01-01T00:00:00+00:00")
+
+    result = fire(env)
+
+    assert result["status"] == "expired"
+    assert env.module.events.put_events.call_count == 1
+    assert emitted(env)["reason_kind"] == "expired"
+
+
+def test_the_term_is_checked_before_anything_is_said(env):
+    """An expired reminder should cost a read, not an email."""
+    a_timed_watch(env, repeat="daily", expires_at="2020-01-01T00:00:00+00:00")
+    fire(env)
+
+    assert emitted(env).get("trigger_kind") is None
+
+
+def test_a_one_off_reminder_ignores_a_term_it_should_not_have(env):
+    """Only a repeating watch has one; a one-shot already has an end."""
+    a_timed_watch(env, expires_at="2020-01-01T00:00:00+00:00")
+
+    assert fire(env)["notified"] is True

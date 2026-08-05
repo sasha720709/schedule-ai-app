@@ -353,6 +353,7 @@ def _format_reminder_email(detail: dict) -> tuple:
     """
     title = detail.get("reminder_title") or detail.get("prompt") or "Reminder"
     note = (detail.get("note") or "").strip()
+    repeat = detail.get("repeat") or "once"
 
     body = f"""{title}
 
@@ -367,9 +368,23 @@ You asked for it like this:
 It was due at {detail.get('fire_at') or detail.get('triggered_at', 'unknown time')}"""
     zone = detail.get("fire_timezone")
     body += f" ({zone}).\n" if zone else ".\n"
-    body += """
-This reminder has now finished and is no longer costing anything.
 
+    # What happens next is the difference between the two, and getting it
+    # wrong either way is a lie the reader acts on: "finished" when it will
+    # come again tomorrow, or "will come again" when it will not.
+    if repeat == "once":
+        body += """
+This reminder has now finished and is no longer costing anything.
+"""
+    else:
+        until = detail.get("expires_at")
+        body += f"""
+This one repeats -- {"every day" if repeat == "daily" else "every week"} at
+this time. The attached entry repeats too, so your calendar only needs it once.
+{f"It stops on its own around {until[:10]}." if until else ""}
+Delete the watch whenever you want it to stop.
+"""
+    body += """
 -- schedule-ai-app
 """
     return f"Reminder: {title[:60]}", body
@@ -392,7 +407,8 @@ def _send_with_calendar(address: str, subject: str, body: str,
 
     try:
         entry = ics.event(uid=detail["watch_id"], when=when, title=title,
-                          note=detail.get("note") or "")
+                          note=detail.get("note") or "",
+                          repeat=detail.get("repeat") or "once")
 
         message = MIMEMultipart("mixed")
         message["Subject"] = subject

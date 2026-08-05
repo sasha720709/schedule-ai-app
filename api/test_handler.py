@@ -959,7 +959,7 @@ def test_a_watch_with_no_condition_at_all_still_confirms(aws):
 
 def a_reminder(**extra):
     row = {"watch_id": "w_1", "status": "proposed",
-           "fire_at": "2026-08-06T09:00:00+03:00",
+           "fire_at": "2026-08-06T21:00:00+03:00",
            "fire_timezone": "Asia/Jerusalem",
            "reminder_title": "Call the dentist"}
     row.update(extra)
@@ -991,7 +991,7 @@ def test_the_schedule_fires_once_and_deletes_itself(aws):
     call("POST /watches/{id}/confirm", watch_id="w_1")
 
     args = env.scheduler.create_schedule.call_args.kwargs
-    assert args["ScheduleExpression"] == "at(2026-08-06T09:00:00)"
+    assert args["ScheduleExpression"] == "at(2026-08-06T21:00:00)"
     assert args["ActionAfterCompletion"] == "DELETE"
     assert args["ScheduleExpressionTimezone"] == "Asia/Jerusalem"
 
@@ -1003,7 +1003,7 @@ def test_confirming_a_reminder_says_exactly_when_it_will_fire(aws):
     aws(watches=a_reminder(), targets={})
     response = call("POST /watches/{id}/confirm", watch_id="w_1")
 
-    assert body_of(response)["next_check_at"] == "2026-08-06T09:00:00+03:00"
+    assert body_of(response)["next_check_at"] == "2026-08-06T21:00:00+03:00"
 
 
 def test_a_reminder_costs_nothing_and_says_so(aws):
@@ -1030,3 +1030,74 @@ def test_an_ordinary_watch_still_needs_targets(aws):
 def test_confirming_a_reminder_twice_conflicts_like_anything_else(aws):
     aws(watches=a_reminder(status="active"), targets={})
     assert call("POST /watches/{id}/confirm", watch_id="w_1")["statusCode"] == 409
+
+
+def test_answering_daily_creates_a_repeating_schedule(aws):
+    """"Set a reminder for 9pm to learn English, every day" -- the shape
+    `at(...)` cannot express."""
+    env = aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm",
+                    {"answers": {"repeat": ["daily"]}}, watch_id="w_1")
+
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"] == "cron(0 21 * * ? *)"
+    assert "ActionAfterCompletion" not in args
+    assert body_of(response)["repeating"] is True
+
+
+def test_a_repeating_reminder_gets_a_term(aws):
+    """It is the second thing here that does not stop by itself."""
+    aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm",
+                    {"answers": {"repeat": ["daily"]}}, watch_id="w_1")
+
+    assert body_of(response)["expires_at"] is not None
+
+
+def test_confirming_without_answering_keeps_it_a_one_off(aws):
+    """The safe direction: a reminder that came once is easier to fix than one
+    arriving every evening that was never wanted."""
+    env = aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert body_of(response)["repeat"] == "once"
+    assert env.scheduler.create_schedule.call_args.kwargs[
+        "ActionAfterCompletion"] == "DELETE"
+
+
+def test_an_explicitly_daily_plan_needs_no_answer(aws):
+    """The question is only asked when the request left it open."""
+    env = aws(watches=a_reminder(repeat="daily"), targets={})
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert body_of(response)["repeat"] == "daily"
+    assert env.scheduler.create_schedule.call_args.kwargs[
+        "ScheduleExpression"] == "cron(0 21 * * ? *)"
+
+
+def test_the_answer_beats_the_plan(aws):
+    """It is newer, and it is the user's."""
+    aws(watches=a_reminder(repeat="daily"), targets={})
+    response = call("POST /watches/{id}/confirm",
+                    {"answers": {"repeat": ["once"]}}, watch_id="w_1")
+
+    assert body_of(response)["repeat"] == "once"
+
+
+def test_a_weekly_answer_keeps_the_day_of_the_week(aws):
+    env = aws(watches=a_reminder(), targets={})
+    call("POST /watches/{id}/confirm",
+         {"answers": {"repeat": ["weekly"]}}, watch_id="w_1")
+
+    # 2026-08-06 is a Thursday.
+    assert env.scheduler.create_schedule.call_args.kwargs[
+        "ScheduleExpression"] == "cron(0 21 ? * THU *)"
+
+
+def test_a_nonsense_answer_falls_back_rather_than_crashing(aws):
+    aws(watches=a_reminder(), targets={})
+    response = call("POST /watches/{id}/confirm",
+                    {"answers": {"repeat": ["forever"]}}, watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert body_of(response)["repeat"] == "once"

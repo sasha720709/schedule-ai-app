@@ -364,6 +364,38 @@ phase starts editing them, it has gone wrong.
    placeholder for the same missing thing. The resolved local time **and its
    zone** are on the plan card, so a wrong one costs a glance rather than a
    reminder at 6am.
+4b. **Repeating reminders — done 2026-08-05, after the owner asked for them
+   by name.** "Set a reminder for 9pm to learn English" and the same sentence
+   ending "every day" are different products, and `at(...)` can only express
+   the first.
+
+   `schedules.repeating_expression` builds a **cron**, not `rate(1 day)`: a
+   rate counts from whenever it was created, so one created at 14:00 fires at
+   14:00 forever and "every day at 9pm" would drift by however long each
+   invocation took. The wall-clock time is the entire request. No
+   `ActionAfterCompletion` — it has to survive its own firing — so what stops
+   it is a 90-day term, the same one a repeating vacancy watch gets and for
+   the same reason.
+
+   **The open case is asked about, not guessed.** The owner's own framing:
+   *"there should be, depending on the case, a question — daily, or one
+   time?"* So the model answers `null` when a request could sensibly be
+   either, and `null` produces a question on the plan card. The prompt says it
+   outright: prefer null over a guess, because answering "once" for something
+   meant to repeat is a reminder that silently never comes again. Confirming
+   without answering keeps it a one-off — the recoverable direction.
+
+   The question reuses the shape `questions.py` produces, because the plan
+   card and `confirm` already speak it, but it is a different *kind* of
+   question: those narrow a list of things that were found, and this one
+   chooses a setting. `items` is empty for exactly that reason.
+
+   **`repeat` is a DynamoDB reserved word.** Writing it bare fails the entire
+   update with a `ValidationException` and leaves the watch in `failed`. Found
+   by planning a real reminder, because no test double knows the reserved
+   list. Every time-triggered field is aliased now, which removes the need to
+   remember which words are on it.
+
 5. **`.ics`, done 2026-08-05.** `shared/ics.py`, attached with
    `SendRawEmail` — a separate IAM action that `ses:SendEmail` does not imply,
    granted before the code shipped. A failure to attach **falls back to a
@@ -380,6 +412,19 @@ phase starts editing them, it has gone wrong.
    three bytes a character and a limit counted in characters produces lines
    three times too long — which works everywhere in testing and fails on one
    person's calendar.
+
+   A repeating reminder's entry carries `RRULE:FREQ=DAILY` and the same
+   stable UID, so the daily email keeps correcting one series rather than
+   littering a calendar with ninety copies.
+
+   **A raw email with no `Date` header is accepted and never delivered.**
+   `Date` and `Message-ID` are mandatory in RFC 5322 and are exactly the two
+   headers `send_email` adds for you; `SendRawEmail` sends what it is handed.
+   Both of the first two reminders were logged as "emailed" and neither
+   arrived, because SES accepted them and Gmail dropped them. This is the
+   worst failure shape in the project — a send that is accepted and never
+   delivered **reports success** — and it is the same shape as the
+   missing-email bug of 2026-08-04.
 
    The module is `ics.py` and not `calendar.py` on purpose: the zip is flat,
    so it would have shadowed the standard library's module. The same trap

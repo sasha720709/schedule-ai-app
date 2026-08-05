@@ -89,7 +89,8 @@ def _fail(watches_table, watch_id: str, exc: Exception) -> dict:
 
 
 # What a time-triggered watch stores instead of targets and a condition.
-_TIME_FIELDS = ("fire_at", "fire_timezone", "reminder_title", "reminder_note")
+_TIME_FIELDS = ("fire_at", "fire_timezone", "reminder_title", "reminder_note",
+                "repeat")
 
 
 def _baseline(baselines: list, condition: dict) -> dict:
@@ -259,7 +260,15 @@ def lambda_handler(event, context):
         # Never required, and never allowed to fail a plan: no questions is a
         # perfectly good outcome and is also what any error produces.
         found = [item for row in verified_items for item in row]
-        questions, questions_spend = build_questions(request, found)
+        if "questions" in result:
+            # A kind that knows its own open question asks it directly. The
+            # searching path derives questions from what was found; a reminder
+            # found nothing and its one fork -- once or every day -- is not
+            # discoverable from data. Same shape on the wire either way, so the
+            # plan card and `confirm` need no second vocabulary.
+            questions, questions_spend = result["questions"], 0.0
+        else:
+            questions, questions_spend = build_questions(request, found)
         if questions:
             print(f"asked {len(questions)} question(s), "
                   f"${questions_spend:.4f}")
@@ -333,10 +342,19 @@ def lambda_handler(event, context):
                 # user confirms, rather than discovered weeks later.
                 "watch_kind = :k, planned_at = :t, repeating = :r, "
                 "questions = :q, rejected = :rej"
-                + "".join(f", {k} = :{k}" for k in _TIME_FIELDS if k in result)
+                # Aliased, every one of them. `repeat` is a DynamoDB reserved
+                # word and writing it bare fails the whole update with a
+                # ValidationException -- caught only by planning a real
+                # reminder, because the test double does not know the reserved
+                # list. Aliasing all of them costs nothing and removes the
+                # need to remember which words are on it.
+                + "".join(f", #{k} = :{k}" for k in _TIME_FIELDS if k in result)
                 + " REMOVE plan_error"
             ),
-            ExpressionAttributeNames={"#s": "status", "#c": "condition"},
+            ExpressionAttributeNames={
+                "#s": "status", "#c": "condition",
+                **{f"#{k}": k for k in _TIME_FIELDS if k in result},
+            },
             ExpressionAttributeValues={
                 ":s": "proposed",
                 ":k": kind.name,

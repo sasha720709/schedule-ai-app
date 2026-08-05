@@ -184,3 +184,22 @@ def test_a_filename_never_carries_path_characters():
 def test_an_empty_title_still_produces_a_filename():
     assert ics.filename("") == "reminder.ics"
     assert ics.filename(None) == "reminder.ics"
+
+
+# --- a repeating entry --------------------------------------------------------
+
+def test_a_daily_reminder_repeats_in_the_calendar():
+    """One entry that repeats, rather than an entry a day: with a stable UID
+    the daily email keeps correcting the same series instead of littering the
+    calendar with ninety copies."""
+    assert "RRULE:FREQ=DAILY" in lines(entry(repeat="daily"))
+
+
+def test_a_weekly_reminder_says_weekly():
+    assert "RRULE:FREQ=WEEKLY" in lines(entry(repeat="weekly"))
+
+
+def test_a_one_shot_carries_no_rule():
+    assert not any(line.startswith("RRULE") for line in lines(entry()))
+    assert not any(line.startswith("RRULE")
+                   for line in lines(entry(repeat="once")))

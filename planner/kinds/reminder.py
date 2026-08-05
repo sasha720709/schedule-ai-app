@@ -49,6 +49,15 @@ DEFAULT_TIMEZONE = os.environ.get("DEFAULT_TIMEZONE", "Asia/Jerusalem")
 # `at(2126-...)` and then hold a schedule for a century.
 MAX_YEARS_AHEAD = 2
 
+ONCE, DAILY, WEEKLY = "once", "daily", "weekly"
+REPEATS = (ONCE, DAILY, WEEKLY)
+
+# How long a repeating reminder runs before stopping itself, matching the term
+# a repeating vacancy watch gets. A daily reminder is the second thing in this
+# system that does not stop by itself, and a forgotten one would arrive every
+# evening for years. The expiry email says plainly that nothing broke.
+REPEATING_TERM_DAYS = 90
+
 REMINDER_PROMPT = """You turn a request into a single reminder at a single
 moment. There is nothing to watch and no page to read -- the time arriving is
 the whole event.
@@ -83,8 +92,25 @@ No date in the title -- the calendar entry already has one.
 NOTE. Any detail worth keeping that is not in the title: a phone number, an
 address, a reference. Empty string if there is none.
 
+REPEAT. Does this come back?
+
+  "daily"   they said so: "every day", "each morning", "daily", "every
+            evening at 9"
+  "weekly"  "every Monday", "each Friday", "weekly"
+  "once"    they said so: "tomorrow", "on the 3rd", "just once", or the
+            request names a single dated event -- a flight, an expiry, an
+            appointment
+  null      **they did not say, and it could sensibly be either.** "Remind me
+            at 9pm to learn English" is null: learning English is a habit and
+            a single evening is also plausible. Do NOT guess. Null is the
+            answer that gets the user asked.
+
+Prefer null over a guess. Answering "once" for something they meant to repeat
+is a reminder that silently never comes again.
+
 Respond with ONLY a JSON object:
-{"when": string, "timezone": string | null, "title": string, "note": string}"""
+{"when": string, "timezone": string | null, "title": string, "note": string,
+ "repeat": "once" | "daily" | "weekly" | null}"""
 
 
 class ReminderKind(Kind):
@@ -125,6 +151,7 @@ class ReminderKind(Kind):
         zone_name = _zone(result.get("timezone"))
         when = _moment(result.get("when"), zone_name)
         title = " ".join(str(result.get("title") or "").split())[:200]
+        repeat = _repeat(result.get("repeat"))
 
         return {
             # The two things every caller downstream assumed could not be
@@ -140,7 +167,47 @@ class ReminderKind(Kind):
             "fire_timezone": zone_name,
             "reminder_title": title or _fallback_title(request),
             "reminder_note": " ".join(str(result.get("note") or "").split())[:500],
+            # "once" until told otherwise, and the question below is what does
+            # the telling. Defaulting to a repeat would be the worse mistake:
+            # a reminder nobody asked to repeat, arriving every evening
+            # forever, is harder to undo than one that came only once.
+            "repeat": repeat or ONCE,
+            # Asked only when the request genuinely did not say. The owner's
+            # own framing: "there should be, depending on the case, a question
+            # -- daily, or one time?" This is that question, on the plan card,
+            # answered before anything is scheduled.
+            "questions": [] if repeat else [REPEAT_QUESTION],
         }
+
+
+# The one fork a request can leave open, asked rather than guessed.
+#
+# It uses the same shape `questions.py` produces, because the plan card and
+# `confirm` already speak it -- but note the difference: those questions narrow
+# a list of things that were found, and this one chooses a setting. `items` is
+# empty for exactly that reason, and `_confirm_reminder` reads the answer
+# directly instead of intersecting ids.
+REPEAT_QUESTION = {
+    "id": "repeat",
+    "question": "Once, or every day?",
+    "options": [
+        {"value": ONCE, "label": "Just this once", "items": []},
+        {"value": DAILY, "label": "Every day at this time", "items": []},
+        {"value": WEEKLY, "label": "Every week on this day", "items": []},
+    ],
+}
+
+
+def _repeat(value):
+    """What the model said about repeating, or None if it did not say.
+
+    Anything unrecognised is treated as "did not say" and therefore asked
+    about, rather than coerced to `once`. A model inventing "sometimes" should
+    produce a question, not a silently one-shot reminder.
+    """
+    if isinstance(value, str) and value.strip().lower() in REPEATS:
+        return value.strip().lower()
+    return None
 
 
 def _zone(name) -> str:

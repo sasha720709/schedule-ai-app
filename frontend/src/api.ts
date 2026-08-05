@@ -66,6 +66,10 @@ export interface Watch {
   fire_timezone?: string;
   reminder_title?: string;
   reminder_note?: string;
+  /** Does the reminder come back? Asked on the plan card when the request did
+   * not say, because guessing "once" for something meant to repeat is a
+   * reminder that silently never comes again. */
+  repeat?: "once" | "daily" | "weekly";
   /** Places that were looked at and not kept. A watch that quietly became two
    * shops instead of three tells the user nothing, and "Amazon prices in USD"
    * is information they can act on. */

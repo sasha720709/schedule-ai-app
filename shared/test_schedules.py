@@ -393,3 +393,41 @@ def test_a_one_shot_without_a_zone_names_none():
 def test_seconds_are_kept_because_the_api_requires_them():
     args = schedules.once_expression("2026-08-06T09:30:15")
     assert args["ScheduleExpression"] == "at(2026-08-06T09:30:15)"
+
+
+# --- a reminder that comes back ----------------------------------------------
+#
+# "Set a reminder for 9pm to learn English, every day" -- asked for by name,
+# and `once_expression` cannot express it.
+
+def test_a_daily_reminder_pins_the_wall_clock_time():
+    """Deliberately not `rate(1 day)`: a rate counts from whenever it was
+    created, so one created at 14:00 fires at 14:00 forever and "every day at
+    9pm" drifts by however long each invocation took."""
+    args = schedules.repeating_expression(
+        datetime(2026, 8, 5, 21, 7), "daily", "Asia/Jerusalem")
+    assert args["ScheduleExpression"] == "cron(7 21 * * ? *)"
+    assert args["ScheduleExpressionTimezone"] == "Asia/Jerusalem"
+
+
+def test_a_weekly_reminder_keeps_the_day_of_the_week():
+    """2026-08-05 is a Wednesday."""
+    args = schedules.repeating_expression(
+        datetime(2026, 8, 5, 21, 7), "weekly", "Asia/Jerusalem")
+    assert args["ScheduleExpression"] == "cron(7 21 ? * WED *)"
+
+
+def test_a_repeating_reminder_never_deletes_itself():
+    """It has to survive its own firing. What stops it is the watch's term."""
+    args = schedules.repeating_expression(datetime(2026, 8, 5, 21, 7), "daily")
+    assert "ActionAfterCompletion" not in args
+
+
+def test_the_string_form_the_row_stores_is_accepted_here_too():
+    args = schedules.repeating_expression("2026-08-05T21:07:00+03:00", "daily")
+    assert args["ScheduleExpression"] == "cron(7 21 * * ? *)"
+
+
+def test_an_unknown_repeat_is_refused_rather_than_guessed():
+    with pytest.raises(ValueError, match="unknown repeat"):
+        schedules.repeating_expression(datetime(2026, 8, 5, 21, 7), "sometimes")

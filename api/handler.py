@@ -208,6 +208,21 @@ def _upsert_once(watch_id: str, when, timezone_name=None) -> str:
     )
 
 
+def _upsert_repeating(watch_id: str, when, repeat: str,
+                      timezone_name=None) -> str:
+    """The schedule a reminder that comes back owns.
+
+    A cron, not a rate: a rate schedule counts from whenever it was created, so
+    "every day at 9pm" would drift and a rate created at 14:00 fires at 14:00
+    forever. The wall-clock time is the entire request.
+    """
+    return _put_schedule(
+        _schedule_name(watch_id),
+        schedules.repeating_expression(when, repeat, timezone_name),
+        {"watch_id": watch_id},
+    )
+
+
 def _put_schedule(name: str, expression: dict, payload: dict) -> str:
     args = {
         "Name": name,
@@ -419,33 +434,46 @@ def get_watch(event) -> dict:
     })
 
 
-def _confirm_reminder(watch_id: str, watch: dict) -> dict:
+def _confirm_reminder(watch_id: str, watch: dict, answers: dict) -> dict:
     """Commit a watch whose trigger is the clock.
 
     Almost nothing the ordinary path does applies. There is no interval to
     snap, no window to fit, no targets to write `watched_ids` onto, and no
-    budget gate -- a watch that fires exactly once cannot exceed a monthly
-    allowance however the arithmetic is arranged, so running the gate would
-    be theatre.
+    budget gate -- a reminder costs one Lambda invocation per firing, which is
+    four millionths of a dollar, so running the gate would be theatre.
 
-    What is left is the one thing that matters: create the schedule, and say
-    when it will go off. `next_check_at` is the same field the ordinary path
-    returns and means the same thing here -- it is just exact rather than
-    estimated, which is the one place in this product where it is.
+    What is left: decide whether it comes back, create the right shape of
+    schedule, and say when it will go off. `next_check_at` is the same field
+    the ordinary path returns and means the same thing -- just exact rather
+    than estimated, which is the one place in this product where it is.
     """
     fire_at = watch["fire_at"]
     zone = watch.get("fire_timezone") or None
+    repeat = _repeat_of(watch, answers)
 
-    arn = _upsert_once(watch_id, fire_at, zone)
+    if repeat == "once":
+        arn = _upsert_once(watch_id, fire_at, zone)
+        expires_at = None
+    else:
+        arn = _upsert_repeating(watch_id, fire_at, repeat, zone)
+        # A repeating reminder is the second thing in this system that does
+        # not stop by itself. Same term as a repeating vacancy watch, and the
+        # same reason: a forgotten one would arrive every evening for years.
+        expires_at = (datetime.now(timezone.utc)
+                      + timedelta(days=REPEATING_TERM_DAYS)).isoformat()
 
     _watches().update_item(
         Key={"watch_id": watch_id},
-        UpdateExpression=("SET #s = :s, confirmed_at = :t, schedule_arn = :a"),
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":s": "active", ":t": _now(), ":a": arn},
+        UpdateExpression=("SET #s = :s, confirmed_at = :t, schedule_arn = :a, "
+                          "#r = :r, expires_at = :x, answers = :ans"),
+        ExpressionAttributeNames={"#s": "status", "#r": "repeat"},
+        ExpressionAttributeValues={
+            ":s": "active", ":t": _now(), ":a": arn, ":r": repeat,
+            ":x": expires_at, ":ans": _to_decimal(answers or {}),
+        },
     )
 
-    print(f"confirmed {watch_id}: reminder at {fire_at}"
+    print(f"confirmed {watch_id}: {repeat} reminder at {fire_at}"
           f"{f' ({zone})' if zone else ''}")
     return _response(200, {
         "watch_id": watch_id,
@@ -453,13 +481,35 @@ def _confirm_reminder(watch_id: str, watch: dict) -> dict:
         "next_check_at": fire_at,
         "fire_at": fire_at,
         "fire_timezone": zone,
+        "repeat": repeat,
         "targets_scheduled": 0,
-        "repeating": False,
-        "expires_at": None,
+        # A daily reminder survives its own firing, exactly as a vacancy watch
+        # does, and the Notifier reads this to decide whether to tear the
+        # schedule down.
+        "repeating": repeat != "once",
+        "expires_at": expires_at,
         # Named, and zero. Omitting it would leave the client to guess whether
         # the field was missing or the answer was nothing.
         "cost": {"estimated_monthly_usd": 0.0, "within_budget": True},
     })
+
+
+def _repeat_of(watch: dict, answers: dict) -> str:
+    """Once, daily or weekly -- the answer if one was given, else the plan's.
+
+    The answer wins because it is newer and it is the user's. The plan's value
+    is `once` unless the request said otherwise, and the question is only asked
+    when the request left it open, so a user who confirms without answering
+    gets the safe direction: a reminder that comes once is easier to fix than
+    one that arrives every evening and was never wanted.
+    """
+    chosen = (answers or {}).get("repeat")
+    if isinstance(chosen, list):
+        chosen = chosen[0] if chosen else None
+    if isinstance(chosen, str) and chosen in ("once", "daily", "weekly"):
+        return chosen
+    stored = watch.get("repeat")
+    return stored if stored in ("once", "daily", "weekly") else "once"
 
 
 def _repin_baseline(watch: dict, targets: list, kept) -> dict:
@@ -532,7 +582,7 @@ def confirm_watch(event) -> dict:
     # that fires once -- `check_interval_min` in particular is absent on the
     # row, and the ordinary path rejects that as a 400.
     if watch.get("fire_at"):
-        return _confirm_reminder(watch_id, watch)
+        return _confirm_reminder(watch_id, watch, _body(event).get("answers"))
 
     # "field absent" and "field present but null" are deliberately different.
     # Silently substituting the Planner's interval for an explicit null would

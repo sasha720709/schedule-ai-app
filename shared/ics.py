@@ -95,8 +95,13 @@ def _stamp(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+# How a repeat is written in the format. The calendar then owns the
+# repetition, which is the whole point of handing it an entry at all.
+RRULES = {"daily": "FREQ=DAILY", "weekly": "FREQ=WEEKLY"}
+
+
 def event(*, uid: str, when, title: str, note: str = "",
-          minutes: int = DEFAULT_MINUTES, now=None) -> str:
+          minutes: int = DEFAULT_MINUTES, now=None, repeat: str = "once") -> str:
     """One `VEVENT`, wrapped in a `VCALENDAR`, ready to attach.
 
     `uid` is the watch id: stable, unique, and already meaningful. A calendar
@@ -128,6 +133,12 @@ def event(*, uid: str, when, title: str, note: str = "",
         f"DTEND:{_stamp(ends)}",
         f"SUMMARY:{summary}",
     ]
+    rule = RRULES.get(repeat or "once")
+    if rule:
+        # One entry that repeats, rather than an entry a day. With a stable
+        # UID the daily email keeps correcting the same series instead of
+        # littering the calendar with ninety copies.
+        lines.append(f"RRULE:{rule}")
     if note:
         lines.append(f"DESCRIPTION:{_escape(note)}")
     lines += [

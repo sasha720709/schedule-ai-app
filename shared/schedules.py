@@ -285,6 +285,43 @@ def once_expression(when, timezone_name=None) -> dict:
     return args
 
 
+def repeating_expression(when, repeat: str, timezone_name=None) -> dict:
+    """A reminder that comes back: every day, or every week on the same day.
+
+    The fourth schedule shape, and the one the owner asked for by name --
+    "set a reminder for 9pm to learn English, every day". `once_expression`
+    could not express it, and pretending it could by re-creating a one-shot
+    after each firing would put the whole thing at the mercy of one Lambda
+    invocation succeeding.
+
+    Deliberately **not** `rate(1 day)`. A rate schedule counts from whenever it
+    was created, so "every day at 9pm" confirmed at 21:07 drifts by however
+    long each invocation took, and a rate schedule created at 14:00 fires at
+    14:00 forever. A cron pins the wall-clock time, which is the entire request.
+
+    No `ActionAfterCompletion` -- it must survive its own firing. What stops it
+    is the watch's term, checked by the Checker, exactly as a repeating vacancy
+    watch is stopped.
+    """
+    if isinstance(when, str):
+        when = datetime.fromisoformat(when)
+
+    if repeat == "daily":
+        fields = f"{when.minute} {when.hour} * * ? *"
+    elif repeat == "weekly":
+        fields = f"{when.minute} {when.hour} ? * {_DAY_NAMES[when.weekday()]} *"
+    else:
+        raise ValueError(f"unknown repeat {repeat!r}")
+
+    args = {"ScheduleExpression": f"cron({fields})"}
+    if timezone_name:
+        # The same reason `cron` windows carry one: a UTC cron drifts by an
+        # hour twice a year, and a reminder that moves to 8pm every autumn is
+        # a reminder nobody trusts.
+        args["ScheduleExpressionTimezone"] = timezone_name
+    return args
+
+
 def checks_per_month(interval_min: int, window_name=None) -> float:
     """How many times this actually runs, which is what a cost estimate needs."""
     if interval_min <= 0:
