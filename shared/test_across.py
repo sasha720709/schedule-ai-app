@@ -220,3 +220,55 @@ def test_describe_names_every_shop_and_flags_the_stale_ones():
                                           interval_min=60))
     assert "ivory 1890.0 ILS" in line
     assert "bug 2100.0 ILS (stale)" in line
+
+
+# --- delivery, carried through to the report ---------------------------------
+#
+# `value` is already landed where delivery is known, so this is not a second
+# number: it is whether the number is a total or a floor. Measured, it is
+# usually a floor, and the email has to say so rather than say "cheapest".
+
+def test_a_reading_carries_the_delivery_terms_of_the_offer_it_is():
+    row = target("t1", 2679.0)
+    row["last_items"] = [{"price": 2679.0,
+                          "shipping": {"state": "free", "amount": 0.0,
+                                       "why": "over the threshold"}}]
+    assert across.reading_of(row, now=NOW, interval_min=60).shipping["state"] \
+        == "free"
+
+
+def test_the_cheapest_offer_is_the_one_whose_delivery_counts():
+    """The reading *is* the cheapest offer, so its terms are the ones that
+    apply. Items are stored cheapest-first by landed price."""
+    row = target("t1", 54.0)
+    row["last_items"] = [
+        {"price": 29.0, "shipping": {"state": "extra", "amount": 25.0, "why": ""}},
+        {"price": 2679.0, "shipping": {"state": "free", "amount": 0.0, "why": ""}},
+    ]
+    reading = across.reading_of(row, now=NOW, interval_min=60)
+    assert reading.shipping["amount"] == 25.0
+
+
+def test_a_row_with_no_items_has_unknown_delivery_not_a_crash():
+    """Every kind but `product`. A share price has no delivery, and `unknown`
+    is the honest word for that rather than an omission."""
+    assert across.reading_of(target("t1", 306.4),
+                             now=NOW, interval_min=60).shipping["state"] \
+        == "unknown"
+
+
+def test_delivery_survives_into_the_event_payload():
+    rows = [target("t1", 2679.0)]
+    rows[0]["last_items"] = [{"price": 2679.0,
+                              "shipping": {"state": "free", "amount": 0.0,
+                                           "why": "over the threshold"}}]
+    payload = across.readings(rows, CHEAPER, now=NOW)[0].as_dict()
+    assert payload["shipping"]["state"] == "free"
+
+
+def test_an_overridden_reading_carries_its_own_delivery():
+    rows = [target("t1", 2679.0, shop="bug")]
+    fresh = across.Reading(target_id="t1", value=999.0, shop="bug",
+                           shipping={"state": "extra", "amount": 40.0, "why": ""})
+    found = across.readings(rows, CHEAPER, now=NOW, override={"t1": fresh})
+    assert found[0].shipping["amount"] == 40.0

@@ -82,6 +82,8 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
+import shipping
+
 OK = "ok"
 UNAVAILABLE = "unavailable"
 FAILED = "failed"
@@ -592,6 +594,11 @@ def _offer_of(product: dict) -> dict | None:
     sku = str(product.get("sku") or product.get("mpn") or "")
     available = str(offers.get("availability") or "")
     return {
+        # What it costs to receive, where that is knowable. Read from the
+        # published field first and nowhere else here -- a phrase found
+        # somewhere on the page is not a fact about this offer. See
+        # shared/shipping.py, which is mostly about that distinction.
+        "shipping": shipping.from_schema(offers),
         # sku when the shop gives one: a stable identity that survives the
         # link being rewritten, which is exactly what LinkedIn taught us.
         "id": hashlib.sha1((sku or url or name).encode()).hexdigest()[:12],
@@ -628,8 +635,23 @@ def _selector_offers(spec: dict, payload: str) -> list:
 
     offers = []
     for node in nodes[:MAX_ITEMS]:
-        text = " ".join(node.get_text(" ", strip=True).split())[:MAX_ITEM_TEXT]
-        match = _PRICE_IN_TEXT.search(text)
+        whole = " ".join(node.get_text(" ", strip=True).split())
+        # Display text is truncated; the *search* is not. Amazon opens a card
+        # with boilerplate -- "Sponsored You're seeing this ad based on the
+        # product's relevance...", "Overall Pick Amazon's Choice: Products
+        # highlighted as..." -- which is longer than MAX_ITEM_TEXT on its own,
+        # so the price fell outside the window and the listing was dropped
+        # entirely. Measured 2026-08-05 on two real renders: **7 of 15 priced
+        # console cards survived, and 1 of 22 cables**. A "cheapest on Amazon"
+        # watch was reading a near-random subset of the page and saying
+        # "cheapest" about it, and a pinned offer outside the subset read as
+        # `unavailable` -- delisted, as far as the watch could tell.
+        #
+        # The truncation stays on `text` alone, because item ids are derived
+        # from it where a shop publishes no stable attribute, and widening
+        # that would re-report every offer on every existing watch.
+        text = whole[:MAX_ITEM_TEXT]
+        match = _PRICE_IN_TEXT.search(whole)
         if not match:
             continue
         try:
@@ -645,8 +667,37 @@ def _selector_offers(spec: dict, payload: str) -> list:
             "price": price,
             "currency": "",
             "in_stock": True,
+            # From the shop's own delivery element, never from the card's
+            # text. Amazon's cheap listings all read "FREE delivery" and mean
+            # "if you join Prime" or "on $35 of items"; a substring match said
+            # free for a $4.59 cable, 14 times out of 14.
+            "shipping": shipping.from_text(_delivery_text(spec, node)),
         })
     return offers
+
+
+def _delivery_text(spec: dict, node) -> str:
+    """The part of a card that is about delivery and nothing else.
+
+    `delivery_selector` comes from `shops.py`, so it is a fact about a shop
+    rather than something a model guessed. A shop without one yields nothing,
+    which reads as `unknown` -- the right answer, and better than the whole
+    card, which is how a product called "... - free shipping" starts reporting
+    its own delivery terms.
+    """
+    selector = spec.get("delivery_selector")
+    if not selector:
+        return ""
+    try:
+        found = node.select_one(selector)
+    except Exception:  # noqa: BLE001 -- the price already worked; this is extra
+        return ""
+    # The **first** match, not all of them joined. Amazon's delivery block
+    # holds two messages -- "FREE delivery Aug 13-18" and "Or fastest delivery
+    # Aug 13-16" -- and running them together turned a genuinely free offer
+    # into an ambiguous sentence. The primary message is the offer's terms;
+    # the rest are upsells.
+    return found.get_text(" ", strip=True) if found is not None else ""
 
 
 def _offers_on(spec: dict, payload: str) -> list:
@@ -659,15 +710,40 @@ def _offers_on(spec: dict, payload: str) -> list:
     offers = [o for o in (_offer_of(p) for p in _ld_products(payload)) if o]
     if not offers:
         offers = _selector_offers(spec, payload)
-    return sorted(offers, key=lambda o: o["price"])
+
+    # Last, and only where the page said nothing: the shop's own published
+    # free-shipping threshold, against this offer's own price. It settles the
+    # case that matters most -- a ILS 2,679 console is far above every
+    # threshold measured, so its sticker price really is what it costs to
+    # receive. Below the threshold it deliberately answers `unknown` rather
+    # than inventing the difference.
+    free_over = spec.get("free_over")
+    if free_over is not None:
+        for offer in offers:
+            offer["shipping"] = shipping.best_known(
+                offer.get("shipping"),
+                shipping.from_threshold(offer["price"], free_over,
+                                        offer.get("currency") or ""),
+            )
+
+    # Ordered by what the thing costs to *receive*, which is the whole point of
+    # the exercise: an offer ILS 50 cheaper with ILS 60 delivery is not
+    # cheaper. Where delivery is unknown -- which, measured, is most of the
+    # time -- landed equals the sticker price and this sorts exactly as it did
+    # before. That is not the same claim, and `shipping.known()` is what tells
+    # the difference; nothing here may present a floor as a total.
+    return sorted(offers, key=shipping.landed)
 
 
 def _run_offers(spec: dict, payload: str):
-    """Cheapest priced offer on the page. Zero offers is not a failure."""
+    """Cheapest priced offer on the page, delivery included where it is known.
+
+    Zero offers is not a failure.
+    """
     offers = _offers_on(spec, payload)
     if not offers:
         return None, _Missed("no priced offer found on this page")
-    return str(offers[0]["price"]), None
+    return str(shipping.landed(offers[0])), None
 
 
 def _count_items(spec: dict, payload: str) -> list:
@@ -816,7 +892,12 @@ def extract(spec: dict, payload: str) -> Extraction:
 
     if kind == "offers":
         found = _offers_on(spec, body)
-        return Extraction(OK, value=found[0]["price"], raw=raw, items=found)
+        # Landed, matching `raw`. These two disagreeing was caught by a test
+        # written the same hour: `raw` said 54 and `value` said 29, so the
+        # condition would have been judged on the sticker while the email
+        # showed the total. One of them has to be the number, and it is this.
+        return Extraction(OK, value=shipping.landed(found[0]), raw=raw,
+                          items=found)
 
     try:
         value = coerce(raw, parse)

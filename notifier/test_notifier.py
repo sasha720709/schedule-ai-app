@@ -641,3 +641,73 @@ def test_an_unreadable_timestamp_does_not_break_the_email(aws):
     _, body = sent(env)
 
     assert body.count("at an unknown time") == 2
+
+
+# --------------------------------------------------------------------------
+# Delivery, and the claim the email is allowed to make
+#
+# Measured 2026-08-05: no Israeli shop publishes a delivery cost before
+# checkout, and on Amazon every cheap listing's "FREE delivery" is conditional.
+# So "cheapest" is usually a claim about numbers that exclude delivery, and
+# saying it plainly is the thing the roadmap set out to stop.
+# --------------------------------------------------------------------------
+
+def priced(shop, value, state, amount=None, minutes=1):
+    return {"target_id": f"t_{shop}", "value": value, "currency": "ILS",
+            "shop": shop, "url": f"https://{shop}.example/s",
+            "at": a_while_ago(minutes), "stale": False, "source": "check",
+            "shipping": {"state": state, "amount": amount, "why": ""}}
+
+
+def test_free_delivery_is_said_so(aws):
+    env = aws()
+    handler.lambda_handler(triggered(readings=[
+        priced("bug", 2679.0, "free", 0.0)]), None)
+    _, body = sent(env)
+
+    assert "free delivery" in body
+    assert "not included" not in body
+
+
+def test_a_delivery_cost_is_named_in_the_line(aws):
+    env = aws()
+    handler.lambda_handler(triggered(readings=[
+        priced("amazon", 534.99, "extra", 35.0)]), None)
+    _, body = sent(env)
+
+    assert "includes 35 delivery" in body
+
+
+def test_an_unknown_delivery_makes_the_email_say_so(aws):
+    """The usual case. Without this line the email reads as a finished
+    comparison of totals, and it is a comparison of floors."""
+    env = aws()
+    handler.lambda_handler(triggered(readings=[
+        priced("ivory", 229.0, "unknown"),
+        priced("bug", 2679.0, "free", 0.0)]), None)
+    _, body = sent(env)
+
+    assert "before delivery" in body
+    assert "do not publish it before checkout" in body
+
+
+def test_no_disclaimer_when_every_shop_is_known(aws):
+    """Do not warn about a thing that did not happen -- a notice on every
+    email is a notice nobody reads."""
+    env = aws()
+    handler.lambda_handler(triggered(readings=[
+        priced("bug", 2679.0, "free", 0.0),
+        priced("amazon", 534.99, "extra", 35.0)]), None)
+    _, body = sent(env)
+
+    assert "do not publish it before checkout" not in body
+
+
+def test_a_reading_with_no_shipping_field_at_all_reads_as_unknown(aws):
+    """Rows written before this existed must not claim free delivery."""
+    env = aws()
+    handler.lambda_handler(triggered(readings=readings(
+        ("ivory", 1899.0, "ILS", a_while_ago(1), False))), None)
+    _, body = sent(env)
+
+    assert "before delivery" in body

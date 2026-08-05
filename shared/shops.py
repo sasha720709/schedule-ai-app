@@ -70,7 +70,8 @@ class Shop:
     """One place to look, with the extractor already written."""
 
     def __init__(self, name, *, countries, url, describe, currency=None,
-                 selector=None, fetch_method="http"):
+                 selector=None, fetch_method="http", free_over=None,
+                 delivery_selector=None):
         self.name = name
         self.countries = countries
         self.url = url
@@ -78,6 +79,12 @@ class Shop:
         self.currency = currency
         self.selector = selector
         self.fetch_method = fetch_method
+        # What the shop itself publishes about delivery. Both are facts about
+        # a shop that a person read off that shop's own pages, which is the
+        # only reason they can be trusted -- see shared/shipping.py on why the
+        # same phrases scraped out of a product card cannot be.
+        self.free_over = free_over
+        self.delivery_selector = delivery_selector
 
     def expand(self, query: str) -> dict:
         extractor = {"kind": "offers", "parse": "float"}
@@ -85,6 +92,10 @@ class Shop:
         # first regardless, and a selector is only ever the fallback.
         if self.selector:
             extractor["selector"] = self.selector
+        if self.free_over is not None:
+            extractor["free_over"] = self.free_over
+        if self.delivery_selector:
+            extractor["delivery_selector"] = self.delivery_selector
 
         return {
             "url": self.url.format(query=urllib.parse.quote(query)),
@@ -115,6 +126,12 @@ BUG = Shop(
     describe="Bug (Israel)",
     currency="ILS",
     selector=".bordered-product.product-cube-inner-1",
+    # From Bug's own banner, read 2026-08-05: "משלוח רגיל חינם ברכישה מעל 179
+    # שח" -- free regular delivery on purchases over ILS 179. They also offer
+    # free same-day delivery in the centre over 799, which is not encoded
+    # because it depends on where the buyer is and this system has no idea.
+    # The lower, unconditional threshold is the one that is always true.
+    free_over=179,
 )
 
 AMAZON = Shop(
@@ -127,6 +144,16 @@ AMAZON = Shop(
     # The one shop here that needs rendering. 45x an HTTP check, and still
     # $0.13/month hourly -- see the module docstring on why no paid API.
     fetch_method="browser",
+    # Amazon's own words on its own cards: "Non-members get FREE delivery ...
+    # on $35 of items shipped by Amazon". Encoded as a per-offer threshold,
+    # which is stricter than Amazon means -- they count the whole basket, and
+    # a watch is about one thing.
+    free_over=35,
+    # The element that means delivery and nothing else. Card *text* is
+    # unusable: every cheap listing says "FREE delivery" and means "if you
+    # join Prime", so a substring match marked a $4.59 cable free 14 times out
+    # of 14. See shared/shipping.py.
+    delivery_selector='[data-cy="delivery-block"] .udm-primary-delivery-message',
 )
 
 SHOPS = {s.name: s for s in (IVORY, BUG, AMAZON)}

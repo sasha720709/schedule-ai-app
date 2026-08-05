@@ -148,11 +148,40 @@ def _format_readings(readings: list) -> str:
         when = _age(reading.get("at"))
         note = "  -- not confirmed recently" if reading.get("stale") else ""
         lines.append(f"  {amount}{' ' + currency if currency else ''}"
-                     f"  {name}  (read {when}){note}")
+                     f"  {name}  ({_delivery(reading)}, read {when}){note}")
         href = (reading.get("url") or "").strip()
         if href:
             lines.append(f"    {href}")
+
+    # Measured 2026-08-05: no shop probed publishes a delivery cost on a search
+    # page at all, so this line is the usual case rather than the exception.
+    # Saying "cheapest" of numbers that exclude delivery is the wrong claim,
+    # and it is the one the roadmap set out to stop -- an item 50 cheaper with
+    # 60 delivery is not cheaper. The fix is not arithmetic nobody can do, it
+    # is not claiming to have done it.
+    if any(_state(r) == "unknown" for r in readings):
+        lines.append("")
+        lines.append("  Delivery is not included where it says so above — "
+                     "these shops do not publish it before checkout.")
     return "\n".join(lines)
+
+
+def _state(reading) -> str:
+    return ((reading.get("shipping") or {}).get("state")) or "unknown"
+
+
+def _delivery(reading) -> str:
+    """What delivery adds, in words, for one line of the summary."""
+    ship = reading.get("shipping") or {}
+    state = ship.get("state")
+    if state == "free":
+        return "free delivery"
+    if state == "extra":
+        amount = ship.get("amount")
+        return (f"includes {amount:g} delivery"
+                if isinstance(amount, (int, float)) and amount
+                else "delivery included")
+    return "before delivery"
 
 
 def _format_email(detail: dict) -> tuple:

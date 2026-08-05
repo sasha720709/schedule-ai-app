@@ -425,17 +425,117 @@ more than one target that could fire.
   the Phase 5 lesson, where an `AccessDenied` after the email had been sent
   cost a real person three duplicate copies.
 
-## 8. Recommended order
+## 8. Step 4, built 2026-08-05 — delivery, and what is not knowable
+
+The step said: read the shipping cost and add it to the price. **Measured
+first**, because §3.4 asserted this was reachable and never checked. Two
+Israeli shops over plain HTTP and 38 Amazon cards across two searches:
+
+| | delivery cost on the page |
+|---|---|
+| `ivory.co.il` | none. `deliveryTime` is a *duration* — 0–3 days handling, 1–5 in transit. The one Hebrew free-shipping phrase sits inside three product **titles** |
+| `bug.co.il` | none per offer. A site-wide banner, in an image's `alt`: free over ₪179, free same-day in the centre over ₪799 |
+| `amazon.com` | a real delivery element on 12 of 16 console cards — **11 free and one at $35** — and on 22 of 22 cheap cards, where every one is conditional |
+
+So a delivery cost is readable sometimes and absent most of the time, and
+absent is the common case. The step therefore does **not** produce a number
+where none exists. `shared/shipping.py` produces **what is known**, in three
+states — `free`, `extra`, `unknown` — and the product says which.
+
+That is not a retreat from the goal. The harm §3.4 named is caused by the
+claim as much as by the arithmetic: an email saying "cheapest at Bug" reads as
+a finished comparison of totals whether or not delivery was ever considered.
+Where delivery *is* known the price is landed and the ordering is right; where
+it is not, the email says "before delivery" and adds one line explaining that
+these shops do not publish it before checkout.
+
+### The trap a substring match walks straight into
+
+"FREE delivery" appears on **14 of 14** cheap Amazon cards. On every one it is
+false for someone buying that item alone:
+
+    Join Prime to get FREE delivery Fri, Aug 7
+    Or Non-members get FREE delivery Mon, Aug 10 on $35 of items shipped by Amazon
+
+A `"FREE delivery" in text` check marks a $4.59 cable as free-shipping,
+confidently, fourteen times out of fourteen. So free is believed only when the
+claim carries no condition, and the conditions are listed rather than guessed.
+
+The same reasoning bans reading Hebrew delivery text off a card: Ivory sells
+three Thrustmaster wheels whose *names* end in "משלוח חינם". **A phrase found
+somewhere on a page is not a fact about the thing beside it** — the
+whole-document `unavailable_if` bug in a new costume. Delivery is read from an
+element that means delivery and nothing else (`[data-cy="delivery-block"]`, and
+specifically its *primary* message: the block also holds "Or fastest delivery",
+which is an upsell, and running the two together turned a genuinely free offer
+into an ambiguous sentence).
+
+### What is believed, in order
+
+1. **`schema.org` `shippingDetails`.** Nobody probed publishes it. Read first
+   anyway — a shop that adds it tomorrow improves every watch with no code
+   change, the same argument that made `offers` prefer JSON-LD.
+2. **The shop's own delivery element**, where `shops.py` names one.
+3. **The shop's published free-shipping threshold** — Bug ₪179 from their own
+   banner, Amazon $35 from their own cards, Ivory unknown and left so. It
+   settles the case that matters most: a ₪2,679 console clears every threshold
+   measured, so its sticker price really is what it costs to receive. Below the
+   threshold the answer is `unknown`, never "the difference".
+
+First-wins, not cheapest-wins. The order is a statement about *evidence*, and
+picking the most flattering answer from several sources is how a comparison
+turns into an advertisement.
+
+### The bug this uncovered, which was much worse than the feature
+
+`MAX_ITEM_TEXT = 200` truncated a card **before the price was searched for**.
+Amazon opens a card with boilerplate longer than that — *"Sponsored You're
+seeing this ad based on the product's relevance…"*, *"Overall Pick Amazon's
+Choice: Products highlighted as…"* — so the price fell outside the window and
+the listing was dropped entirely.
+
+    console search   7 of 15 priced cards survived   →  15 of 15
+    cable search     1 of 22                         →  22 of 22
+
+**A "cheapest on Amazon" watch was reading a near-random subset of the page
+and saying "cheapest" about it**, and a pinned offer outside the subset read as
+`unavailable` — delisted, as far as the watch could tell. Pre-existing, invisible
+to every test, and found only by running the extractor over a page that had
+already been fetched for another purpose. The search now runs over the whole
+card; the *stored* text stays truncated, because item ids derive from it where a
+shop publishes no stable attribute and widening it would re-report every offer
+on every existing watch.
+
+### Proof, on a real render
+
+    499.99  free    Xbox Series S - All Digital Gaming Console
+    499.99  +35     X Box Series S All-Digital Console
+
+Identical stickers, different landed prices, now in the right order. That is
+the sentence §3.4 was written to make true.
+
+## 9. Recommended order
 
 1. ✅ **Shops registry + Amazon on our own browser.** Done — §5.
 2. ✅ **Particularization via the questions step.** Done — §6.
 3. ✅ **Watch-level readings.** Done — §7.
-4. **Landed price, and the blocked-render outcome.** Next, and the one
-   remaining thing that makes a product watch *wrong* rather than imprecise:
-   an item ILS 50 cheaper with ILS 60 shipping is not cheaper, and the
-   cross-shop summary §7 just built compares sticker prices.
+4. ✅ **Delivery, as a stated fact rather than an invented number.** Done — §8.
+5. **The blocked-render outcome.** The last item on this phase's original list
+   and the only one left: Amazon's blocking is probabilistic, and the day it
+   starts refusing should be **one visible signal** rather than every Amazon
+   watch degrading separately and looking like a broken extractor.
 
-1 and 2 together made a product watch honest. 3 made it explain itself.
+1 and 2 together made a product watch honest. 3 made it explain itself. 4 made
+it stop overclaiming.
+
+### Still open, and named rather than hidden
+
+- **The first money-shaped number in a card is not always the price.** *"Xbox
+  Series X & $100 Gift Card"* reads as $100. Pre-existing, orthogonal to
+  delivery, and exactly what the questions step exists to correct.
+- **Ivory has no published threshold** that plain HTTP can reach, so every
+  Ivory offer is `unknown`. That is honest and it is also the least useful
+  answer, and it is a per-shop research task rather than an engineering one.
 
 ### Still not expressible, and deliberately so
 

@@ -64,10 +64,10 @@ class Reading:
     """One shop's current price, and how much to trust it."""
 
     __slots__ = ("target_id", "value", "currency", "url", "shop", "at",
-                 "source", "stale")
+                 "source", "stale", "shipping")
 
     def __init__(self, *, target_id, value, currency=None, url=None, shop=None,
-                 at=None, source="check", stale=False):
+                 at=None, source="check", stale=False, shipping=None):
         self.target_id = target_id
         self.value = value
         self.currency = currency or ""
@@ -80,6 +80,12 @@ class Reading:
         # to compare shops at all, instead of reporting one shop out of three.
         self.source = source
         self.stale = stale
+        # What this reading costs to receive, where that is knowable at all.
+        # `value` is already landed where it is known, so this is not a second
+        # number -- it is whether the number is a total or a floor. Most of
+        # the time it is a floor, and the email has to say so.
+        self.shipping = shipping or {"state": "unknown", "amount": None,
+                                     "why": ""}
 
     def as_dict(self) -> dict:
         return {
@@ -91,6 +97,7 @@ class Reading:
             "at": self.at,
             "source": self.source,
             "stale": self.stale,
+            "shipping": self.shipping,
         }
 
     def __repr__(self):  # pragma: no cover -- debugging aid
@@ -174,9 +181,11 @@ def reading_of(target, *, now, interval_min):
         if target.get("last_status") != "ok":
             return None
         value, at, source = target.get("last_value"), checked_at, "check"
+        items = target.get("last_items")
     else:
         value, at, source = (target.get("verified_value"),
                              target.get("verified_at"), "plan")
+        items = target.get("verified_items")
 
     number = _number(value)
     if number is None:
@@ -199,7 +208,21 @@ def reading_of(target, *, now, interval_min):
         at=at,
         source=source,
         stale=stale,
+        shipping=_shipping_of(items),
     )
+
+
+def _shipping_of(items):
+    """The delivery terms of the offer this reading is the price of.
+
+    The reading is the cheapest offer, so its delivery is the one that applies.
+    A row with no items -- every kind but `product` -- has nothing to say here,
+    and `unknown` is the right answer for a share price rather than an omission.
+    """
+    if not items:
+        return None
+    first = items[0]
+    return first.get("shipping") if isinstance(first, dict) else None
 
 
 def _shop_of(url):

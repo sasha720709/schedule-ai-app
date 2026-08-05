@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from extract import (  # noqa: E402
     FAILED,
+    MAX_ITEM_TEXT,
     parse_currency,
     OK,
     UNAVAILABLE,
@@ -802,3 +803,161 @@ def test_a_per_render_attribute_is_never_used_as_identity():
     import extract as extract_mod
     assert "data-uuid" not in extract_mod._ID_ATTRS
     assert "data-index" not in extract_mod._ID_ATTRS
+
+
+# --- delivery, where a shop actually publishes it -----------------------------
+#
+# The roadmap wanted the shipping cost added to the price. Measured 2026-08-05,
+# no shop publishes one before checkout -- so what is tested here is that the
+# three things which *are* knowable reach an offer, and that the fourth
+# (nothing) stays honestly unknown.
+
+AMAZON_CARDS = """
+<div data-component-type="s-search-result" data-asin="A1">
+  <h2>Xbox Series X 1TB</h2><span class="a-price">$749.99</span>
+  <div data-cy="delivery-block">
+    <div class="udm-primary-delivery-message">FREE delivery Aug 13 - 18</div>
+    <div class="udm-secondary-delivery-message">Or fastest delivery Aug 13 - 16</div>
+  </div>
+</div>
+<div data-component-type="s-search-result" data-asin="A2">
+  <h2>USB cable 3ft</h2><span class="a-price">$4.59</span>
+  <div data-cy="delivery-block">
+    <div class="udm-primary-delivery-message">Join Prime to get FREE delivery Fri, Aug 7</div>
+  </div>
+</div>
+<div data-component-type="s-search-result" data-asin="A3">
+  <h2>Controller</h2><span class="a-price">$39.99</span>
+</div>
+"""
+
+AMAZON_SPEC = {"kind": "offers", "parse": "float",
+               "selector": '[data-component-type="s-search-result"]',
+               "delivery_selector":
+                   '[data-cy="delivery-block"] .udm-primary-delivery-message'}
+
+LD_WITH_SHIPPING = """<html><head>
+<script type="application/ld+json">
+{"@type":"ItemList","itemListElement":[
+ {"item":{"@type":"Product","name":"A console","sku":"S1",
+  "offers":{"@type":"Offer","price":"2679","priceCurrency":"ILS",
+            "shippingDetails":{"@type":"OfferShippingDetails",
+                               "shippingRate":{"value":0,"currency":"ILS"}}}}},
+ {"item":{"@type":"Product","name":"A cable","sku":"S2",
+  "offers":{"@type":"Offer","price":"29","priceCurrency":"ILS",
+            "shippingDetails":{"shippingRate":{"value":25,"currency":"ILS"}}}}}
+]}
+</script></head><body></body></html>"""
+
+
+def shipping_of(items, text):
+    return next(i["shipping"] for i in items if text in i["text"])
+
+
+def test_an_unconditional_free_delivery_reaches_the_offer():
+    items = extract(AMAZON_SPEC, AMAZON_CARDS).items
+    assert shipping_of(items, "Xbox")["state"] == "free"
+
+
+def test_a_prime_only_free_delivery_does_not(): 
+    """The measured trap: 14 of 14 cheap cards say "FREE delivery" and none of
+    them is free for someone buying that one item."""
+    items = extract(AMAZON_SPEC, AMAZON_CARDS).items
+    assert shipping_of(items, "USB cable")["state"] == "unknown"
+
+
+def test_a_card_with_no_delivery_block_is_unknown():
+    items = extract(AMAZON_SPEC, AMAZON_CARDS).items
+    assert shipping_of(items, "Controller")["state"] == "unknown"
+
+
+def test_card_text_is_never_read_for_delivery():
+    """Ivory sells three wheels whose *names* end in "free shipping". A phrase
+    found somewhere on a page is not a fact about the thing beside it -- the
+    whole-document `unavailable_if` bug, in a new costume."""
+    html = """<div class="card"><h2>Racing wheel - free shipping</h2>
+              <span>ILS 899</span></div>"""
+    spec = {"kind": "offers", "parse": "float", "selector": ".card"}
+    assert extract(spec, html).items[0]["shipping"]["state"] == "unknown"
+
+
+def test_a_published_rate_reaches_the_offer_and_is_added():
+    items = extract({"kind": "offers", "parse": "float"}, LD_WITH_SHIPPING).items
+    cable = next(i for i in items if "cable" in i["text"])
+    assert cable["shipping"]["state"] == "extra"
+    assert cable["shipping"]["amount"] == 25.0
+
+
+def test_the_cheapest_offer_is_the_cheapest_to_receive():
+    """ILS 29 + 25 delivery is 54; the console is 2679 and free. Ordering by
+    the sticker is what the roadmap called comparing the wrong number -- here
+    the cable still wins, but on the right arithmetic."""
+    result = extract({"kind": "offers", "parse": "float"}, LD_WITH_SHIPPING)
+    assert result.value == 54.0
+    assert result.items[0]["price"] == 29
+
+
+def test_delivery_flips_the_order_when_it_is_large_enough():
+    html = LD_WITH_SHIPPING.replace('"value":25', '"value":4000')
+    result = extract({"kind": "offers", "parse": "float"}, html)
+    assert result.value == 2679.0
+    assert "console" in result.items[0]["text"]
+
+
+def test_a_shops_free_shipping_threshold_settles_an_expensive_offer():
+    """Bug publishes free delivery over ILS 179; a ILS 2,679 console clears it."""
+    html = """<div class="card"><h2>A console</h2><span>ILS 2679</span></div>"""
+    spec = {"kind": "offers", "parse": "float", "selector": ".card",
+            "free_over": 179}
+    assert extract(spec, html).items[0]["shipping"]["state"] == "free"
+
+
+def test_under_the_threshold_stays_unknown_rather_than_computed():
+    html = """<div class="card"><h2>A game</h2><span>ILS 29</span></div>"""
+    spec = {"kind": "offers", "parse": "float", "selector": ".card",
+            "free_over": 179}
+    fact = extract(spec, html).items[0]["shipping"]
+    assert fact["state"] == "unknown" and fact["amount"] is None
+
+
+def test_the_page_beats_the_threshold_when_both_speak():
+    """A rate the shop published about this offer is better evidence than a
+    rule about the shop, even when the rule is more flattering."""
+    html = LD_WITH_SHIPPING
+    spec = {"kind": "offers", "parse": "float", "free_over": 1}
+    items = extract(spec, html).items
+    cable = next(i for i in items if "cable" in i["text"])
+    assert cable["shipping"]["state"] == "extra"
+
+
+def test_a_shop_with_no_threshold_and_no_element_says_nothing():
+    html = """<div class="card"><h2>A console</h2><span>ILS 2679</span></div>"""
+    spec = {"kind": "offers", "parse": "float", "selector": ".card"}
+    assert extract(spec, html).items[0]["shipping"]["state"] == "unknown"
+
+
+def test_a_price_after_a_long_disclaimer_is_still_found():
+    """Amazon opens a card with boilerplate longer than MAX_ITEM_TEXT --
+    "Sponsored You're seeing this ad based on..." -- so the price fell outside
+    the search window and the whole listing was dropped. Measured on real
+    renders: 7 of 15 priced console cards survived, and 1 of 22 cables. A
+    "cheapest on Amazon" watch was reading a near-random subset of the page."""
+    boilerplate = "Sponsored You are seeing this ad based on relevance. " * 6
+    html = f'<div class="card">{boilerplate}<span>$9.99</span></div>'
+    spec = {"kind": "offers", "parse": "float", "selector": ".card"}
+
+    result = extract(spec, html)
+
+    assert len(boilerplate) > MAX_ITEM_TEXT
+    assert result.value == 9.99
+
+
+def test_the_displayed_text_stays_short_even_so():
+    """The search widened; the stored text did not. Item ids are derived from
+    it where a shop publishes no stable attribute, and widening that would
+    re-report every offer on every existing watch."""
+    boilerplate = "Sponsored blah blah blah. " * 12
+    html = f'<div class="card">{boilerplate}<span>$9.99</span></div>'
+    spec = {"kind": "offers", "parse": "float", "selector": ".card"}
+
+    assert len(extract(spec, html).items[0]["text"]) <= MAX_ITEM_TEXT

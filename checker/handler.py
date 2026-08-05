@@ -40,6 +40,7 @@ from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
 from check import fetch_raw, fetch_text, judge
 import questions
 from rank import rank
+import shipping
 from repair import repair
 
 dynamodb = boto3.resource("dynamodb")
@@ -184,7 +185,12 @@ def _only_watched(target: dict, result):
             UNAVAILABLE,
             notes=["none of the offers being watched are listed right now"])
 
-    prices = [i["price"] for i in kept if isinstance(i.get("price"), (int, float))]
+    # Landed, not sticker: the reading is what the pinned offer costs to
+    # receive. Where delivery is unknown the two are the same number and this
+    # behaves exactly as it did -- see shared/shipping.py on why that is not
+    # the same claim.
+    prices = [shipping.landed(i) for i in kept
+              if isinstance(i.get("price"), (int, float))]
     return type(result)(
         result.status,
         value=min(prices) if prices else result.value,
@@ -431,6 +437,7 @@ def _readings(targets_table, watch: dict, target: dict, result: dict,
         siblings = _siblings(targets_table, watch["watch_id"])
         if len(siblings) < 2:
             return []
+        items = result.get("items") or []
         mine = across.Reading(
             target_id=target["target_id"],
             value=result["value"],
@@ -438,6 +445,7 @@ def _readings(targets_table, watch: dict, target: dict, result: dict,
             url=target.get("url"),
             shop=target.get("shop"),
             at=now,
+            shipping=items[0].get("shipping") if items else None,
         )
         found = across.readings(
             [_from_decimal(s) for s in siblings], condition,
