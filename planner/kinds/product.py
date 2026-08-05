@@ -159,6 +159,11 @@ class ProductKind(Kind):
             "verified_items": outcome.items,
             "unfiltered_count": len(outcome.items),
             "currency": target.get("currency") or "",
+            # Stored so the email can say "Ivory" rather than a hostname. The
+            # host is a workable fallback and `across.py` still derives one for
+            # rows written before this, but a registry that knows the shop's
+            # name should not make the reader parse a URL.
+            "shop": target.get("shop") or "",
             "literal": outcome.raw,
             "why": (f"{target.get('shop', 'known shop')}; {len(outcome.items)} "
                     f"offers, cheapest {outcome.value}"),

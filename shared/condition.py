@@ -110,6 +110,70 @@ def evaluate(condition, value) -> bool:
     return bool(OPS[op](left, right))
 
 
+def resolve_relative_condition(condition: dict, pct, baseline, *,
+                               baseline_at=None, baseline_source=None) -> dict:
+    """Turn "goes down from current" into a real threshold, using a real reading.
+
+    The condition is written during the search step, before any page has been
+    opened. At that moment the model has no current value -- only whatever a
+    search result claimed -- so asking it for an absolute threshold on a
+    relative request guarantees a fabricated one.
+
+    Observed exactly that: asked "tell me when Apple shares go down from the
+    current", it produced `price < 313.93`. That is 5% below $330.45, a figure
+    from search results, while the page itself said $333.43. Two inventions in
+    one number -- a baseline that was never read, and a 5% drop the user never
+    asked for. "Goes down" means any decrease.
+
+    So the threshold is computed here instead, from the value the extractor was
+    actually verified against, and the baseline is stored alongside it so the
+    plan card can say "5% below the $333.43 read just now" rather than showing
+    a bare number nobody can check.
+
+    ## And *when* it was read (added 2026-08-04)
+
+    The owner settled that a previous close is an acceptable baseline: asked on
+    a Sunday what "current" means, Friday's close is the only honest answer.
+    Accepting that makes labelling it mandatory rather than optional, because
+    the two cases now look identical on screen and behave very differently. A
+    threshold 5% below a live price is one the user watched being set; the same
+    threshold below Friday's close was computed from a number they never saw.
+
+    `baseline_source` is `live` or `previous_close`, decided by whether the
+    market was open when the reading was taken, and `baseline_at` is the
+    moment. Neither changes any arithmetic. They exist so the plan card can
+    say which it was.
+
+    ## Called twice, on purpose (added 2026-08-05)
+
+    It lives here rather than in the Planner because `confirm` has to run it
+    again. A product watch's baseline is taken at plan time from the cheapest
+    offer any shop lists -- which for "xbox series x" is a ILS 139 headset --
+    and the *product* is only pinned down afterwards, by the answers to the
+    plan card's questions. A threshold left at 10% below the headset is a
+    number about the wrong object. So the arithmetic has to be repeatable from
+    a different starting price, which means it cannot live inside the Planner's
+    one-way flow.
+    """
+    if pct is None or not isinstance(baseline, (int, float)) or isinstance(baseline, bool):
+        return condition
+
+    resolved = dict(condition)
+    threshold = round(float(baseline) * (1 + float(pct) / 100), 4)
+    resolved["value"] = threshold
+    resolved["baseline"] = float(baseline)
+    resolved["relative_change_pct"] = float(pct)
+    if baseline_at:
+        resolved["baseline_at"] = baseline_at
+    if baseline_source:
+        resolved["baseline_source"] = baseline_source
+    # "goes down" is any decrease, so the threshold IS the baseline and the
+    # comparison has to be strict -- `<=` would fire on an unchanged price.
+    if not resolved.get("op"):
+        resolved["op"] = "<" if float(pct) <= 0 else ">"
+    return resolved
+
+
 def describe(condition) -> str:
     """A short human phrase for logs and notification emails."""
     if not isinstance(condition, dict):

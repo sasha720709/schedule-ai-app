@@ -29,6 +29,8 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
+import across
+import condition as condition_mod
 import cost
 import questions
 import schedules
@@ -372,6 +374,61 @@ def get_watch(event) -> dict:
     })
 
 
+def _repin_baseline(watch: dict, targets: list, kept) -> dict:
+    """Re-derive a relative threshold from the offer the user actually picked.
+
+    The order of events is what creates this problem, and the order is right:
+    the Planner cannot know which offer is meant until it has fetched the shops
+    and asked about what it found, and the answers only arrive here. So the
+    baseline it stored is the cheapest thing any shop listed for the search --
+    measured on real pages, a ILS 139 headset for "xbox series x" -- and the
+    threshold hanging off it is 10% below an object nobody is watching.
+
+    Recomputed from the pinned offers, best-first in the same direction the
+    condition is judged in, and only ever across offers priced in the
+    condition's currency: `across.py` on why nothing here converts money.
+
+    Never raises and never widens the watch. Anything unexpected -- no
+    relative condition, no answers, no priced offer left -- returns the
+    condition exactly as it was, which is the behaviour that shipped before
+    this existed.
+    """
+    stored = _from_decimal(watch.get("condition") or {})
+    pct = stored.get("relative_change_pct")
+    if kept is None or pct is None:
+        return stored
+
+    prices = []
+    for target in targets:
+        if not across.comparable(target, stored):
+            continue
+        for item in _from_decimal(target.get("verified_items") or []):
+            price = item.get("price")
+            if (item.get("id") in kept
+                    and isinstance(price, (int, float))
+                    and not isinstance(price, bool)):
+                prices.append(float(price))
+
+    if not prices:
+        return stored
+
+    pick = max if across.direction(stored) == "max" else min
+    baseline = pick(prices)
+    if baseline == stored.get("baseline"):
+        return stored
+
+    repinned = condition_mod.resolve_relative_condition(
+        stored, pct, baseline,
+        baseline_at=_now(),
+        # Unchanged: whether the market was open is a fact about when the page
+        # was read, and this is the same reading, narrowed to fewer offers.
+        baseline_source=stored.get("baseline_source"),
+    )
+    print(f"repinned baseline {stored.get('baseline')} -> {baseline}, "
+          f"threshold {stored.get('value')} -> {repinned.get('value')}")
+    return repinned
+
+
 def confirm_watch(event) -> dict:
     """Commit a proposed plan: create its schedules and go active."""
     watch_id = event["pathParameters"]["id"]
@@ -447,6 +504,12 @@ def confirm_watch(event) -> dict:
     kept = questions.chosen_ids(
         _from_decimal(watch.get("questions") or []), answers or {})
 
+    # "10% cheaper than now" was computed at plan time from the cheapest offer
+    # any shop listed -- which for "xbox series x" is a ILS 139 headset. The
+    # product is only pinned down here, by the answers. Left alone, the watch
+    # would carry a threshold derived from an object it is not watching.
+    condition = _repin_baseline(watch, targets, kept)
+
     for target in targets:
         arn = _upsert_schedule(target["target_id"], interval,
                                 target.get("schedule_window"))
@@ -488,15 +551,16 @@ def confirm_watch(event) -> dict:
         Key={"watch_id": watch_id},
         UpdateExpression=(
             "SET #s = :s, check_interval_min = :i, confirmed_at = :t, "
-            "expires_at = :x, answers = :a"
+            "expires_at = :x, answers = :a, #c = :cond"
         ),
-        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeNames={"#s": "status", "#c": "condition"},
         ExpressionAttributeValues={
             ":s": "active",
             ":i": _to_decimal(interval),
             ":t": _now(),
             ":x": expires_at,
             ":a": _to_decimal(answers or {}),
+            ":cond": _to_decimal(condition),
         },
     )
 

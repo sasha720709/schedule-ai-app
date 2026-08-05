@@ -6,6 +6,7 @@ raises, the schedules survive, and the watch keeps ticking -- better a
 duplicate check than a match nobody hears about."""
 
 import os
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import boto3
@@ -108,6 +109,52 @@ def _format_items(items: list, base_url: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _age(stamp, now=None) -> str:
+    """"just now", "40 min ago", "6 h ago" -- for a price read at another tick."""
+    if not isinstance(stamp, str) or not stamp:
+        return "at an unknown time"
+    try:
+        taken = datetime.fromisoformat(stamp)
+    except ValueError:
+        return "at an unknown time"
+    if taken.tzinfo is None:
+        taken = taken.replace(tzinfo=timezone.utc)
+    minutes = int(((now or datetime.now(timezone.utc)) - taken).total_seconds() // 60)
+    if minutes < 2:
+        return "just now"
+    if minutes < 90:
+        return f"{minutes} min ago"
+    return f"{minutes // 60} h ago"
+
+
+def _format_readings(readings: list) -> str:
+    """Every shop, best first -- the answer to "is that actually the cheapest?".
+
+    The watch knew this all along and never said it. A three-shop watch emailed
+    one price and a link, and the obvious next question was one the system
+    could have answered for free.
+
+    **When each price was read is part of the price.** Shops are checked on the
+    same interval but not in the same second, and a shop that has gone quiet is
+    carried here rather than dropped -- showing two shops when the user asked
+    about three is the silent-omission failure this project keeps removing.
+    """
+    lines = []
+    for reading in readings:
+        name = reading.get("shop") or reading.get("target_id") or "(a shop)"
+        currency = reading.get("currency") or ""
+        price = reading.get("value")
+        amount = f"{price:g}" if isinstance(price, (int, float)) else str(price)
+        when = _age(reading.get("at"))
+        note = "  -- not confirmed recently" if reading.get("stale") else ""
+        lines.append(f"  {amount}{' ' + currency if currency else ''}"
+                     f"  {name}  (read {when}){note}")
+        href = (reading.get("url") or "").strip()
+        if href:
+            lines.append(f"    {href}")
+    return "\n".join(lines)
+
+
 def _format_email(detail: dict) -> tuple:
     prompt = detail.get("prompt", "(unknown request)")
     items = detail.get("items") or []
@@ -125,6 +172,12 @@ def _format_email(detail: dict) -> tuple:
     found = (_format_items(items, url) if items
              else f"  {detail.get('last_value') or '(no value recorded)'}")
 
+    # Only a multi-shop watch has this, and its absence is the email exactly as
+    # it read before 2026-08-05.
+    readings = detail.get("readings") or []
+    across_shops = (f"\nAcross every shop being watched:\n"
+                    f"{_format_readings(readings)}\n") if readings else ""
+
     body = f"""Your watch just came true.
 
 What you asked for:
@@ -135,7 +188,7 @@ What was found:
 
 Where:
   {url}
-
+{across_shops}
 Why this counts:
   {detail.get('note') or '(no explanation recorded)'}
 

@@ -31,7 +31,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
+import across
 import cost
 from condition import ConditionError, evaluate
 from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
@@ -385,6 +387,94 @@ def _rank(watch: dict, target: dict, fresh: list):
     return ranked, spend
 
 
+def _siblings(targets_table, watch_id: str) -> list:
+    """Every target of this watch, following pagination.
+
+    The same query the Notifier makes, for the same reason: a `query()` returns
+    at most 1MB, and with three targets that limit is unreachable right up
+    until the day it is not.
+    """
+    items, start_key = [], None
+    while True:
+        kwargs = {
+            "IndexName": "watch_id-index",
+            "KeyConditionExpression": Key("watch_id").eq(watch_id),
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+        response = targets_table.query(**kwargs)
+        items.extend(response.get("Items", []))
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            return items
+
+
+def _readings(targets_table, watch: dict, target: dict, result: dict,
+              condition: dict, now: str) -> list:
+    """What every shop is charging right now, best first.
+
+    A watch on three shops used to report one of them -- whichever ticked into
+    the condition -- and the email said "ILS 1,890" with a link, leaving the
+    obvious next question ("is that the cheapest?") unanswered by the one
+    system that knew. This is that answer.
+
+    **Only computed when the watch is about to speak.** A DynamoDB query is
+    cheap but not free, and paying it on every tick of every watch to build a
+    picture nobody reads is exactly the per-tick cost Phase 8b removed. Same
+    rule as ranking: paid per notification, not per check.
+
+    Never raises. A cross-shop summary is the nicest sentence in the email and
+    it is not worth a single missed notification -- the established rule that
+    nothing about presentation may block a send.
+    """
+    try:
+        siblings = _siblings(targets_table, watch["watch_id"])
+        if len(siblings) < 2:
+            return []
+        mine = across.Reading(
+            target_id=target["target_id"],
+            value=result["value"],
+            currency=target.get("currency"),
+            url=target.get("url"),
+            shop=target.get("shop"),
+            at=now,
+        )
+        found = across.readings(
+            [_from_decimal(s) for s in siblings], condition,
+            now=datetime.now(timezone.utc),
+            interval_min=int(_from_decimal(watch.get("check_interval_min")) or 60),
+            override={target["target_id"]: mine},
+        )
+        print(f"[across] {across.describe(found)}")
+        return [r.as_dict() for r in found]
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not read sibling targets: {type(exc).__name__}: {exc}")
+        return []
+
+
+def _already_fired(exc) -> bool:
+    """Did another target of this watch get there first?
+
+    Every target of a watch is scheduled at the same interval and the schedules
+    are created in the same second, so EventBridge fires them together. Two
+    shops crossing the same threshold on the same tick would both flip the
+    watch to `triggered` and both publish -- two emails about one event. The
+    conditional write makes the transition happen once; this recognises the
+    loser.
+
+    Matched on the name rather than on a class because the resource API raises
+    a dynamically-built exception type. `ClientError` is checked too, which is
+    what the low-level client raises for the same condition.
+    """
+    if type(exc).__name__ == "ConditionalCheckFailedException":
+        return True
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = (response.get("Error") or {}).get("Code")
+        return code == "ConditionalCheckFailedException"
+    return False
+
+
 def _remember(targets_table, target_id: str, target: dict, fresh: list) -> None:
     """Record which items have now been reported, newest last, bounded."""
     seen = list(target.get("seen_item_ids") or [])
@@ -727,12 +817,39 @@ def lambda_handler(event, context):
                 },
             )
         else:
-            watches_table.update_item(
-                Key={"watch_id": watch_id},
-                UpdateExpression="SET #s = :s, triggered_at = :t",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":s": "triggered", ":t": now},
-            )
+            try:
+                watches_table.update_item(
+                    Key={"watch_id": watch_id},
+                    UpdateExpression="SET #s = :s, triggered_at = :t",
+                    # Fire once, however many shops cross at the same moment.
+                    ConditionExpression="#s = :active",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={
+                        ":s": "triggered", ":t": now, ":active": "active",
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                if not _already_fired(exc):
+                    raise
+                print(f"watch {watch_id} was already triggered by another "
+                      f"target on this tick -- not emailing twice")
+                return {
+                    "checked": True,
+                    "status": result["status"],
+                    "condition_met": True,
+                    "notified": False,
+                    "new_items": None,
+                    "reported_items": None,
+                    "last_value": result["value"],
+                }
+
+        # What every shop charges, so the email can answer "is that the
+        # cheapest?" instead of reporting the one shop that happened to tick.
+        # Empty for a single-target watch, and empty is the pre-2026-08-05
+        # email exactly.
+        readings = ([] if across.mode(watch_condition) != across.BEST
+                    else _readings(targets_table, watch, target, result,
+                                   watch_condition, now))
 
         # Announce it and move on. The Checker doesn't know or care that a
         # Notifier exists -- anything interested can subscribe to the bus.
@@ -752,6 +869,12 @@ def lambda_handler(event, context):
                 # "1" and link to the search page, leaving the user to go and
                 # find the posting themselves.
                 "items": reported,
+                # Every shop's current price, best first, each carrying when it
+                # was read and whether that is recent enough to trust. The
+                # Notifier renders it; nothing downstream decides anything from
+                # it, which is deliberate -- see shared/across.py on why the
+                # condition is still judged against this target's own reading.
+                "readings": readings,
                 # Tells the Notifier whether to tear the schedules down. A
                 # repeating watch must survive its own notification.
                 "repeating": dedup,

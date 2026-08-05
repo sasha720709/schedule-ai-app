@@ -16,6 +16,7 @@ import importlib.util
 import os
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -559,3 +560,84 @@ def test_a_genuinely_broken_watch_still_says_so(aws):
 
     assert "stopped working" in subject
     assert "redesigned" in body
+
+
+# --------------------------------------------------------------------------
+# What every shop charges
+#
+# A three-shop watch reported one shop -- whichever ticked into the condition --
+# and left the obvious next question ("is that actually the cheapest?")
+# unanswered by the one system that knew the answer.
+# --------------------------------------------------------------------------
+
+def readings(*rows):
+    return [{"target_id": f"t_{i}", "value": v, "currency": c, "shop": s,
+             "url": f"https://{s}.example/s", "at": at, "stale": stale,
+             "source": "check"}
+            for i, (s, v, c, at, stale) in enumerate(rows)]
+
+
+def a_while_ago(minutes):
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+def test_the_email_lists_every_shop_cheapest_first(aws):
+    env = aws()
+    handler.lambda_handler(triggered(readings=readings(
+        ("ivory", 1899.0, "ILS", a_while_ago(1), False),
+        ("bug", 2400.0, "ILS", a_while_ago(3), False),
+    )), None)
+    _, body = sent(env)
+
+    assert "Across every shop being watched:" in body
+    assert body.index("ivory") < body.index("bug")
+    assert "1899 ILS" in body and "2400 ILS" in body
+    assert "https://ivory.example/s" in body
+
+
+def test_a_price_read_at_another_tick_says_when(aws):
+    """Shops are checked on the same interval but not in the same second, and
+    a price is only as good as the moment it was read."""
+    env = aws()
+    handler.lambda_handler(triggered(readings=readings(
+        ("ivory", 1899.0, "ILS", a_while_ago(1), False),
+        ("bug", 2400.0, "ILS", a_while_ago(45), False),
+    )), None)
+    _, body = sent(env)
+
+    assert "read just now" in body
+    assert "read 45 min ago" in body
+
+
+def test_a_shop_that_has_gone_quiet_is_shown_and_flagged(aws):
+    """Dropping it would show two shops to someone who asked about three."""
+    env = aws()
+    handler.lambda_handler(triggered(readings=readings(
+        ("ivory", 1899.0, "ILS", a_while_ago(1), False),
+        ("bug", 900.0, "ILS", a_while_ago(600), True),
+    )), None)
+    _, body = sent(env)
+
+    assert "bug" in body
+    assert "not confirmed recently" in body
+    assert "read 10 h ago" in body
+
+
+def test_a_single_shop_watch_reads_exactly_as_it_did_before(aws):
+    env = aws()
+    handler.lambda_handler(triggered(), None)
+    _, body = sent(env)
+
+    assert "Across every shop" not in body
+    assert "$449.00" in body
+
+
+def test_an_unreadable_timestamp_does_not_break_the_email(aws):
+    env = aws()
+    handler.lambda_handler(triggered(readings=readings(
+        ("ivory", 1899.0, "ILS", "not a date", False),
+        ("bug", 2400.0, "ILS", None, False),
+    )), None)
+    _, body = sent(env)
+
+    assert body.count("at an unknown time") == 2

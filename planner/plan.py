@@ -60,6 +60,12 @@ from anthropic import Anthropic
 import llm
 from prompts import SEARCH_PROMPT
 
+# Re-exported. It moved to `shared/condition.py` on 2026-08-05 because `confirm`
+# has to run the same arithmetic again once the answers pin down which offer the
+# watch is actually about -- see the note in its docstring. Importers here are
+# left pointing at `plan` so the move stayed a move rather than a rename.
+from condition import resolve_relative_condition  # noqa: F401
+
 
 def search(request: str, *, shape: str = "value", client=None) -> dict:
     """Step 1: what should be watched, where, and how often.
@@ -83,59 +89,6 @@ def search(request: str, *, shape: str = "value", client=None) -> dict:
         if block.type == "server_tool_use":
             print(f"[searched] {block.input.get('query')}", file=sys.stderr)
     return llm.parse_json(llm.text_of(response))
-
-
-def resolve_relative_condition(condition: dict, pct, baseline, *,
-                               baseline_at=None, baseline_source=None) -> dict:
-    """Turn "goes down from current" into a real threshold, using a real reading.
-
-    The condition is written during the search step, before any page has been
-    opened. At that moment the model has no current value -- only whatever a
-    search result claimed -- so asking it for an absolute threshold on a
-    relative request guarantees a fabricated one.
-
-    Observed exactly that: asked "tell me when Apple shares go down from the
-    current", it produced `price < 313.93`. That is 5% below $330.45, a figure
-    from search results, while the page itself said $333.43. Two inventions in
-    one number -- a baseline that was never read, and a 5% drop the user never
-    asked for. "Goes down" means any decrease.
-
-    So the threshold is computed here instead, from the value the extractor was
-    actually verified against, and the baseline is stored alongside it so the
-    plan card can say "5% below the $333.43 read just now" rather than showing
-    a bare number nobody can check.
-
-    ## And *when* it was read (added 2026-08-04)
-
-    The owner settled that a previous close is an acceptable baseline: asked on
-    a Sunday what "current" means, Friday's close is the only honest answer.
-    Accepting that makes labelling it mandatory rather than optional, because
-    the two cases now look identical on screen and behave very differently. A
-    threshold 5% below a live price is one the user watched being set; the same
-    threshold below Friday's close was computed from a number they never saw.
-
-    `baseline_source` is `live` or `previous_close`, decided by whether the
-    market was open when the reading was taken, and `baseline_at` is the
-    moment. Neither changes any arithmetic. They exist so the plan card can
-    say which it was.
-    """
-    if pct is None or not isinstance(baseline, (int, float)) or isinstance(baseline, bool):
-        return condition
-
-    resolved = dict(condition)
-    threshold = round(float(baseline) * (1 + float(pct) / 100), 4)
-    resolved["value"] = threshold
-    resolved["baseline"] = float(baseline)
-    resolved["relative_change_pct"] = float(pct)
-    if baseline_at:
-        resolved["baseline_at"] = baseline_at
-    if baseline_source:
-        resolved["baseline_source"] = baseline_source
-    # "goes down" is any decrease, so the threshold IS the baseline and the
-    # comparison has to be strict -- `<=` would fire on an unchanged price.
-    if not resolved.get("op"):
-        resolved["op"] = "<" if float(pct) <= 0 else ">"
-    return resolved
 
 
 def plan(request: str) -> dict:

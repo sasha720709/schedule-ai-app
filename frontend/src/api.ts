@@ -46,6 +46,11 @@ export interface Watch {
      * are arithmetically identical and are not the same promise. */
     baseline_at?: string;
     baseline_source?: "live" | "previous_close";
+    /** "best" when the watch has several shops and one best reading: the
+     * threshold is measured from the best offer across all of them, not from
+     * whichever shop's page happened to load first. Absent for a single
+     * target and for `==`/`!=`, where "cheapest" means nothing. */
+    across?: "best";
   };
   planned_at?: string;
   confirmed_at?: string;
@@ -53,6 +58,10 @@ export interface Watch {
    * true for a vacancy -- a job search is a stream, not an event. */
   repeating?: boolean;
   questions?: PlanQuestion[];
+  /** Places that were looked at and not kept. A watch that quietly became two
+   * shops instead of three tells the user nothing, and "Amazon prices in USD"
+   * is information they can act on. */
+  rejected?: { url: string; reason: string }[];
   /** Only a repeating watch has one: it is the only thing here that does not
    * stop by itself. */
   expires_at?: string | null;

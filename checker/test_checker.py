@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -36,6 +37,28 @@ if not isinstance(sys.modules.get("boto3"), types.ModuleType) or not hasattr(
     _boto3.resource = MagicMock()
     _boto3.client = MagicMock()
     sys.modules["boto3"] = _boto3
+
+# `boto3.dynamodb.conditions.Key` is imported by handler.py for the sibling
+# query. A stub `boto3` is a plain module, not a package, so the submodule has
+# to be registered explicitly or the import fails at collection -- and it fails
+# regardless of whether a real boto3 is installed, because the stub above
+# replaced it. Same shape as notifier/test_notifier.py.
+_conditions = types.ModuleType("boto3.dynamodb.conditions")
+
+
+class Key:
+    """Just enough of boto3's Key to record what a query asked for."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def eq(self, value):
+        return {"key": self.name, "eq": value}
+
+
+_conditions.Key = Key
+sys.modules.setdefault("boto3.dynamodb", types.ModuleType("boto3.dynamodb"))
+sys.modules["boto3.dynamodb.conditions"] = _conditions
 
 # check.py imports the Anthropic SDK at module scope. It is only ever
 # constructed inside judge(), which these tests replace, so the module needs to
@@ -66,24 +89,55 @@ _spec.loader.exec_module(h)
 
 # --- doubles -----------------------------------------------------------------
 
+class ConditionalCheckFailedException(Exception):
+    """Named exactly as boto3 names it, because handler.py matches on the name.
+
+    The resource API builds its exception classes dynamically off the service
+    model, so there is no importable class a test can raise and no class the
+    handler can catch. Matching the name is the honest way to bridge that, and
+    this double exists to keep the test honest about it.
+    """
+
+
 class FakeTable:
     """A DynamoDB table that records what was done to it."""
 
-    def __init__(self, items=None):
+    def __init__(self, items=None, pages=None):
         self.items = dict(items or {})
         self.updates = []
+        self.queries = []
+        # Successive query() responses, so pagination is assertable.
+        self.pages = list(pages or [])
 
     def get_item(self, Key):  # noqa: N803 -- boto3's casing
         key = next(iter(Key.values()))
         item = self.items.get(key)
         return {"Item": item} if item is not None else {}
 
+    def query(self, **kwargs):
+        self.queries.append(kwargs)
+        if not self.pages:
+            return {"Items": list(self.items.values())}
+        return self.pages.pop(0)
+
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None,
-                    ExpressionAttributeNames=None):  # noqa: N803
+                    ExpressionAttributeNames=None,
+                    ConditionExpression=None):  # noqa: N803
+        key = next(iter(Key.values()))
+        values = ExpressionAttributeValues or {}
+        # Only the one condition the handler uses is modelled: "the watch is
+        # still active". Anything else would be a fake pretending to be
+        # DynamoDB, which is a worse lie than not supporting it.
+        if ConditionExpression == "#s = :active":
+            current = (self.items.get(key) or {}).get("status")
+            if current != values.get(":active"):
+                raise ConditionalCheckFailedException(ConditionExpression)
+            self.items[key] = {**self.items[key], "status": values.get(":s")}
         self.updates.append({
-            "key": next(iter(Key.values())),
+            "key": key,
             "expression": UpdateExpression,
-            "values": ExpressionAttributeValues or {},
+            "values": values,
+            "condition": ConditionExpression,
         })
 
     def last_update(self):
@@ -1054,3 +1108,209 @@ def test_a_pin_does_not_touch_a_watch_without_items(env, monkeypatch):
     make_target(env, extractor=PRICE_SPEC, watched_ids=["whatever"])
 
     assert run(env)["last_value"] == 429.0
+
+
+# --- across shops: what the email can finally say -----------------------------
+#
+# A three-shop watch used to report one shop -- whichever ticked into the
+# condition -- and left the obvious next question ("is that the cheapest?")
+# unanswered by the one system that knew.
+#
+# The rule being protected in both directions: the summary must appear, and it
+# must never be able to stop a notification.
+
+ACROSS = {"metric": "price", "op": "<", "value": Decimal("2000"),
+          "currency": "ILS", "across": "best"}
+
+
+def a_multi_shop_watch(env, monkeypatch, *, siblings, condition=None,
+                       interval=60, **target):
+    make_watch(env, condition=condition or dict(ACROSS))
+    env.watches.items["w_1"]["check_interval_min"] = Decimal(interval)
+    monkeypatch.setattr(env.module, "fetch_raw", lambda *a, **k: SHOP_HTML)
+    mine = make_target(env, extractor=OFFERS_SPEC, currency="ILS",
+                       shop="ivory", watched_ids=[console_id()], **target)
+    env.targets.pages = [{"Items": [mine] + siblings}]
+    return mine
+
+
+def sibling(shop, value, *, minutes=5, currency="ILS", status="ok"):
+    when = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    return {"target_id": f"t_{shop}", "watch_id": "w_1", "shop": shop,
+            "currency": currency, "url": f"https://{shop}.example/s",
+            "last_value": None if value is None else Decimal(str(value)),
+            "last_status": status,
+            "last_checked_at": when}
+
+
+def emitted(env):
+    detail = env.module.events.put_events.call_args[1]["Entries"][0]["Detail"]
+    return json.loads(detail)
+
+
+def test_a_firing_watch_reports_every_shop_best_first(env, monkeypatch):
+    a_multi_shop_watch(env, monkeypatch, siblings=[
+        sibling("bug", 2400.0), sibling("zap", 1500.0)])
+
+    run(env)
+
+    readings = emitted(env)["readings"]
+    assert [r["shop"] for r in readings] == ["zap", "ivory", "bug"]
+    assert [r["value"] for r in readings] == [1500.0, 1899.0, 2400.0]
+
+
+def test_the_running_tick_reports_the_number_it_just_read(env, monkeypatch):
+    """Not the one it is about to overwrite. Its own row is in the query result
+    too, and reading that would be reading its own past."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)],
+                       last_value=Decimal("99999"), last_status="ok")
+    run(env)
+
+    mine = next(r for r in emitted(env)["readings"] if r["shop"] == "ivory")
+    assert mine["value"] == 1899.0
+
+
+def test_a_shop_in_another_currency_is_left_out_of_the_comparison(env, monkeypatch):
+    a_multi_shop_watch(env, monkeypatch, siblings=[
+        sibling("amazon", 34.99, currency="USD")])
+    run(env)
+
+    assert [r["shop"] for r in emitted(env)["readings"]] == ["ivory"]
+
+
+def test_a_shop_that_has_gone_quiet_is_shown_but_never_first(env, monkeypatch):
+    """Dropping it hides a shop the user asked about; letting it win reports a
+    price nobody has confirmed for hours as though it were today's."""
+    a_multi_shop_watch(env, monkeypatch,
+                       siblings=[sibling("bug", 10.0, minutes=600)])
+    run(env)
+
+    readings = emitted(env)["readings"]
+    assert [r["shop"] for r in readings] == ["ivory", "bug"]
+    assert readings[1]["stale"] is True
+
+
+def test_a_shop_that_read_nothing_is_not_in_the_comparison(env, monkeypatch):
+    a_multi_shop_watch(env, monkeypatch,
+                       siblings=[sibling("bug", None, status="unavailable")])
+    run(env)
+
+    assert [r["shop"] for r in emitted(env)["readings"]] == ["ivory"]
+
+
+def test_a_single_target_watch_carries_no_summary(env, monkeypatch):
+    """The email is exactly what it was before this existed."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[])
+    run(env)
+
+    assert emitted(env)["readings"] == []
+
+
+def test_a_watch_without_across_never_queries_its_siblings(env, monkeypatch):
+    """Paid per notification is already a saving; paid never is better. A
+    single-shop watch has nothing to compare and must not pay for a query."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)],
+                       condition={"metric": "price", "op": "<",
+                                  "value": Decimal("2000")})
+    run(env)
+
+    assert emitted(env)["readings"] == []
+    assert env.targets.queries == []
+
+
+def test_the_summary_is_only_paid_for_when_the_watch_speaks(env, monkeypatch):
+    """A tick that finds nothing must not query the table to build a picture
+    nobody will read."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)],
+                       condition=dict(ACROSS, value=Decimal("10")))
+
+    assert run(env)["condition_met"] is False
+    assert env.targets.queries == []
+
+
+def test_a_failed_sibling_query_still_sends_the_email(env, monkeypatch):
+    """Nothing about presentation may block a notification. The established
+    rule, applied to the newest thing that could break one -- and the shape
+    that matters, because the IAM permission for this query was added in the
+    same change as the code that uses it."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)])
+
+    def denied(**kwargs):
+        raise RuntimeError("AccessDeniedException: dynamodb:Query")
+
+    monkeypatch.setattr(env.targets, "query", denied)
+
+    result = run(env)
+
+    assert result["notified"] is True
+    assert emitted(env)["readings"] == []
+
+
+def test_the_query_asks_the_index_for_this_watch(env, monkeypatch):
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)])
+    run(env)
+
+    asked = env.targets.queries[0]
+    assert asked["IndexName"] == "watch_id-index"
+    assert asked["KeyConditionExpression"] == {"key": "watch_id", "eq": "w_1"}
+
+
+# --- one event, however many shops cross at once ------------------------------
+
+def test_a_watch_already_triggered_this_tick_does_not_email_twice(env, monkeypatch):
+    """Every target of a watch is scheduled at the same interval and the
+    schedules are created in the same second, so EventBridge fires them
+    together. Two shops crossing the same threshold both flipped the watch to
+    `triggered` and both published -- two emails about one event."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)])
+    env.watches.items["w_1"]["status"] = "active"
+
+    # The other target got there first, between this one's read and its write.
+    original = env.watches.update_item
+
+    def race(**kwargs):
+        env.watches.items["w_1"]["status"] = "triggered"
+        env.watches.update_item = original
+        return original(**kwargs)
+
+    env.watches.update_item = race
+
+    result = run(env)
+
+    assert result["condition_met"] is True
+    assert result["notified"] is False
+    assert env.module.events.put_events.call_count == 0
+
+
+def test_the_first_target_to_cross_still_fires_normally(env, monkeypatch):
+    a_multi_shop_watch(env, monkeypatch, siblings=[sibling("bug", 2400.0)])
+
+    assert run(env)["notified"] is True
+    assert env.module.events.put_events.call_count == 1
+    assert env.watches.items["w_1"]["status"] == "triggered"
+
+
+def test_any_other_write_failure_is_still_an_error(env, monkeypatch):
+    """The guard recognises one specific losing race. Everything else has to
+    keep failing loudly -- swallowing a write error is how a watch quietly
+    stops working."""
+    a_multi_shop_watch(env, monkeypatch, siblings=[])
+
+    def boom(**kwargs):
+        raise RuntimeError("throughput exceeded")
+
+    env.watches.update_item = boom
+
+    with pytest.raises(RuntimeError, match="throughput"):
+        run(env)
+
+
+def test_a_repeating_watch_is_not_guarded_because_it_never_transitions(env, monkeypatch):
+    """It stays `active` and speaks again next time; there is no once-only
+    transition to protect, and a condition on `status` would be a lie about
+    what the write means."""
+    a_repeating_watch(env, monkeypatch)
+
+    run(env)
+
+    assert env.watches.last_update()["condition"] is None

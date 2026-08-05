@@ -776,3 +776,155 @@ def test_malformed_answers_are_refused_rather_than_stored(aws):
                     {"answers": "junior"}, watch_id="w_1")
 
     assert response["statusCode"] == 400
+
+
+# --------------------------------------------------------------------------
+# The baseline, re-derived once the answers say which offer this is about
+#
+# The order of events creates this and the order is right: the Planner cannot
+# know which offer is meant until it has fetched the shops and asked about what
+# it found, and the answers only arrive at confirm. So the baseline it stored
+# is the cheapest thing any shop listed for the search -- measured on real
+# pages, a ILS 139 headset for "xbox series x" -- and the threshold hanging off
+# it is 10% below an object nobody is watching.
+# --------------------------------------------------------------------------
+
+def a_product_watch(*, pct=-10, baseline=139.0, threshold=125.1, op="<",
+                    currency="ILS"):
+    return {"w_1": {
+        "watch_id": "w_1", "status": "proposed",
+        "check_interval_min": Decimal(360),
+        "condition": {"metric": "price", "op": op,
+                      "value": Decimal(str(threshold)),
+                      "currency": currency,
+                      "baseline": Decimal(str(baseline)),
+                      "baseline_source": "live",
+                      "relative_change_pct": Decimal(pct),
+                      "across": "best"},
+        "questions": [{
+            "id": "what",
+            "question": "Which one did you mean?",
+            "options": [
+                {"value": "console", "label": "The console", "items": ["c1"]},
+                {"value": "bits", "label": "Games and accessories",
+                 "items": ["h1", "g1"]},
+            ],
+        }],
+    }}
+
+
+def shop_targets():
+    return {
+        "t_1": {"target_id": "t_1", "watch_id": "w_1", "currency": "ILS",
+                "shop": "ivory", "verified_items": [
+                    {"id": "h1", "text": "a headset", "price": Decimal("139")},
+                    {"id": "c1", "text": "the console", "price": Decimal("1899")},
+                ]},
+        "t_2": {"target_id": "t_2", "watch_id": "w_1", "currency": "ILS",
+                "shop": "bug", "verified_items": [
+                    {"id": "g1", "text": "a game", "price": Decimal("29")},
+                ]},
+    }
+
+
+def stored_condition(env):
+    return env.watches.updates[-1]["ExpressionAttributeValues"][":cond"]
+
+
+def test_pinning_the_product_moves_the_baseline_onto_it(aws):
+    """10% off ILS 139 is a threshold about a headset. The watch is about a
+    console."""
+    env = aws(watches=a_product_watch(), targets=shop_targets())
+    call("POST /watches/{id}/confirm",
+         {"answers": {"what": ["console"]}}, watch_id="w_1")
+
+    condition = stored_condition(env)
+    assert float(condition["baseline"]) == 1899.0
+    assert float(condition["value"]) == 1709.1
+
+
+def test_the_baseline_is_the_best_pinned_offer_across_every_shop(aws):
+    """Two shops both carry the console; "10% cheaper" means cheaper than the
+    price you would actually pay today."""
+    targets = shop_targets()
+    targets["t_2"]["verified_items"].append(
+        {"id": "c1", "text": "the console", "price": Decimal("1750")})
+    env = aws(watches=a_product_watch(), targets=targets)
+    call("POST /watches/{id}/confirm",
+         {"answers": {"what": ["console"]}}, watch_id="w_1")
+
+    assert float(stored_condition(env)["baseline"]) == 1750.0
+
+
+def test_a_shop_in_another_currency_cannot_set_the_baseline(aws):
+    """$34.99 is the smallest number on the table and is not a shekel."""
+    targets = shop_targets()
+    targets["t_2"]["currency"] = "USD"
+    targets["t_2"]["verified_items"] = [
+        {"id": "c1", "text": "the console", "price": Decimal("649")}]
+    env = aws(watches=a_product_watch(), targets=targets)
+    call("POST /watches/{id}/confirm",
+         {"answers": {"what": ["console"]}}, watch_id="w_1")
+
+    assert float(stored_condition(env)["baseline"]) == 1899.0
+
+
+def test_a_rising_watch_repins_to_the_dearest_pinned_offer(aws):
+    targets = shop_targets()
+    targets["t_2"]["verified_items"].append(
+        {"id": "c1", "text": "the console", "price": Decimal("1750")})
+    env = aws(watches=a_product_watch(op=">", pct=10, baseline=139.0,
+                                      threshold=152.9),
+              targets=targets)
+    call("POST /watches/{id}/confirm",
+         {"answers": {"what": ["console"]}}, watch_id="w_1")
+
+    condition = stored_condition(env)
+    assert float(condition["baseline"]) == 1899.0
+    assert float(condition["value"]) == 2088.9
+
+
+def test_answering_nothing_leaves_the_threshold_exactly_as_planned(aws):
+    """No pin, no new information. The behaviour that shipped before this."""
+    env = aws(watches=a_product_watch(), targets=shop_targets())
+    call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    condition = stored_condition(env)
+    assert float(condition["baseline"]) == 139.0
+    assert float(condition["value"]) == 125.1
+
+
+def test_an_absolute_threshold_is_never_repinned(aws):
+    """"Under 2000 shekels" is 2000 shekels whichever offer is meant."""
+    watches = a_product_watch()
+    del watches["w_1"]["condition"]["relative_change_pct"]
+    del watches["w_1"]["condition"]["baseline"]
+    watches["w_1"]["condition"]["value"] = Decimal("2000")
+    env = aws(watches=watches, targets=shop_targets())
+    call("POST /watches/{id}/confirm",
+         {"answers": {"what": ["console"]}}, watch_id="w_1")
+
+    assert float(stored_condition(env)["value"]) == 2000.0
+
+
+def test_pinning_to_offers_with_no_price_changes_nothing(aws):
+    """Never widens the watch and never raises: anything unexpected leaves the
+    condition exactly as the Planner wrote it."""
+    targets = shop_targets()
+    for target in targets.values():
+        for item in target["verified_items"]:
+            item.pop("price", None)
+    env = aws(watches=a_product_watch(), targets=targets)
+    response = call("POST /watches/{id}/confirm",
+                    {"answers": {"what": ["console"]}}, watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert float(stored_condition(env)["baseline"]) == 139.0
+
+
+def test_a_watch_with_no_condition_at_all_still_confirms(aws):
+    env = aws(watches=proposed(), targets=one_target())
+    response = call("POST /watches/{id}/confirm", watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert stored_condition(env) == {}

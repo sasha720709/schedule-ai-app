@@ -24,6 +24,7 @@ from decimal import Decimal
 
 import boto3
 
+import across
 import classify as classify_mod
 import cost
 import kinds
@@ -87,6 +88,34 @@ def _fail(watches_table, watch_id: str, exc: Exception) -> dict:
     return {"watch_id": watch_id, "status": "failed", "error": message}
 
 
+def _baseline(baselines: list, condition: dict) -> dict:
+    """Which reading "the current price" means, across several shops.
+
+    Taking the first one was fine while a watch had a single target and wrong
+    the moment it had three: "10% cheaper than now" measured against whichever
+    shop's page happened to load first, and the other two were then judged
+    against a threshold derived from a shop they have nothing to do with.
+
+    The best reading is the honest answer, and it is also the conservative one
+    in both directions. For a `<` watch the baseline is the cheapest offer, so
+    the threshold sits lower and the watch fires later; for a `>` watch it is
+    the dearest, so the threshold sits higher and it fires later. Measuring at
+    the same end of the range the condition is judged at is the whole rule.
+    """
+    if not baselines:
+        return {"value": None, "at": None, "source": None}
+    direction = across.direction(condition)
+    if direction is None or len(baselines) == 1:
+        return baselines[0]
+    numeric = [b for b in baselines
+               if isinstance(b["value"], (int, float))
+               and not isinstance(b["value"], bool)]
+    if not numeric:
+        return baselines[0]
+    pick = max if direction == "max" else min
+    return pick(numeric, key=lambda b: b["value"])
+
+
 def lambda_handler(event, context):
     watch_id = event["watch_id"]
     request = event["request"]
@@ -110,10 +139,11 @@ def lambda_handler(event, context):
         # "goes down from the current" has no threshold until something has
         # actually been read. Resolved below, once a target verifies.
         relative_pct = result.get("relative_change_pct")
-        baseline = None
-        baseline_at = baseline_source = None
         target_ids, verified, rejected, windows = [], [], [], []
         verified_items = []
+        # One entry per verified target, so the baseline can be taken from the
+        # best of them rather than from whichever shop answered first.
+        baselines = []
 
         for target in result["targets"]:
             now = datetime.now(timezone.utc).isoformat()
@@ -141,18 +171,42 @@ def lambda_handler(event, context):
             if resolved.get("currency") and not condition.get("currency"):
                 condition["currency"] = resolved["currency"]
 
-            if baseline is None:
-                baseline = resolved["verified_value"]
-                baseline_at = now
+            # A shop pricing in another currency cannot be compared with this
+            # threshold, and there is no honest way to make it one. Converting
+            # needs an exchange rate, which is a second thing to be wrong
+            # about -- quietly, in an email about money.
+            #
+            # This was not a hypothetical. The watch has exactly one condition
+            # and it was applied to every target, so `price < 2000` (shekels)
+            # was true of Amazon's $34.99 and the watch would have fired on it.
+            # The roadmap says currencies are never compared; until today the
+            # code did not agree. Refusing the target says so on the plan card,
+            # where "Amazon prices in USD" is information, rather than creating
+            # one that can only be wrong.
+            if not across.comparable(resolved, condition):
+                message = (
+                    f"prices in {resolved['currency']}, and this watch is "
+                    f"about {condition['currency']} -- no exchange rate is "
+                    f"used, so the two cannot be compared"
+                )
+                name = target.get("shop") or url
+                print(f"rejected target {name}: {message}")
+                rejected.append({"url": name, "reason": message})
+                continue
+
+            baselines.append({
+                "value": resolved["verified_value"],
+                "at": now,
                 # Was the market open when this number was read? The owner
                 # accepted the previous close as a baseline, which makes saying
                 # which one it was the whole remaining job.
-                baseline_source = (
+                "source": (
                     "live"
                     if schedules.in_window(datetime.now(timezone.utc),
                                            resolved.get("window"))
                     else "previous_close"
-                )
+                ),
+            })
 
             target_id = f"t_{uuid.uuid4().hex[:8]}"
             target_ids.append(target_id)
@@ -180,7 +234,7 @@ def lambda_handler(event, context):
                 # coming back as América Móvil's NYSE listing in dollars is
                 # visible before confirming rather than never.
                 **{k: resolved[k]
-                   for k in ("instrument_name", "exchange", "currency")
+                   for k in ("instrument_name", "exchange", "currency", "shop")
                    if resolved.get(k)},
                 # What the extractor matched at plan time, and how many items
                 # the list holds in total. A count verified at zero is honest
@@ -210,9 +264,18 @@ def lambda_handler(event, context):
         # the fetch is what produced `price < 313.93` for "tell me when Apple
         # goes down" -- 5% below a stale figure from search results, while the
         # page said $333.43.
+        # More than one shop and an ordered operator means the watch has a
+        # single best reading, and saying so on the row is what lets the plan
+        # card, the email and the Checker all talk about the same number
+        # instead of three unrelated ones. See shared/across.py -- notably why
+        # this does *not* move where the condition is evaluated.
+        if len(baselines) > 1 and across.direction(condition):
+            condition["across"] = across.BEST
+
+        chosen = _baseline(baselines, condition)
         condition = resolve_relative_condition(
-            condition, relative_pct, baseline,
-            baseline_at=baseline_at, baseline_source=baseline_source)
+            condition, relative_pct, chosen["value"],
+            baseline_at=chosen["at"], baseline_source=chosen["source"])
 
         if not target_ids:
             raise RuntimeError(
@@ -254,7 +317,7 @@ def lambda_handler(event, context):
                 # Stored so a wrong fork is visible on the plan card before the
                 # user confirms, rather than discovered weeks later.
                 "watch_kind = :k, planned_at = :t, repeating = :r, "
-                "questions = :q "
+                "questions = :q, rejected = :rej "
                 "REMOVE plan_error"
             ),
             ExpressionAttributeNames={"#s": "status", "#c": "condition"},
@@ -267,6 +330,13 @@ def lambda_handler(event, context):
                 # crossing a threshold is an event. See Kind.repeating.
                 ":r": bool(kind.repeating),
                 ":q": _to_decimal(questions),
+                # Which shops were looked at and not kept, and why. A watch
+                # that quietly became two shops instead of three is the
+                # silence-reads-as-broken failure again: the user asked about
+                # Amazon, Amazon is not there, and nothing said so. Stored
+                # rather than only printed, because a CloudWatch log is not a
+                # place a person will look.
+                ":rej": _to_decimal(rejected),
                 ":c": _to_decimal(condition),
                 ":i": _to_decimal(interval),
                 ":p": _to_decimal(proposed),

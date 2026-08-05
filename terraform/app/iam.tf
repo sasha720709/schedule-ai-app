@@ -85,6 +85,25 @@ data "aws_iam_policy_document" "checker_lambda_dynamodb" {
       aws_dynamodb_table.watch_targets.arn,
     ]
   }
+
+  # Added 2026-08-05, with the GSI's own ARN, which a Query needs as well as
+  # the table's. A watch on several shops reads its siblings when it fires, so
+  # the email can say what every shop charges instead of only the one that
+  # crossed the threshold.
+  #
+  # Granted before the code that needs it was deployed, deliberately. The Phase
+  # 5 lesson was expensive: a per-action policy fails on the action you added
+  # last, and it failed *after* the email had been sent, so EventBridge retried
+  # the whole invocation and a real person got three copies. The read here is
+  # wrapped so a missing permission degrades to an email without the summary,
+  # but the permission is what makes the summary exist.
+  statement {
+    actions = ["dynamodb:Query"]
+    resources = [
+      aws_dynamodb_table.watch_targets.arn,
+      "${aws_dynamodb_table.watch_targets.arn}/index/watch_id-index",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "checker_lambda_dynamodb" {

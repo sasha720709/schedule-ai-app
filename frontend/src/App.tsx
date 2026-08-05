@@ -447,6 +447,30 @@ function WatchRow({
         </p>
       )}
 
+      {/* Which number the threshold is about, when there is more than one
+          shop. Without this the user has to guess whether "10% cheaper" means
+          cheaper than Ivory, than Amazon, or than some average. */}
+      {watch.condition?.across === "best" && (
+        <p className="muted">
+          measured across every shop below — the{" "}
+          {watch.condition.op.startsWith(">") ? "highest" : "cheapest"} offer is
+          what this watch calls the price
+        </p>
+      )}
+
+      {/* A shop that was looked at and dropped. Silence here is the same
+          failure as the missing email: the user asked about Amazon, Amazon is
+          not in the list, and nothing said why. */}
+      {watch.status === "proposed" && !!watch.rejected?.length && (
+        <div className="muted">
+          {watch.rejected.map((r) => (
+            <p key={r.url}>
+              not watching {r.url} — {r.reason}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* "Any change" is not a condition on a price, it is a guarantee: a
           stock never reopens at the previous close, so this fires in the
           first seconds of the next session. Measured 2026-08-04 -- baseline

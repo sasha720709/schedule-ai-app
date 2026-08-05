@@ -318,12 +318,130 @@ which is the cheapest thing on the page.
 Sharpening the grouping is a prompt problem, not a structural one, and the plan
 card showing every pinned offer before confirming is what makes it correctable.
 
-## 7. Recommended order
+## 7. Step 3, built 2026-08-05 — the watch has one reading
+
+The step was written down as "watch-level conditions". Building it found that
+the interesting half of that phrase is *reading*, not *condition*, and the
+correction is worth more than the feature.
+
+### The condition is still evaluated per target, on purpose
+
+The obvious implementation — evaluate the condition against the aggregate —
+was tried on paper and rejected for two reasons.
+
+**It changes nothing for a threshold.** `min(prices) < X` is true exactly when
+some price is under X, and every shop is checked on the same interval. The
+watch fires at the same instant either way. That is not an approximation, it is
+the same statement, and §3.1's own note conceded as much.
+
+**Where it would differ, it would be worse.** A sibling's price is from *its*
+last check, up to an interval old. Firing on a neighbour's older number means
+emailing "cheapest ILS 1,890 at Bug" about a price that may already be gone,
+when Bug's own tick would confirm or correct it within minutes. A watch about
+money should fire on a number it just read.
+
+So the rule is **fire on your own fresh reading, report the whole picture**,
+and `shared/across.py` says so at the top so nobody reads the split as an
+omission. What the aggregate is actually for turns out to be three things, and
+all three were broken:
+
+### 1. Currencies were being compared, despite the doc saying otherwise
+
+§5 states that ILS and USD are separate targets with separate thresholds. They
+were not. A watch has **one** condition, `condition["currency"]` was a label
+copied off the first shop that answered, and the threshold was applied to every
+target regardless — so `price < 2000` (shekels) was true of Amazon's **$34.99**
+and the watch would have fired on it.
+
+Fixed at the Planner: a shop pricing in another currency is **refused**, with
+the reason recorded on the watch and shown on the plan card. No exchange rate
+is introduced — a rate is a second thing to be wrong about, silently, in an
+email about money. The owner's ruling on 2026-08-05: the real answer is the
+user's own country and currency, which arrives with auth; until then, compare
+within the currency and say what was dropped.
+
+### 2. The baseline came from whichever shop loaded first
+
+"10% cheaper than now" was measured against `baselines[0]`. With three shops
+that is arbitrary, and the other two were then judged against a threshold
+derived from a shop they have nothing to do with.
+
+It is now the **best** verified reading: the cheapest for a `<` watch, the
+dearest for a `>` watch. Measuring at the same end of the range the condition
+is judged at is the whole rule, and it is conservative in both directions — the
+threshold moves further away, so the watch fires later, never sooner.
+
+### 3. The baseline described the wrong object entirely
+
+The one that would have cost real money. The Planner takes the baseline before
+the questions are answered, so for "xbox series x" it is the cheapest thing any
+shop lists — **a ILS 139 headset** — and the product is pinned down afterwards,
+at confirm. A watch for "10% cheaper" was therefore carrying `price < 125.1`
+while following a ILS 1,899 console: a threshold that can never be crossed, on
+a watch that looks perfectly healthy.
+
+`confirm` now re-derives it from the pinned offers.
+`resolve_relative_condition` moved from `planner/plan.py` to
+`shared/condition.py` for this: the arithmetic has to be repeatable from a
+different starting price, which means it cannot live inside the Planner's
+one-way flow.
+
+### What the email finally says
+
+    Across every shop being watched:
+      1899 ILS  ivory  (read just now)
+        https://www.ivory.co.il/...
+      2400 ILS  bug    (read 45 min ago)
+       900 ILS  zap    (read 10 h ago)  -- not confirmed recently
+
+Three rules in that block. A shop that has gone quiet is **shown and flagged,
+never dropped** — showing two shops to someone who asked about three is the
+silent omission this project keeps removing — and it can never be the best
+reading, because a cheap price nobody has confirmed for hours is a less certain
+answer, not a better one. **When each price was read is part of the price.**
+And the summary is built **only when the watch speaks**, not on every tick:
+same rule as ranking, paid per notification.
+
+### One event, however many shops cross
+
+Every target of a watch runs on the same interval and its schedules are created
+in the same second, so EventBridge fires them together. Two shops crossing the
+same threshold both flipped the watch to `triggered` and both published — two
+emails about one event. The transition is now a conditional write and the loser
+of the race stays quiet. Latent since Phase 3 and unreachable until a watch had
+more than one target that could fire.
+
+### Also in this step
+
+- **`planner/handler.py` had no tests at all.** Everything under `planner/` was
+  tested through `plan.py` and the kinds, each with its collaborators injected
+  — the exact shape that hid both live bugs of 2026-08-02. The currency gate
+  and the baseline choice are in the handler and nowhere else, so
+  `planner/test_planner_handler.py` drives the Lambda itself.
+- **The Checker's IAM role could not `Query`.** It had `GetItem` and
+  `UpdateItem` only, and a GSI query needs the index ARN as well as the
+  table's. Granted before the code that needs it shipped, and the read is
+  wrapped so a missing permission degrades to an email without the summary —
+  the Phase 5 lesson, where an `AccessDenied` after the email had been sent
+  cost a real person three duplicate copies.
+
+## 8. Recommended order
 
 1. ✅ **Shops registry + Amazon on our own browser.** Done — §5.
 2. ✅ **Particularization via the questions step.** Done — §6.
-3. **Watch-level conditions** — the real engineering, and what makes "cheapest
-   of five shops" expressible.
-4. Landed price, and the blocked-render outcome.
+3. ✅ **Watch-level readings.** Done — §7.
+4. **Landed price, and the blocked-render outcome.** Next, and the one
+   remaining thing that makes a product watch *wrong* rather than imprecise:
+   an item ILS 50 cheaper with ILS 60 shipping is not cheaper, and the
+   cross-shop summary §7 just built compares sticker prices.
 
-1 and 2 together would make a product watch honest. 3 is what makes it good.
+1 and 2 together made a product watch honest. 3 made it explain itself.
+
+### Still not expressible, and deliberately so
+
+**"Just tell me the cheapest, every morning."** There is no threshold in that
+sentence, so it is not a condition watch at all — it is a scheduled report, and
+the trigger it needs is Phase 9 step 3b, the same one calendar reminders need.
+`readings` is the payload it will use when that exists. Building a second
+firing mechanism here to serve one phrasing would have been the expensive way
+to get there.
