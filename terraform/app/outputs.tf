@@ -15,7 +15,7 @@ output "planner_lambda_arn" {
 }
 
 output "api_endpoint" {
-  description = "Base URL for the watch lifecycle API. Every request needs an Authorization header carrying the passcode from SSM at /schedule-ai-app/passcode."
+  description = "Base URL for the watch lifecycle API. Every request needs an Authorization header carrying a Cognito ID token."
   value       = aws_apigatewayv2_stage.default.invoke_url
 }
 
@@ -44,7 +44,7 @@ output "sender_email" {
 # applies rather than one.
 output "google_redirect_uri" {
   description = "Paste this into the Google OAuth client's Authorized redirect URIs."
-  value = var.auth_enabled ? "https://${aws_cognito_user_pool_domain.users[0].domain}.auth.${var.aws_region}.amazoncognito.com/oauth2/idpresponse" : "(auth disabled)"
+  value       = var.auth_enabled ? "https://${aws_cognito_user_pool_domain.users[0].domain}.auth.${var.aws_region}.amazoncognito.com/oauth2/idpresponse" : "(auth disabled)"
 }
 
 output "cognito_hosted_ui" {

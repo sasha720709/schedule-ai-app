@@ -57,7 +57,7 @@ checker/              Checker: check.py (fetch + judge), Lambda handler
 notifier/             Notifier: SES email + schedule teardown
 fetcher/              Fetcher: Playwright/Chromium renderer, Dockerfile
 api/                  Watch lifecycle API — every route behind one Lambda
-authorizer/           Passcode authorizer for API Gateway
+gatekeeper/          Cognito pre-sign-up trigger: who may have an account
 shared/               cost.py and extract.py, vendored into several zips
 frontend/             React + TypeScript app, deployed by deploy.sh
 docs/                 Phase plans

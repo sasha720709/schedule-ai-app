@@ -39,8 +39,10 @@ dynamodb = boto3.resource("dynamodb")
 scheduler = boto3.client("scheduler")
 lambda_client = boto3.client("lambda")
 
-# Every row is written with this until real auth exists. Kept as a field
-# rather than dropped, so multi-user is a query change and not a migration.
+# What a row is written with when nothing identifies the caller. Kept as a
+# constant rather than deleted, because rows created before sign-in existed
+# carry it and must keep working -- the same rule as a target row with no
+# extractor.
 USER_ID = "default"
 
 # Statuses a watch can be in. planning -> proposed -> active -> triggered,
@@ -128,6 +130,42 @@ def _body(event) -> dict:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _claims(event) -> dict:
+    """What the token said, or nothing.
+
+    API Gateway has already verified the signature, the issuer, the audience
+    and the expiry against Cognito's published keys before this Lambda ran. So
+    these claims are not input to be validated -- they are the *result* of a
+    validation that happened outside our code, which is the whole reason the
+    76-line authorizer could be deleted rather than improved. Nothing here
+    re-checks them, and nothing here should.
+    """
+    context = (event.get("requestContext") or {}).get("authorizer") or {}
+    return (context.get("jwt") or {}).get("claims") or {}
+
+
+def _user_id(event) -> str:
+    """Who is asking, by Cognito's `sub`.
+
+    `sub` rather than `email`, deliberately. An address can be changed and can
+    be reassigned; `sub` is stable for the life of the account, so a person who
+    changes their email keeps their watches instead of losing them to a
+    stranger who later takes the address.
+
+    Falls back to the old constant when there is no token at all, which is the
+    case for a locally-invoked Lambda and for anything created before sign-in
+    existed. It is not a bypass: without a token API Gateway never routes the
+    request here.
+    """
+    return _claims(event).get("sub") or USER_ID
+
+
+def _user_email(event):
+    """The address to notify, from the token rather than an environment
+    variable. Google has verified it; nobody typed it into a config."""
+    return _claims(event).get("email") or None
 
 
 def _get_watch(watch_id: str) -> dict:
@@ -275,9 +313,14 @@ def create_watch(event) -> dict:
         raise HttpError(400, "request must be 2000 characters or fewer")
 
     watch_id = f"w_{uuid.uuid4().hex[:8]}"
+    email = _user_email(event)
     _watches().put_item(Item={
         "watch_id": watch_id,
-        "user_id": USER_ID,
+        "user_id": _user_id(event),
+        # Stored on the row, not read from an environment variable at send
+        # time. A watch should be delivered to whoever asked for it, and a
+        # single NOTIFY_EMAIL is the last place multi-user is still assumed.
+        **({"notify_email": email} if email else {}),
         "prompt": request,
         "status": "planning",
         "created_at": _now(),

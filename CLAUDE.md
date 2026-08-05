@@ -823,9 +823,9 @@ designed chat UI) and the deploy half of 7.
 | `reminder` | nowhere — the clock is the trigger | no |
 | `value` | web search, compiled extractor | yes |
 
-**867 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 434, `planner/` 151, `api/` 96,
-`authorizer/` 24, `checker/` 103, `notifier/` 53, `fetcher/` 6. They run on
+**872 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 434, `planner/` 151, `api/` 106,
+`gatekeeper/` 15, `checker/` 103, `notifier/` 57, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
@@ -857,7 +857,7 @@ repaired by Haiku for $0.008, then three failures → `degraded`).
 
 Live AWS resources: `schedule-ai-app-watches` /
 `schedule-ai-app-watch-targets` (DynamoDB); `schedule-ai-app-planner`,
-`-checker`, `-notifier`, `-fetcher`, `-api`, `-authorizer` (Lambda, the
+`-checker`, `-notifier`, `-fetcher`, `-api`, `-gatekeeper` (Lambda, the
 Fetcher a container image); `schedule-ai-app-fetcher` (ECR, with an
 untagged-image expiry rule); `schedule-ai-app-bus` +
 `schedule-ai-app-watch-triggered` and `-watch-degraded` rules
@@ -881,6 +881,22 @@ made every notification fail SPF and land in spam. The zone is named by id
 (`sender_zone_id`) rather than looked up, because a `data "aws_route53_zone"`
 needs `ListHostedZones`, `GetHostedZone` **and** `ListTagsForResource` across
 the account to save typing an id that never changes.
+
+**Sign-in is Google, through a Cognito user pool.** The shared passcode and
+its 76-line authorizer Lambda are **deleted**: API Gateway now verifies a
+Cognito ID token itself -- signature, issuer, audience, expiry -- before a
+request reaches anything this project wrote. `user_id` is the token's `sub`
+(stable across an email change, unlike the address), and the watch row carries
+`notify_email` from the token. **`gatekeeper/` is the access control**: a
+pre-sign-up trigger with an allow-list, because turning on Google sign-in
+turns it on for everyone who has a Google account. An empty list denies
+everyone, deliberately.
+
+**Written but not yet read: `notify_email` on the watch row.** The Notifier
+still sends to one `NOTIFY_EMAIL`, because **SES is in the sandbox**
+(`ProductionAccess: false`, 200 sends/day) and may only send to verified
+addresses -- a second user's mail would be rejected. Requesting production
+access is a free support ticket and is what unblocks per-user delivery.
 
 **The API is live** at the `api_endpoint` Terraform output
 (`https://0xz7v8yx0i.execute-api.us-east-1.amazonaws.com`). Every request

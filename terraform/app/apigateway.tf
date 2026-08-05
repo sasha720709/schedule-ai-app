@@ -12,13 +12,6 @@
 # logs are enough to debug this, and access logs belong with the rest of the
 # observability work in Phase 5.
 
-locals {
-  # Named once, used by the authorizer's env var and its IAM policy. The
-  # value behind this name is created outside Terraform, on purpose, so the
-  # passcode never enters the state file.
-  passcode_param_name = "/schedule-ai-app/passcode"
-}
-
 resource "aws_apigatewayv2_api" "main" {
   name          = "schedule-ai-app"
   protocol_type = "HTTP"
@@ -55,23 +48,31 @@ resource "aws_apigatewayv2_integration" "api" {
   payload_format_version = "2.0"
 }
 
-# A REQUEST authorizer with simple responses: the Lambda answers
-# {"isAuthorized": true|false} rather than assembling an IAM policy document,
-# which is all a shared passcode needs.
-resource "aws_apigatewayv2_authorizer" "passcode" {
-  api_id                            = aws_apigatewayv2_api.main.id
-  name                              = "schedule-ai-app-passcode"
-  authorizer_type                   = "REQUEST"
-  authorizer_uri                    = aws_lambda_function.authorizer.invoke_arn
-  authorizer_payload_format_version = "2.0"
-  enable_simple_responses           = true
-  identity_sources                  = ["$request.header.Authorization"]
+# A JWT authorizer, which is a configuration block rather than a function.
+#
+# **This is the largest security change in the project, and it is a deletion.**
+# What it replaces was 76 lines of our own code comparing a shared secret --
+# code that had to be right about timing attacks, about caching, about what a
+# missing header means. API Gateway now verifies the signature, the issuer,
+# the audience and the expiry itself, against Cognito's published keys, before
+# the request reaches anything we wrote. Less of our code in the path is the
+# point; the rest is a consequence.
+#
+# The **ID token** is what the browser sends, not the access token. Cognito's
+# access tokens carry no `aud` claim, so an audience check -- the thing that
+# stops a token minted for some other application being replayed at ours --
+# cannot be made against them. The ID token also carries `email` and `sub`,
+# which is what turns "somebody authenticated" into "this person".
+resource "aws_apigatewayv2_authorizer" "jwt" {
+  api_id           = aws_apigatewayv2_api.main.id
+  name             = "schedule-ai-app-cognito"
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
 
-  # Cache a decision per distinct header value. A wrong passcode is cached
-  # too, so a typo keeps failing for five minutes -- acceptable, and it also
-  # blunts brute forcing. Naming an identity source is what makes caching
-  # possible at all; without one every request would invoke the authorizer.
-  authorizer_result_ttl_in_seconds = 300
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.web[0].id]
+    issuer   = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.users[0].id}"
+  }
 }
 
 resource "aws_apigatewayv2_route" "routes" {
@@ -87,8 +88,8 @@ resource "aws_apigatewayv2_route" "routes" {
   api_id             = aws_apigatewayv2_api.main.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
-  authorization_type = "CUSTOM"
-  authorizer_id      = aws_apigatewayv2_authorizer.passcode.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
 }
 
 # $default with auto_deploy: no explicit deployment step, and no stage name in
@@ -107,20 +108,15 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
-# Being a route target is not permission to invoke. These two statements are
-# what actually let API Gateway call the functions, scoped to this one API.
+# Being a route target is not permission to invoke. This is what actually lets
+# API Gateway call the api Lambda, scoped to this one API. There used to be a
+# second statement here for the passcode authorizer; a JWT authorizer is
+# configuration rather than a function, so it needs no permission and there is
+# nothing to invoke.
 resource "aws_lambda_permission" "apigw_invoke_api" {
   statement_id  = "AllowApiGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.api.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
-}
-
-resource "aws_lambda_permission" "apigw_invoke_authorizer" {
-  statement_id  = "AllowApiGatewayInvokeAuthorizer"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.authorizer.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/authorizers/${aws_apigatewayv2_authorizer.passcode.id}"
 }

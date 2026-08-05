@@ -1101,3 +1101,92 @@ def test_a_nonsense_answer_falls_back_rather_than_crashing(aws):
 
     assert response["statusCode"] == 200
     assert body_of(response)["repeat"] == "once"
+
+
+# --------------------------------------------------------------------------
+# Who is asking
+#
+# API Gateway has already verified the signature, issuer, audience and expiry
+# against Cognito's published keys before this Lambda runs. These claims are
+# not input to be validated -- they are the result of a validation that
+# happened outside our code, which is why the 76-line passcode authorizer was
+# deleted rather than improved.
+# --------------------------------------------------------------------------
+
+def signed_in(sub="sub-abc", email="owner@example.com"):
+    return {"requestContext": {"authorizer": {"jwt": {"claims": {
+        "sub": sub, "email": email}}}}}
+
+
+def call_as(route, claims, body=None, watch_id=None):
+    event = {"routeKey": route, **claims}
+    if body is not None:
+        event["body"] = json.dumps(body)
+    if watch_id is not None:
+        event["pathParameters"] = {"id": watch_id}
+    return handler.lambda_handler(event, None)
+
+
+def test_a_watch_belongs_to_the_person_who_asked_for_it(aws):
+    env = aws()
+    call_as("POST /watches", signed_in(), {"request": "watch the steam deck"})
+
+    assert env.watches.puts[0]["user_id"] == "sub-abc"
+
+
+def test_identity_is_the_subject_not_the_address(aws):
+    """An address can be changed and can be reassigned; `sub` is stable for the
+    life of the account. Keying on email loses someone's watches when they
+    change it, to whoever takes the address next."""
+    env = aws()
+    call_as("POST /watches", signed_in(sub="sub-abc", email="new@example.com"),
+            {"request": "watch it"})
+
+    assert env.watches.puts[0]["user_id"] == "sub-abc"
+
+
+def test_the_address_to_notify_is_stored_on_the_watch(aws):
+    """Not read from an environment variable at send time. A watch should
+    reach whoever asked for it, and one NOTIFY_EMAIL is the last place
+    multi-user is still assumed."""
+    env = aws()
+    call_as("POST /watches", signed_in(email="owner@example.com"),
+            {"request": "watch it"})
+
+    assert env.watches.puts[0]["notify_email"] == "owner@example.com"
+
+
+def test_a_request_with_no_token_still_works_locally(aws):
+    """Not a bypass: without a token API Gateway never routes the request
+    here. This is what keeps a locally-invoked Lambda, and every row created
+    before sign-in existed, working."""
+    env = aws()
+    call("POST /watches", {"request": "watch it"})
+
+    assert env.watches.puts[0]["user_id"] == "default"
+    assert "notify_email" not in env.watches.puts[0]
+
+
+def test_a_token_without_an_email_claim_stores_no_address(aws):
+    env = aws()
+    call_as("POST /watches",
+            {"requestContext": {"authorizer": {"jwt": {"claims":
+                                                       {"sub": "sub-abc"}}}}},
+            {"request": "watch it"})
+
+    assert env.watches.puts[0]["user_id"] == "sub-abc"
+    assert "notify_email" not in env.watches.puts[0]
+
+
+@pytest.mark.parametrize("context", [
+    {},
+    {"requestContext": {}},
+    {"requestContext": {"authorizer": {}}},
+    {"requestContext": {"authorizer": {"jwt": {}}}},
+    {"requestContext": {"authorizer": None}},
+])
+def test_every_shape_of_missing_claim_falls_back_rather_than_crashing(aws, context):
+    env = aws()
+    call_as("POST /watches", context, {"request": "watch it"})
+
+    assert env.watches.puts[0]["user_id"] == "default"
