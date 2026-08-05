@@ -19,10 +19,17 @@ as *reading*.
     ok            a value was read -- evaluate the condition against it
     unavailable   there is legitimately no value today -- not met, not broken
     failed        the extractor did not work -- record it for 8d to escalate
+    blocked       the source refused us -- not broken, and not repairable
 
 `unavailable` and `failed` are written to different fields on purpose. A watch
 that has quietly stopped being able to read its target must be distinguishable
 from one that is patiently waiting, or it will wait forever.
+
+`blocked` is the same argument a third time, and it earns its place by what it
+prevents: without it, the day a large shop starts turning us away, every watch
+on that shop pays Haiku to repair an extractor that was never broken, fails,
+and degrades separately -- N emails saying N things broke, and nothing saying
+the one true thing. See `shared/blocked.py`.
 """
 
 import json
@@ -34,6 +41,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 import across
+import blocked
 import cost
 from condition import ConditionError, evaluate
 from extract import FAILED, OK, UNAVAILABLE, SpecError, extract, plausible
@@ -58,6 +66,19 @@ cloudwatch = boto3.client("cloudwatch")
 # spec will usually fail the same way against the same page next tick. Three
 # says "this is not a transient network blip" without waiting for the budget.
 DEGRADE_AFTER = 3
+
+# The same idea for a source that is refusing us, and deliberately far more
+# patient. A broken extractor fails the same way against the same page every
+# time, so three ticks is plenty of evidence. A block is *probabilistic* --
+# Amazon served twenty-one good renders across two days and blocks on a
+# datacenter IP are routinely transient -- so treating a couple of refusals as
+# proof would kill a working watch over one bad afternoon.
+#
+# The cost of being patient is nothing: a blocked check pays for a fetch and
+# no model at all. The cost of being hasty is a watch the owner has to
+# recreate. So this errs long, and the CloudWatch metric below is what makes
+# the situation visible long before the counter runs out.
+BLOCKED_DEGRADE_AFTER = 10
 
 
 def _record_cost(fetch_method: str, used_model: bool) -> None:
@@ -105,6 +126,33 @@ def _record_cost(fetch_method: str, used_model: bool) -> None:
         print(f"could not publish cost metric: {type(exc).__name__}: {exc}")
 
 
+def _record_block(url: str) -> None:
+    """One metric, so "the day Amazon starts blocking" is one alarm.
+
+    This is the entire point of giving a refusal its own state. Without it the
+    event is N watches degrading separately over three ticks each, which looks
+    like N unrelated broken extractors and reads like the product rotting.
+
+    Published twice for the reason on `_record_cost`: a dimensioned metric
+    cannot be alarmed on without naming its exact dimension set, so the bare
+    series is the one an alarm can watch and the `Host` dimension is what says
+    *which* source went dark. Never raises -- a metric that fails to publish
+    must not fail a check that already knows its answer.
+    """
+    try:
+        host = blocked.host_of(url)
+        cloudwatch.put_metric_data(
+            Namespace="ScheduleAI",
+            MetricData=[
+                {"MetricName": "BlockedFetches", "Value": 1.0, "Unit": "Count",
+                 "Dimensions": [{"Name": "Host", "Value": host}]},
+                {"MetricName": "BlockedFetches", "Value": 1.0, "Unit": "Count"},
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not publish blocked metric: {type(exc).__name__}: {exc}")
+
+
 def _fetch(url: str, fetch_method: str, *, markup: bool) -> str:
     """Plain GET by default. The Planner marks a target "browser" when the page
     needs JavaScript to render, which costs a second Lambda and a few seconds --
@@ -114,7 +162,14 @@ def _fetch(url: str, fetch_method: str, *, markup: bool) -> str:
     reduced text for the model, where every character is billed.
     """
     if fetch_method != "browser":
-        return fetch_raw(url) if markup else fetch_text(url)
+        body = fetch_raw(url) if markup else fetch_text(url)
+        # Checked here as well as inside `fetch_raw`, and not by accident. A
+        # refusal must be recognised by *the Checker*, whichever reading
+        # function happens to be wired in -- making the behaviour depend on
+        # that is how a guarantee turns into a coincidence. The second scan is
+        # a few thousand characters and costs nothing.
+        blocked.check(body=body, url=url)
+        return body
 
     response = lambda_client.invoke(
         FunctionName=os.environ["FETCHER_FUNCTION_ARN"],
@@ -124,6 +179,14 @@ def _fetch(url: str, fetch_method: str, *, markup: bool) -> str:
 
     if "FunctionError" in response:
         raise RuntimeError(f"browser fetch failed: {payload}")
+
+    # A rendered refusal reaches here as a perfectly good 200 with a captcha in
+    # it, and would then read as "the selector stopped matching" -- which pays
+    # Haiku to repair an extractor that was never broken. Checked before the
+    # payload is used for anything.
+    blocked.check(status=payload.get("status"),
+                  body=payload.get("html") or payload.get("text") or "",
+                  url=url)
 
     if not markup:
         return payload["text"]
@@ -532,8 +595,59 @@ def _expire(watches_table, watch: dict, target: dict, now: str) -> dict:
     return {"checked": False, "status": "expired"}
 
 
+def _record_blocked(targets_table, watches_table, watch: dict, target: dict,
+                    exc, now: str, fetch_method: str) -> dict:
+    """A refusal: recorded, counted separately, never repaired.
+
+    Three deliberate differences from a failure, and each one is the whole
+    reason this state exists.
+
+    **No repair.** The extractor is fine. Paying Haiku to rewrite a selector
+    against a captcha page cannot work and would be paid on every tick of every
+    Amazon watch for as long as the block lasted.
+
+    **Its own counter.** `consecutive_failures` is what 8d escalates on, and
+    mixing refusals into it would degrade a healthy watch three ticks after a
+    site had a bad afternoon. `consecutive_blocks` is reset by any successful
+    read, exactly like the other.
+
+    **A metric, so it is one event.** The alarm on `BlockedFetches` is what
+    turns "Amazon started blocking" from N separate broken watches into a
+    single thing the owner is told once.
+    """
+    target_id = target["target_id"]
+    blocks = int(_from_decimal(target.get("consecutive_blocks", 0)) or 0) + 1
+    print(f"target={target_id} BLOCKED ({blocks}): {exc.reason}")
+
+    _record_cost(fetch_method, used_model=False)
+    _record_block(target.get("url", ""))
+
+    targets_table.update_item(
+        Key={"target_id": target_id},
+        UpdateExpression=(
+            "SET last_checked_at = :t, last_error = :e, last_status = :s, "
+            "consecutive_blocks = :b, blocked_at = :t"
+        ),
+        ExpressionAttributeValues={
+            ":t": now, ":e": str(exc.reason)[:500], ":s": blocked.BLOCKED,
+            ":b": blocks,
+        },
+    )
+
+    if blocks < BLOCKED_DEGRADE_AFTER:
+        return {"checked": True, "status": blocked.BLOCKED,
+                "blocked": blocks, "error": exc.reason}
+
+    # Long past a bad afternoon. Stop paying to be refused, and say plainly
+    # that the source shut us out rather than that the watch broke -- the
+    # owner can act on the first and can do nothing about the second.
+    return _degrade(watches_table, targets_table, watch, target,
+                    {"error": exc.reason}, now, 0.0, reason_kind="blocked")
+
+
 def _degrade(watches_table, targets_table, watch: dict, target: dict,
-             result: dict, now: str, repair_spend: float) -> dict:
+             result: dict, now: str, repair_spend: float,
+             reason_kind: str = "broken") -> dict:
     """Tier 2: stop, say why, and stop billing.
 
     A watch that cannot read its target must say so. Silence is the failure
@@ -557,7 +671,12 @@ def _degrade(watches_table, targets_table, watch: dict, target: dict,
             "consecutive_failures = :f, repair_spend_usd = :r, degraded_at = :d"
         ),
         ExpressionAttributeValues={
-            ":t": now, ":e": str(result["error"])[:500], ":s": FAILED,
+            ":t": now,
+            ":e": str(result["error"])[:500],
+            # A refused target has not failed, and the row must not say it
+            # has: `failed` is what 8d escalates and what the UI paints as a
+            # broken extractor.
+            ":s": blocked.BLOCKED if reason_kind == "blocked" else FAILED,
             ":f": DEGRADE_AFTER, ":r": _to_decimal(repair_spend), ":d": now,
         },
     )
@@ -579,11 +698,17 @@ def _degrade(watches_table, targets_table, watch: dict, target: dict,
             "url": target["url"],
             "prompt": watch.get("prompt", ""),
             "reason": str(result["error"])[:500],
+            # Which email to write. Nothing about the plumbing cares, and the
+            # user-facing wording is the whole difference: "your watch broke"
+            # and "the shop shut us out" ask for different things from the
+            # person reading them.
+            "reason_kind": reason_kind,
             "repair_spend_usd": round(repair_spend, 4),
             "degraded_at": now,
         }),
     }])
-    return {"checked": True, "status": "degraded", "error": result["error"]}
+    return {"checked": True, "status": "degraded", "error": result["error"],
+            "reason_kind": reason_kind}
 
 
 def lambda_handler(event, context):
@@ -629,6 +754,12 @@ def lambda_handler(event, context):
     try:
         runner = _tier_model if used_model else _tier0
         result = runner(target, watch_condition, fetch_method)
+    except blocked.Blocked as exc:
+        # Not broken and not empty: we were not allowed to look. Handled before
+        # anything else because every other path below would treat it as a
+        # broken extractor and pay Haiku to repair a captcha page.
+        return _record_blocked(targets_table, watches_table, watch, target,
+                               exc, now, fetch_method)
     except SpecError as exc:
         # A malformed spec is a planning bug and will fail identically forever.
         result = {"status": FAILED, "value": None, "raw": None, "note": "",
@@ -739,7 +870,11 @@ def lambda_handler(event, context):
         UpdateExpression=(
             "SET last_value = :v, last_raw = :r, last_checked_at = :t, "
             "last_note = :n, last_status = :s, consecutive_failures = :f, "
-            "last_changed_at = :c, unchanged_checks = :u, last_items = :i "
+            "last_changed_at = :c, unchanged_checks = :u, last_items = :i, "
+            # A read that worked ends any run of refusals, exactly as it ends
+            # a run of failures. Blocking is probabilistic, so one good render
+            # genuinely is the end of it.
+            "consecutive_blocks = :f "
             "REMOVE last_error"
         ),
         ExpressionAttributeValues={

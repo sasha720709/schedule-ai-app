@@ -125,3 +125,51 @@ resource "aws_cloudwatch_metric_alarm" "notifier_errors" {
 
   alarm_actions = [aws_sns_topic.alarms[0].arn]
 }
+
+# A source that has started refusing us.
+#
+# This alarm is the entire reason `blocked` is a state of its own rather than
+# another kind of failure. Without it, the day Amazon starts turning us away
+# looks like N unrelated broken extractors: each watch pays for a repair that
+# cannot work, each degrades separately three ticks later, and the owner gets N
+# emails saying N different things broke. The one fact worth knowing -- *a
+# source went dark* -- is the one thing nobody is told.
+#
+# On the DIMENSIONLESS series, for the reason recorded above: the Checker also
+# publishes a `Host` dimension, which says *which* source it was, and a
+# dimensioned metric cannot be alarmed on without naming its exact dimension
+# set. An alarm on {amazon.com} would miss the day a different shop starts.
+#
+# The threshold is deliberately low. Blocking is probabilistic, so one refusal
+# is noise -- but the Checker already tolerates ten consecutive refusals before
+# it stops a watch, and this needs to speak long before that, while there is
+# still something to do about it. Over an hour, more than five refusals across
+# the whole system is a pattern rather than a bad render.
+resource "aws_cloudwatch_metric_alarm" "blocked_fetches" {
+  count = var.enable_alarms ? 1 : 0
+
+  alarm_name        = "schedule-ai-app-blocked-fetches"
+  alarm_description = <<-EOT
+    A site is refusing our requests. Nothing is broken and no repair will
+    help; the watches involved keep trying and stop themselves after
+    BLOCKED_DEGRADE_AFTER consecutive refusals. Check the Host dimension of
+    ScheduleAI/BlockedFetches to see which source it is.
+  EOT
+
+  namespace   = "ScheduleAI"
+  metric_name = "BlockedFetches"
+  statistic   = "Sum"
+  period      = 3600
+
+  evaluation_periods  = 1
+  threshold           = 5
+  comparison_operator = "GreaterThanThreshold"
+
+  # Not breaching: no data means nothing was refused, which is the normal and
+  # overwhelmingly common state. `missing` would leave the alarm permanently
+  # INSUFFICIENT_DATA and train the owner to ignore it.
+  treat_missing_data = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms[0].arn]
+  ok_actions    = [aws_sns_topic.alarms[0].arn]
+}

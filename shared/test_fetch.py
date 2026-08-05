@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import blocked  # noqa: E402
 import fetch  # noqa: E402
 
 PAGE = "<html><body><h1>Junior Cloud Engineer</h1></body></html>"
@@ -115,3 +116,52 @@ def test_undecodable_bytes_are_replaced_rather_than_raising(wire):
 def test_markup_is_capped(wire):
     wire(b"<p>x</p>" * 400000)
     assert len(fetch.fetch_raw("https://example.com")) == fetch.MAX_RAW_CHARS
+
+
+# --- being refused, at the boundary where the reading happens -----------------
+
+def test_a_403_is_reported_as_a_refusal_not_a_crash(monkeypatch):
+    """403 and 429 arrive as exceptions rather than responses, and they are the
+    commonest way a site says "not you"."""
+    import urllib.error
+
+    def deny(*a, **k):
+        raise urllib.error.HTTPError("https://www.amazon.com/s", 403,
+                                     "Forbidden", {}, None)
+
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", deny)
+
+    with pytest.raises(blocked.Blocked) as caught:
+        fetch.fetch_raw("https://www.amazon.com/s?k=xbox")
+
+    assert caught.value.status == 403
+    assert "amazon.com" in caught.value.reason
+
+
+def test_a_404_still_raises_the_original_error(monkeypatch):
+    """A wrong URL is a planning bug that will never clear by waiting, and
+    dressing it up as a refusal would leave a watch retrying forever."""
+    import urllib.error
+
+    def missing(*a, **k):
+        raise urllib.error.HTTPError("https://shop.example/gone", 404,
+                                     "Not Found", {}, None)
+
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", missing)
+
+    with pytest.raises(urllib.error.HTTPError):
+        fetch.fetch_raw("https://shop.example/gone")
+
+
+def test_a_captcha_served_with_a_200_is_still_a_refusal(wire):
+    """Cloudflare and Amazon both do this, which is why the status alone is
+    never enough."""
+    wire(b"<html><h1>Enter the characters you see below</h1></html>")
+
+    with pytest.raises(blocked.Blocked):
+        fetch.fetch_raw("https://www.amazon.com/s?k=xbox")
+
+
+def test_an_ordinary_page_is_still_returned_untouched(wire):
+    wire(b"<html><body>a real page</body></html>")
+    assert "a real page" in fetch.fetch_raw("https://shop.example/x")

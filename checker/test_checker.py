@@ -1314,3 +1314,164 @@ def test_a_repeating_watch_is_not_guarded_because_it_never_transitions(env, monk
     run(env)
 
     assert env.watches.last_update()["condition"] is None
+
+
+# --- a source that refuses us -------------------------------------------------
+#
+# The third member of the family `unavailable`/`failed` belongs to, and it
+# earns its place by what it prevents: without it, the day a large shop turns
+# us away, every watch on that shop pays Haiku to repair an extractor that was
+# never broken, then degrades separately -- N emails saying N things broke, and
+# nothing saying the one true thing.
+
+CAPTCHA = ("<html><title>Robot Check</title><body>"
+           "<h1>Enter the characters you see below</h1></body></html>")
+
+
+def a_blocked_watch(env, monkeypatch, *, page=CAPTCHA, **target):
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    monkeypatch.setattr(env.module, "fetch_raw", lambda *a, **k: page)
+    return make_target(env, extractor=PRICE_SPEC,
+                       url="https://www.amazon.com/s?k=xbox", **target)
+
+
+def test_a_refusal_is_its_own_status_not_a_failure(env, monkeypatch):
+    a_blocked_watch(env, monkeypatch)
+
+    result = run(env)
+
+    assert result["status"] == "blocked"
+    assert values_of(env.targets.last_update())[":s"] == "blocked"
+
+
+def test_a_refusal_never_pays_for_a_repair(env, monkeypatch):
+    """The extractor is fine. Rewriting a selector against a captcha page
+    cannot work, and would be paid on every tick of every watch on that shop
+    for as long as the block lasted."""
+    a_blocked_watch(env, monkeypatch)
+    monkeypatch.setattr(env.module, "repair", MagicMock(side_effect=AssertionError(
+        "a refusal must never be repaired")))
+
+    assert run(env)["status"] == "blocked"
+
+
+def test_a_refusal_does_not_count_towards_degrading(env, monkeypatch):
+    """`consecutive_failures` is what 8d escalates on. Mixing refusals into it
+    would stop a healthy watch three ticks after a site had a bad afternoon."""
+    a_blocked_watch(env, monkeypatch, consecutive_failures=2)
+
+    run(env)
+
+    assert ":f" not in values_of(env.targets.last_update())
+    assert values_of(env.targets.last_update())[":b"] == 1
+
+
+def test_refusals_accumulate_on_their_own_counter(env, monkeypatch):
+    a_blocked_watch(env, monkeypatch, consecutive_blocks=Decimal("4"))
+
+    assert run(env)["blocked"] == 5
+
+
+def test_the_reason_says_which_wall_and_whose(env, monkeypatch):
+    a_blocked_watch(env, monkeypatch)
+    run(env)
+
+    recorded = values_of(env.targets.last_update())[":e"]
+    assert "amazon.com" in recorded
+    assert "bot check" in recorded
+
+
+def test_the_block_is_published_as_one_metric(env, monkeypatch):
+    """The whole point: an alarm on this is what turns "Amazon started
+    blocking" from N broken watches into a single thing the owner is told."""
+    a_blocked_watch(env, monkeypatch)
+    run(env)
+
+    published = [c for c in env.module.cloudwatch.put_metric_data.call_args_list
+                 if any(m["MetricName"] == "BlockedFetches"
+                        for m in c.kwargs["MetricData"])]
+    assert len(published) == 1
+    metrics = published[0].kwargs["MetricData"]
+    # Once with the host, so it says which source; once bare, because a
+    # dimensioned metric cannot be alarmed on without naming its dimensions.
+    assert any(m.get("Dimensions") == [{"Name": "Host", "Value": "amazon.com"}]
+               for m in metrics)
+    assert any("Dimensions" not in m for m in metrics)
+
+
+def test_a_watch_keeps_going_while_the_block_could_still_be_a_bad_afternoon(
+        env, monkeypatch):
+    """Blocking is probabilistic -- Amazon served twenty-one good renders
+    across two days. Being hasty here costs a watch the owner has to
+    recreate; being patient costs a fetch and no model at all."""
+    a_blocked_watch(env, monkeypatch,
+                    consecutive_blocks=Decimal(h.BLOCKED_DEGRADE_AFTER - 2))
+
+    run(env)
+
+    assert env.watches.items["w_1"]["status"] == "active"
+    assert env.module.events.put_events.call_count == 0
+
+
+def test_a_source_that_will_not_relent_stops_the_watch(env, monkeypatch):
+    a_blocked_watch(env, monkeypatch,
+                    consecutive_blocks=Decimal(h.BLOCKED_DEGRADE_AFTER - 1))
+
+    result = run(env)
+
+    assert result["status"] == "degraded"
+    assert values_of(env.watches.last_update())[":s"] == "degraded"
+
+
+def test_the_degraded_event_says_it_was_a_refusal(env, monkeypatch):
+    """"Your watch broke" and "the shop shut us out" ask different things of
+    the person reading them, and only one of them is true."""
+    a_blocked_watch(env, monkeypatch,
+                    consecutive_blocks=Decimal(h.BLOCKED_DEGRADE_AFTER - 1))
+    run(env)
+
+    assert emitted(env)["reason_kind"] == "blocked"
+
+
+def test_a_degraded_refusal_does_not_leave_the_row_saying_failed(env, monkeypatch):
+    """`failed` is what 8d escalates and what the UI paints as a broken
+    extractor. The row has to keep telling the truth after the watch stops."""
+    a_blocked_watch(env, monkeypatch,
+                    consecutive_blocks=Decimal(h.BLOCKED_DEGRADE_AFTER - 1))
+    run(env)
+
+    written = [u for u in env.targets.updates if ":d" in u["values"]][-1]
+    assert written["values"][":s"] == "blocked"
+
+
+def test_a_good_read_clears_the_run_of_refusals(env, monkeypatch):
+    """One successful render genuinely is the end of it, because the blocking
+    is probabilistic rather than a decision about us."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=PRICE_SPEC, consecutive_blocks=Decimal("6"))
+
+    run(env)
+
+    assert values_of(env.targets.updates[0])[":f"] == 0
+    assert "consecutive_blocks = :f" in env.targets.updates[0]["expression"]
+
+
+def test_a_refusal_still_records_what_the_tick_cost(env, monkeypatch):
+    """It fetched. Spend that is invisible is the thing Phase 5 exists to
+    stop, and a blocked fetch is still a fetch."""
+    a_blocked_watch(env, monkeypatch)
+    run(env)
+
+    assert any(m["MetricName"] == "EstimatedCostUSD"
+               for c in env.module.cloudwatch.put_metric_data.call_args_list
+               for m in c.kwargs["MetricData"])
+
+
+def test_a_normal_empty_page_is_still_an_ordinary_failure(env, monkeypatch):
+    """The bar for calling something a refusal is high on purpose: a false
+    positive costs a working watch."""
+    a_blocked_watch(env, monkeypatch, page="<html><body>nothing here</body></html>")
+
+    assert run(env)["status"] == "failed"

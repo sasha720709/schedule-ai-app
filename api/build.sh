@@ -11,7 +11,7 @@ mkdir -p build dist
 cp handler.py build/
 # The cost model is shared by three Lambdas. Vendored per zip rather than
 # shared as a Layer, which is still a deferred gap.
-for module in cost.py schedules.py questions.py llm.py condition.py across.py; do
+for module in cost.py schedules.py questions.py llm.py condition.py across.py blocked.py; do
   cp "../shared/$module" build/
 done
 

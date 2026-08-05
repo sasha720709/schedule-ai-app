@@ -34,6 +34,7 @@ thresholds -- not one number. Silently comparing them is how a watch reports a
 bargain that is not one.
 """
 
+import blocked
 import shops
 from extract import extract
 from fetch import fetch_raw
@@ -139,6 +140,11 @@ class ProductKind(Kind):
         url = target["url"]
         raw = (fetch_browser() if target["fetch_method"] == "browser"
                else fetch_raw(url))
+        # A refusal reaching the extractor reads as "this shop listed nothing
+        # for your search", which sends the user off to reword a query that
+        # was never the problem. `fetch_raw` raises on its own; a rendered
+        # captcha arrives as a healthy 200 and has to be caught here.
+        blocked.check(body=raw, url=url)
         outcome = extract(target["extractor"], raw)
         if not outcome.ok:
             raise ValueError(

@@ -711,3 +711,61 @@ def test_a_reading_with_no_shipping_field_at_all_reads_as_unknown(aws):
     _, body = sent(env)
 
     assert "before delivery" in body
+
+
+# --------------------------------------------------------------------------
+# A shop that shut us out is not a broken watch
+#
+# The owner can do something about the first -- wait, or watch somewhere else
+# -- and nothing at all about a redesigned page. Saying "an automatic repair
+# was attempted" would also be a lie: no repair is ever attempted on a refusal.
+# --------------------------------------------------------------------------
+
+def test_a_blocked_watch_gets_its_own_message(aws):
+    env = aws()
+    handler.lambda_handler(degraded(
+        reason_kind="blocked",
+        reason="amazon.com served a bot check instead of the page"), None)
+    subject, body = sent(env)
+
+    assert "stopped working" not in subject
+    assert "stopped letting us look" in subject
+    assert "Nothing about the watch is broken" in body
+    assert "bot check" in body
+
+
+def test_a_blocked_email_never_claims_a_repair_was_paid_for(aws):
+    env = aws()
+    handler.lambda_handler(degraded(reason_kind="blocked",
+                                    reason="HTTP 429"), None)
+    _, body = sent(env)
+
+    assert "repair was attempted" not in body
+    assert "Nothing was spent" in body
+
+
+def test_a_blocked_email_says_it_may_work_again(aws):
+    """Blocking is probabilistic and often specific to where the request comes
+    from. Telling someone their watch is dead forever would be wrong."""
+    env = aws()
+    handler.lambda_handler(degraded(reason_kind="blocked", reason="x"), None)
+    _, body = sent(env)
+
+    assert "may work again" in body
+
+
+def test_a_genuinely_broken_watch_still_says_so(aws):
+    env = aws()
+    handler.lambda_handler(degraded(), None)
+    subject, body = sent(env)
+
+    assert "stopped working" in subject
+    assert "site was redesigned" in body
+
+
+def test_a_blocked_watch_still_has_its_schedules_deleted(aws):
+    """Whatever the wording, the plumbing must still stop the billing."""
+    env = aws()
+    handler.lambda_handler(degraded(reason_kind="blocked", reason="x"), None)
+
+    assert [step for step in env.log if step[0] == "delete_schedule"]

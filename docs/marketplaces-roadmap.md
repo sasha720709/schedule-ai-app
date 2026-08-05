@@ -514,19 +514,83 @@ on every existing watch.
 Identical stickers, different landed prices, now in the right order. That is
 the sentence §3.4 was written to make true.
 
-## 9. Recommended order
+## 9. Step 5, built 2026-08-05 — being refused, as a state of its own
 
-1. ✅ **Shops registry + Amazon on our own browser.** Done — §5.
-2. ✅ **Particularization via the questions step.** Done — §6.
-3. ✅ **Watch-level readings.** Done — §7.
-4. ✅ **Delivery, as a stated fact rather than an invented number.** Done — §8.
-5. **The blocked-render outcome.** The last item on this phase's original list
-   and the only one left: Amazon's blocking is probabilistic, and the day it
-   starts refusing should be **one visible signal** rather than every Amazon
-   watch degrading separately and looking like a broken extractor.
+The last item on this phase's list, and the smallest. Amazon's blocking is
+probabilistic and IP-dependent: twenty-one good renders across two days prove
+nothing about tomorrow. Before this, the day it starts refusing looked like:
+
+    every Amazon watch's extractor "stops matching"
+      -> each pays Haiku for a repair that cannot possibly work
+      -> each repair fails against a captcha page
+      -> three ticks later each watch degrades, separately
+      -> the owner gets N emails saying N watches broke
+
+Every part of that is wrong. Nothing is broken, no repair can help, and the one
+fact worth knowing — *the shop shut us out* — is the only thing never said.
+It is the `unavailable` vs `failed` argument a third time: "we were not allowed
+to look" is neither.
+
+`shared/blocked.py` recognises a refusal at the fetch boundary. A blocked tick
+is **never repaired**, counts on **its own counter** (`consecutive_blocks`,
+cleared by any successful read), tolerates **ten** consecutive refusals rather
+than three — being hasty costs a working watch, being patient costs a fetch and
+no model at all — and publishes **one metric**, `BlockedFetches`, which the new
+`schedule-ai-app-blocked-fetches` alarm watches. That alarm is the entire point:
+one signal instead of a wave of unrelated-looking breakages.
+
+### Recognising a wall without seeing one everywhere
+
+A refusal is recognised by its words, and **a phrase found on a page is not a
+fact about the page** — the third appearance of the same trap, after
+`unavailable_if` matching a string table and "FREE delivery" appearing on
+fourteen cards that had none. "Access denied" is a plausible substring of a
+shop's help centre.
+
+Three defences: only the **top** of the document is searched, because a
+refusal announces itself immediately; **strong markers stand alone** (`"Enter
+the characters you see below"` belongs to Amazon's captcha and nothing else)
+while **weak ones need the page to be block-shaped** — a real Amazon search is
+~1MB and a captcha is a few KB, a two-order-of-magnitude gap and the cheapest
+discriminator available; and a refusal **never silences a watch by itself**.
+
+`404` and `401` are deliberately *not* refusals. Both are permanent — a wrong
+URL and a resource needing credentials — and neither clears by waiting, so
+dressing them up as blocks would leave a watch retrying forever.
+
+### Found by the tests, not by review
+
+Detection first lived only inside `shared/fetch.py`, but the Checker imports
+`fetch_raw` from `checker/check.py`. So whether a refusal was noticed depended
+on **which reading function happened to be wired in** — a guarantee that was
+actually a coincidence. It is now checked at the Checker's own boundary as
+well, for both fetch methods.
+
+### Proven live
+
+A confirmed two-shop watch had one target's URL repointed at a 403 by hand, the
+same way 8d's corrupted `scope` was verified:
+
+    {"status": "blocked", "blocked": 1,
+     "error": "httpbin.org answered HTTP 403 — it is refusing automated
+               requests right now"}
+
+The row read `last_status: blocked`, `consecutive_blocks: 1`, with
+`consecutive_failures` untouched and no repair attempted. Pushed past the
+threshold it degraded with `reason_kind: blocked`, sent the *"a shop stopped
+letting us look"* email rather than the *"your watch broke"* one, and tore both
+schedules down. `BlockedFetches` recorded 2 against host `httpbin.org`.
+
+## 10. Recommended order — this phase is done
+
+1. ✅ **Shops registry + Amazon on our own browser.** §5.
+2. ✅ **Particularization via the questions step.** §6.
+3. ✅ **Watch-level readings.** §7.
+4. ✅ **Delivery, as a stated fact rather than an invented number.** §8.
+5. ✅ **The blocked-render outcome.** §9.
 
 1 and 2 together made a product watch honest. 3 made it explain itself. 4 made
-it stop overclaiming.
+it stop overclaiming. 5 makes it say *who* went quiet.
 
 ### Still open, and named rather than hidden
 

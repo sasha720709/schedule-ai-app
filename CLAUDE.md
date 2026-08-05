@@ -9,9 +9,39 @@ zero watches, zero targets, so nothing is billing. **720 tests** pass in ~2s
 with `python -m pytest -q` from the repo root, and every suite also passes
 alone (`for d in */; do pytest $d; done`).
 
-**Marketplaces is finished except the blocked-render outcome.** Steps 1–4 are
-done, deployed and proven live; `docs/marketplaces-roadmap.md` §9 is what
-remains and it is small.
+**Marketplaces is finished.** All five steps are done, deployed and proven
+live — see `docs/marketplaces-roadmap.md` §5–§9.
+
+### Step 5: being refused, as a state of its own
+
+The last marketplaces item. A refusal is now recognised at the fetch boundary
+(`shared/blocked.py`), **never repaired**, counted on its own patient counter
+(ten consecutive refusals, not three, because blocking is probabilistic and
+being hasty costs a working watch), and published as **one metric** that the
+new `schedule-ai-app-blocked-fetches` alarm watches. Without it the day Amazon
+starts refusing looks like N watches each paying Haiku to repair a captcha
+page and then degrading separately — N emails saying N things broke, and
+nothing saying the one true thing.
+
+`404` and `401` are deliberately **not** refusals: both are permanent, and
+dressing them up as blocks leaves a watch retrying a page that does not exist.
+
+Two things worth keeping. Recognition uses the same three defences the shipping
+work needed, because it is the same trap a third time — **a phrase on a page is
+not a fact about the page**: only the top of the document is searched, strong
+markers stand alone while weak ones need a block-shaped (small) page, and a
+refusal never silences a watch on its own. And **the tests caught a real
+design hole**: detection first lived only in `shared/fetch.py`, but the Checker
+imports `fetch_raw` from `checker/check.py`, so whether a block was noticed
+depended on which reading function was wired in — a guarantee that was really a
+coincidence.
+
+Proven live by repointing a confirmed watch's target at a 403 by hand, the way
+8d's corrupted `scope` was verified: `status blocked`, `consecutive_blocks 1`,
+`consecutive_failures` untouched, no repair; then past the threshold it
+degraded with `reason_kind: blocked`, sent the *"a shop stopped letting us
+look"* email rather than *"your watch broke"*, and tore both schedules down.
+`BlockedFetches` recorded 2 against host `httpbin.org`.
 
 ### Step 4 (`b381ca4`): delivery, and one much larger bug
 
@@ -122,10 +152,10 @@ the map.
 
 ### What to do next, in the order I would do it
 
-1. **The blocked-render outcome**, the last of marketplaces. Amazon's
-   blocking is probabilistic; the day it starts refusing should be **one
-   visible signal** rather than every Amazon watch degrading separately and
-   looking like a broken extractor. Small. `docs/marketplaces-roadmap.md` §9.
+1. **Calendar reminders / time-triggered watches.** The next real feature and
+   the owner's stated priority: "tell me at 9am". Two jobs, not one — the
+   `.ics` file is fifteen lines with no OAuth, but the **trigger** is Phase 9
+   step 3b and does not exist. Build the reminder kind first.
 3. **Calendar reminders.** Two jobs, not one: the `.ics` file is easy
    (fifteen lines, no OAuth, `ses:SendRawEmail`), but the **trigger** is Phase
    9 step 3b and does not exist. Build the reminder kind first — attaching an
@@ -144,7 +174,7 @@ the map.
 |---|---|
 | `docs/shares-roadmap.md` | tiers 1–3 done; tier 4 (history) after the frontend |
 | `docs/vacancies-roadmap.md` | **all four steps done** |
-| `docs/marketplaces-roadmap.md` | steps 1–4 done; **only the blocked-render outcome left** (§9); §7–§8 are the write-ups |
+| `docs/marketplaces-roadmap.md` | **all five steps done**; §7–§9 are the write-ups |
 | `docs/phase-9-watch-kinds.md` | §10b is the missing-email write-up; §10 is what is left |
 | `docs/architecture-review-2026-07-31.md` | every architectural decision to that date |
 
@@ -792,7 +822,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | 🔨 | **9** · Watch kinds, schedules, delivery | kinds + windows done and proven live; left: `once`/`reminder` (time-triggered) and delivery channels |
 | ✅ | **10a** · Shares finished | tiers 1–3 done — exchange, baseline, staleness. Tier 4 (history) after the frontend |
 | ✅ | **10b** · Vacancies finished | all four steps — items, repeating+dedup, ranking, grounded questions |
-| 🔨 | **10c** · Marketplaces | steps 1–4 done; **only the blocked-render outcome left** |
+| ✅ | **10c** · Marketplaces | all five steps done — shops, `offers`, Amazon, pinning, one reading, delivery, blocked |
 | ⬜ | **11** · Calendar reminders | `.ics` is easy; the *trigger* is Phase 9 step 3b and does not exist |
 | ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |

@@ -264,6 +264,38 @@ Where:
 Ended at {detail.get('degraded_at', 'unknown time')}.
 """)
 
+    # Being shut out by a shop is not a broken watch, and the difference is
+    # the whole reason the state exists: the owner can do something about the
+    # first -- wait, or watch somewhere else -- and nothing at all about a
+    # redesigned page. Saying "an automatic repair was attempted" here would
+    # also be a lie: no repair is ever attempted on a refusal, on purpose.
+    if detail.get("reason_kind") == "blocked":
+        return (
+            f"A shop stopped letting us look: {prompt[:44]}",
+            f"""Your watch has been stopped because the site refused it, repeatedly.
+
+What you asked for:
+  {prompt}
+
+What happened:
+  {detail.get('reason', '(no reason recorded)')}
+
+Nothing about the watch is broken. Large shops turn automated requests away
+sometimes, and the block is often temporary and often specific to where the
+request comes from -- so the same watch may work again in a day, or from a
+different shop entirely.
+
+Nothing was spent trying to repair it: there was nothing to repair.
+
+Where:
+  {detail.get('url', '(unknown)')}
+
+Checking has stopped, so this is no longer costing anything. Re-create the
+watch to try again.
+
+Detected at {detail.get('degraded_at', 'unknown time')}.
+""")
+
     subject = f"Watch stopped working: {prompt[:60]}"
     body = f"""Your watch can no longer read its target, so it has been stopped.
 

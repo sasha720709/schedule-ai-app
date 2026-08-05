@@ -14,8 +14,11 @@ Two representations, the same split the browser Fetcher makes:
 
 import gzip
 import re
+import urllib.error
 import urllib.request
 import zlib
+
+import blocked
 
 # Enough of a page for a price or status to appear, without paying to send a
 # whole megabyte of markup to a model.
@@ -85,11 +88,24 @@ def fetch_raw(url: str) -> str:
     stripped -- the same reason the browser Fetcher now returns `html`.
     """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SEC) as response:
-        body = _decompress(response.read(),
-                           response.headers.get("Content-Encoding", ""))
-        raw = body.decode(_charset(response.headers.get("Content-Type", "")),
-                          errors="replace")
+    try:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SEC) as response:
+            body = _decompress(response.read(),
+                               response.headers.get("Content-Encoding", ""))
+            raw = body.decode(_charset(response.headers.get("Content-Type", "")),
+                              errors="replace")
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        # 403 and 429 arrive here rather than as a response, and they are the
+        # commonest way a site says "not you". Anything else is re-raised
+        # unchanged -- a 404 is a wrong URL, which is a planning bug and must
+        # not be dressed up as a refusal that might clear on its own.
+        blocked.check(status=exc.code, url=url)
+        raise
+
+    # A 200 can still be a wall. Cloudflare and Amazon both serve their bot
+    # checks with a normal status, which is why the status alone is not enough.
+    blocked.check(status=status, body=raw, url=url)
     return raw[:MAX_RAW_CHARS]
 
 

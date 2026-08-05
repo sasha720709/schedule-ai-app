@@ -23,7 +23,7 @@ rm -rf build/kinds/__pycache__ build/kinds/test_*.py
 # imported at runtime: `import cost`, not `from shared import cost`.
 for module in cost.py schedules.py extract.py condition.py fetch.py \
               sources.py job_boards.py llm.py questions.py shops.py across.py \
-              shipping.py; do
+              shipping.py blocked.py; do
   cp "../shared/$module" build/
 done
 # Wheels are pinned to the Lambda runtime's platform, not the build machine's.
