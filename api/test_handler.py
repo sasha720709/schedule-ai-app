@@ -321,9 +321,27 @@ def test_delete_removes_schedules_and_both_rows(aws):
     response = call("DELETE /watches/{id}", watch_id="w_1")
 
     assert response["statusCode"] == 200
-    assert env.scheduler.delete_schedule.call_count == 1
+    # The target's schedule, and the watch-level one a time-triggered watch
+    # would own. Trying both unconditionally is cheaper than storing a flag to
+    # decide with, and the second is a no-op here.
+    assert [c.kwargs["Name"] for c in env.scheduler.delete_schedule.call_args_list] \
+        == ["schedule-ai-app-t_1", "schedule-ai-app-w_1"]
     assert env.targets.deleted == ["t_1"]
     assert env.watches.deleted == ["w_1"]
+
+
+def test_delete_removes_the_schedule_of_a_watch_that_has_no_targets(aws):
+    """A time-triggered watch stores `targets: []` and owns its schedule
+    directly. A teardown that only walked targets would delete nothing and
+    leave it billing -- the unpaginated-query failure by a different road."""
+    env = aws(watches={"w_1": {"watch_id": "w_1", "status": "active"}},
+              targets={})
+    response = call("DELETE /watches/{id}", watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert body_of(response)["schedules_deleted"] == 1
+    assert env.scheduler.delete_schedule.call_args.kwargs["Name"] \
+        == "schedule-ai-app-w_1"
 
 
 def test_delete_tolerates_an_already_missing_schedule(aws):

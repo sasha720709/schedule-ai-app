@@ -1475,3 +1475,131 @@ def test_a_normal_empty_page_is_still_an_ordinary_failure(env, monkeypatch):
     a_blocked_watch(env, monkeypatch, page="<html><body>nothing here</body></html>")
 
     assert run(env)["status"] == "failed"
+
+
+# --- a watch whose trigger is the clock ---------------------------------------
+#
+# Phase 9 step 3b. Everything else in this Lambda answers "is it true yet";
+# here the answer arrived with the invocation. The dispatch is on which key the
+# payload carries, which is what lets a reminder exist without a target row
+# that describes nothing -- see docs/phase-9-watch-kinds.md §8.
+
+def a_timed_watch(env, *, status="active", **extra):
+    env.watches.items["w_1"] = {
+        "watch_id": "w_1", "status": status,
+        "prompt": "remind me to call the dentist", **extra,
+    }
+
+
+def fire(env, watch_id="w_1"):
+    return h.lambda_handler({"watch_id": watch_id}, None)
+
+
+def test_the_schedule_firing_is_the_whole_event(env):
+    a_timed_watch(env)
+
+    result = fire(env)
+
+    assert result["notified"] is True
+    assert result["trigger_kind"] == "time"
+
+
+def test_a_timed_watch_reads_no_page_and_calls_no_model(env, monkeypatch):
+    """There is nothing to read. A fetch here would be a bill for confirming
+    what the clock already said."""
+    monkeypatch.setattr(env.module, "fetch_raw", MagicMock(
+        side_effect=AssertionError("a reminder must not fetch anything")))
+    a_timed_watch(env)
+
+    fire(env)
+
+    assert env.module.lambda_client.invoke.call_count == 0
+
+
+def test_a_timed_watch_needs_no_target_row(env):
+    """The point of the whole plumbing change: a synthetic target would make
+    the table describe something that does not exist."""
+    a_timed_watch(env)
+    assert env.targets.items == {}
+
+    assert fire(env)["checked"] is True
+
+
+def test_firing_marks_the_watch_triggered(env):
+    a_timed_watch(env)
+    fire(env)
+
+    assert env.watches.items["w_1"]["status"] == "triggered"
+
+
+def test_the_event_says_the_trigger_was_time(env):
+    """The Notifier has to write a reminder, not "your watch came true".
+    Nothing was found, and nothing was being looked for."""
+    a_timed_watch(env)
+    fire(env)
+
+    detail = emitted(env)
+    assert detail["trigger_kind"] == "time"
+    assert detail["target_id"] is None
+    assert detail["url"] is None
+    assert detail["repeating"] is False
+
+
+def test_a_reminder_note_travels_to_the_email(env):
+    a_timed_watch(env, reminder_note="passport expires next month")
+    fire(env)
+
+    assert emitted(env)["note"] == "passport expires next month"
+
+
+def test_a_watch_that_already_fired_does_not_fire_again(env):
+    """`at(...)` deletes its own schedule, but EventBridge can still retry the
+    invocation after a downstream failure -- and firing twice means telling a
+    person twice."""
+    a_timed_watch(env, status="triggered")
+
+    result = fire(env)
+
+    assert result["skipped"] is True
+    assert env.module.events.put_events.call_count == 0
+
+
+def test_a_paused_timed_watch_stays_quiet(env):
+    a_timed_watch(env, status="paused")
+
+    assert fire(env)["skipped"] is True
+    assert env.module.events.put_events.call_count == 0
+
+
+def test_a_retry_that_loses_the_race_says_nothing(env):
+    a_timed_watch(env)
+    original = env.watches.update_item
+
+    def race(**kwargs):
+        env.watches.items["w_1"]["status"] = "triggered"
+        env.watches.update_item = original
+        return original(**kwargs)
+
+    env.watches.update_item = race
+
+    assert fire(env)["skipped"] is True
+    assert env.module.events.put_events.call_count == 0
+
+
+def test_a_missing_watch_is_an_error_not_a_silent_no_op(env):
+    with pytest.raises(RuntimeError, match="No such watch"):
+        fire(env, "w_gone")
+
+
+def test_a_condition_watch_is_completely_unaffected_by_the_new_dispatch(env,
+                                                                       monkeypatch):
+    """The `target_id` shape is the one every existing watch uses, and it must
+    behave exactly as it did before the branch existed."""
+    make_watch(env, condition={"metric": "price", "op": "<",
+                               "value": Decimal("450")})
+    make_target(env, extractor=PRICE_SPEC)
+
+    result = run(env)
+
+    assert result["last_value"] == 429.0
+    assert result["condition_met"] is True

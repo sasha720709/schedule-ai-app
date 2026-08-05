@@ -595,6 +595,84 @@ def _expire(watches_table, watch: dict, target: dict, now: str) -> dict:
     return {"checked": False, "status": "expired"}
 
 
+def _fire_on_time(watch_id: str) -> dict:
+    """A watch whose trigger is the clock. Nothing is read and nothing is judged.
+
+    Everything else in this Lambda exists to answer "is it true yet". Here the
+    answer arrived with the invocation, so the work is: confirm the watch still
+    wants to hear from us, say so, and stop.
+
+    **The schedule is not deleted here.** `at(...)` carries
+    `ActionAfterCompletion: DELETE`, so a one-shot removes itself when it
+    fires; the Notifier's teardown is the belt to that braces and is a no-op by
+    the time it runs. Deleting it here as well would be a third place that has
+    to agree about a name.
+
+    Costs nothing to run and nothing to check -- no fetch, no model -- so the
+    cost metric is not published: there is no spend to make visible, and a
+    zero would dilute the series the daily-spend alarm reads.
+    """
+    watches_table = dynamodb.Table(os.environ["WATCHES_TABLE"])
+    watch = watches_table.get_item(Key={"watch_id": watch_id}).get("Item")
+    if watch is None:
+        raise RuntimeError(f"No such watch: {watch_id}")
+
+    if watch["status"] != "active":
+        # Paused, already fired, or deleted between the schedule firing and
+        # this reading the row. Not an error -- the same guard every tick has.
+        print(f"watch {watch_id} status={watch['status']}, not firing")
+        return {"skipped": True, "status": watch["status"]}
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # The same conditional transition a condition watch uses. A one-shot
+    # cannot race with a sibling target because it has none, but it *can* be
+    # retried by EventBridge after a downstream failure, and firing twice
+    # means telling a person twice.
+    try:
+        watches_table.update_item(
+            Key={"watch_id": watch_id},
+            UpdateExpression="SET #s = :s, triggered_at = :t",
+            ConditionExpression="#s = :active",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":s": "triggered", ":t": now, ":active": "active",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        if not _already_fired(exc):
+            raise
+        print(f"watch {watch_id} has already fired -- not repeating it")
+        return {"skipped": True, "status": "triggered"}
+
+    events.put_events(Entries=[{
+        "Source": "schedule-ai-app.checker",
+        "DetailType": "WatchTriggered",
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Detail": json.dumps({
+            "watch_id": watch_id,
+            # No target and no page. Saying so plainly is better than an empty
+            # string that reads as a missing value downstream.
+            "target_id": None,
+            "url": None,
+            "prompt": watch.get("prompt", ""),
+            "last_value": None,
+            "note": watch.get("reminder_note") or "",
+            "items": [],
+            "readings": [],
+            "repeating": False,
+            # What the Notifier branches on to write a reminder rather than a
+            # "your watch came true" email. The two are not the same message:
+            # nothing was found, and nothing was being looked for.
+            "trigger_kind": "time",
+            "triggered_at": now,
+        }),
+    }])
+    print(f"TIME REACHED for watch {watch_id} -- event emitted")
+    return {"checked": True, "status": "fired", "notified": True,
+            "trigger_kind": "time"}
+
+
 def _record_blocked(targets_table, watches_table, watch: dict, target: dict,
                     exc, now: str, fetch_method: str) -> dict:
     """A refusal: recorded, counted separately, never repaired.
@@ -712,6 +790,21 @@ def _degrade(watches_table, targets_table, watch: dict, target: dict,
 
 
 def lambda_handler(event, context):
+    """One tick. Two shapes of invocation, and the difference is the whole
+    point of Phase 9 step 3b.
+
+        {"target_id": ...}   a condition watch -- read this target, judge it
+        {"watch_id":  ...}   a time-triggered watch -- the firing IS the event
+
+    The second has no target to read, no page to fetch and nothing to compare;
+    the schedule going off is the entire trigger. Dispatching on which key is
+    present is what lets a reminder exist without inventing a target row that
+    describes nothing -- see `docs/phase-9-watch-kinds.md` §8, and Phase 5 on
+    why a table that lies is worse than a branch.
+    """
+    if "target_id" not in event:
+        return _fire_on_time(event["watch_id"])
+
     target_id = event["target_id"]
 
     targets_table = dynamodb.Table(os.environ["WATCH_TARGETS_TABLE"])

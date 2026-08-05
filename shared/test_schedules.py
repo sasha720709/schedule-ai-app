@@ -14,6 +14,9 @@ exist.
 
 import pytest
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import schedules
 
 
@@ -338,3 +341,55 @@ def test_a_session_matches_the_expression_it_describes():
             per_day = schedules.checks_per_session(minutes, name)
             per_month = schedules.checks_per_month(minutes, name)
             assert per_month == per_day * schedules.WINDOWS[name].days_per_month
+
+
+# --- a schedule that fires once and removes itself ----------------------------
+#
+# The third shape, after rate and cron, and the one a reminder needs: nothing
+# is being polled, so there is no interval to choose. The firing is the event.
+
+def test_a_one_shot_is_an_at_expression():
+    args = schedules.once_expression(datetime(2026, 8, 6, 9, 0))
+    assert args["ScheduleExpression"] == "at(2026-08-06T09:00:00)"
+
+
+def test_a_one_shot_deletes_itself_when_it_fires():
+    """Without this a fired reminder leaves a schedule behind forever, and
+    EventBridge Scheduler charges per schedule. It is the same leak this
+    project has already fixed twice."""
+    assert schedules.once_expression(
+        datetime(2026, 8, 6, 9, 0))["ActionAfterCompletion"] == "DELETE"
+
+
+def test_a_one_shot_carries_its_timezone_separately():
+    """`at(...)` takes a naive local time; an offset or a trailing Z is
+    rejected. The same split cron uses, for the same reason -- "9am" has to
+    mean 9am after the clocks change too."""
+    args = schedules.once_expression(datetime(2026, 8, 6, 9, 0),
+                                     "Asia/Jerusalem")
+    assert args["ScheduleExpressionTimezone"] == "Asia/Jerusalem"
+    assert "+" not in args["ScheduleExpression"]
+    assert "Z" not in args["ScheduleExpression"]
+
+
+def test_an_aware_datetime_keeps_its_wall_clock_reading():
+    """9am in Jerusalem is `at(...09:00:00)` plus the zone -- not 06:00 UTC.
+    Converting here and naming the zone as well would apply the offset twice."""
+    aware = datetime(2026, 8, 6, 9, 0, tzinfo=ZoneInfo("Asia/Jerusalem"))
+    args = schedules.once_expression(aware, "Asia/Jerusalem")
+    assert args["ScheduleExpression"] == "at(2026-08-06T09:00:00)"
+
+
+def test_a_one_shot_accepts_the_string_form_the_api_receives():
+    args = schedules.once_expression("2026-08-06T09:00:00")
+    assert args["ScheduleExpression"] == "at(2026-08-06T09:00:00)"
+
+
+def test_a_one_shot_without_a_zone_names_none():
+    args = schedules.once_expression(datetime(2026, 8, 6, 9, 0))
+    assert "ScheduleExpressionTimezone" not in args
+
+
+def test_seconds_are_kept_because_the_api_requires_them():
+    args = schedules.once_expression("2026-08-06T09:30:15")
+    assert args["ScheduleExpression"] == "at(2026-08-06T09:30:15)"

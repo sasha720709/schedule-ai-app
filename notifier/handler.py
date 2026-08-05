@@ -42,6 +42,14 @@ def _all_targets(targets_table, watch_id: str) -> list:
 
 
 def _delete_schedules(watch_id: str) -> list:
+    """Every schedule this watch owns, whichever shape it uses.
+
+    A time-triggered watch stores `targets: []` and owns its schedule directly
+    (`docs/phase-9-watch-kinds.md` §8), so a teardown that only walked targets
+    would delete nothing and leave it billing. The watch-level delete is tried
+    for every watch; on a condition watch there is no such schedule and the
+    call is a no-op, which is cheaper than storing a flag to decide with.
+    """
     targets_table = dynamodb.Table(os.environ["WATCH_TARGETS_TABLE"])
 
     deleted = []
@@ -75,6 +83,13 @@ def _delete_schedules(watch_id: str) -> list:
         except Exception as exc:  # noqa: BLE001
             print(f"could not clear schedule_arn on {target['target_id']}: "
                   f"{type(exc).__name__}: {exc}")
+
+    try:
+        scheduler.delete_schedule(Name=f"schedule-ai-app-{watch_id}")
+        deleted.append(f"schedule-ai-app-{watch_id}")
+    except scheduler.exceptions.ResourceNotFoundException:
+        pass  # a condition watch has none, which is the common case
+
     return deleted
 
 

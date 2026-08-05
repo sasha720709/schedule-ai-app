@@ -247,6 +247,44 @@ def expression(interval_min: int, window_name=None) -> dict:
     }
 
 
+def once_expression(when, timezone_name=None) -> dict:
+    """A schedule that fires exactly once and then removes itself.
+
+    `at(...)` is the third schedule shape, after `rate` and `cron`, and it is
+    the one a reminder needs: nothing is being polled, so there is no interval
+    to choose. The firing *is* the event.
+
+    Two details that are the whole reason this is not one line.
+
+    **`ActionAfterCompletion: DELETE`.** Without it, a fired one-shot leaves a
+    schedule behind forever. EventBridge Scheduler charges per schedule, and a
+    dead schedule that nobody deletes is exactly the leak this project has
+    already fixed twice -- the Notifier's stale `schedule_arn`, and the
+    unpaginated teardown that left half a watch's schedules alive.
+
+    **`at(...)` takes a naive local time and a separate timezone.** Passing an
+    offset or a trailing `Z` is rejected by the API, so the moment is formatted
+    without one and the zone is named alongside -- the same split `cron` uses,
+    and for the same reason: DST is the scheduler's problem, not ours. "9am"
+    means 9am after the clocks change too.
+    """
+    if isinstance(when, str):
+        moment = datetime.fromisoformat(when)
+    else:
+        moment = when
+
+    # Whatever the caller had, `at()` wants it bare. A datetime carrying a
+    # zone keeps its wall-clock reading here; the zone travels in its own
+    # field, where the scheduler can apply it.
+    local = moment.replace(tzinfo=None)
+
+    args = {"ScheduleExpression": f"at({local.strftime('%Y-%m-%dT%H:%M:%S')})",
+            "ActionAfterCompletion": "DELETE"}
+    if timezone_name:
+        args["ScheduleExpressionTimezone"] = timezone_name
+    return args
+
+
 def checks_per_month(interval_min: int, window_name=None) -> float:
     """How many times this actually runs, which is what a cost estimate needs."""
     if interval_min <= 0:

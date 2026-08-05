@@ -159,8 +159,14 @@ def _targets_for(watch_id: str) -> list:
             return items
 
 
-def _schedule_name(target_id: str) -> str:
-    return f"schedule-ai-app-{target_id}"
+def _schedule_name(owner_id: str) -> str:
+    """One name per thing that owns a schedule -- a target, or a whole watch.
+
+    Both ids are already globally unique and differently prefixed (`t_`, `w_`),
+    so one namespace serves both without a second naming rule to keep in step
+    across four Lambdas.
+    """
+    return f"schedule-ai-app-{owner_id}"
 
 
 def _upsert_schedule(target_id: str, interval_min: int,
@@ -171,18 +177,46 @@ def _upsert_schedule(target_id: str, interval_min: int,
     this safe to retry: a confirm that failed halfway can be called again
     and will update what it already created instead of duplicating it.
     """
-    args = {
-        "Name": _schedule_name(target_id),
+    return _put_schedule(
+        _schedule_name(target_id),
         # rate(...) normally; cron(...) plus a timezone for a windowed target,
         # so that a market watch simply does not fire when the market is shut.
         # Building the expression here is what kept the Checker from ever
         # needing to know what a stock market is.
-        **schedules.expression(interval_min, window),
+        schedules.expression(interval_min, window),
+        {"target_id": target_id},
+    )
+
+
+def _upsert_once(watch_id: str, when, timezone_name=None) -> str:
+    """The schedule a time-triggered watch owns, firing once and self-deleting.
+
+    **Addressed to the watch, not to a target** — decided 2026-08-02 and
+    recorded in `docs/phase-9-watch-kinds.md` §8. A reminder has no target, and
+    the cheap alternative was one synthetic target row, which would have made
+    the table describe something that does not exist. That is the exact class
+    of lie taken out of the Notifier in Phase 5, and this phase exists because
+    small exceptions like it accumulated.
+
+    So the payload carries `watch_id` where a condition watch carries
+    `target_id`, and every consumer branches on which key is present.
+    """
+    return _put_schedule(
+        _schedule_name(watch_id),
+        schedules.once_expression(when, timezone_name),
+        {"watch_id": watch_id},
+    )
+
+
+def _put_schedule(name: str, expression: dict, payload: dict) -> str:
+    args = {
+        "Name": name,
+        **expression,
         "FlexibleTimeWindow": {"Mode": "OFF"},
         "Target": {
             "Arn": os.environ["CHECKER_FUNCTION_ARN"],
             "RoleArn": os.environ["SCHEDULER_ROLE_ARN"],
-            "Input": json.dumps({"target_id": target_id}),
+            "Input": json.dumps(payload),
         },
     }
     try:
@@ -191,10 +225,21 @@ def _upsert_schedule(target_id: str, interval_min: int,
         return scheduler.update_schedule(**args)["ScheduleArn"]
 
 
-def _delete_schedules(targets: list) -> list:
+def _delete_schedules(targets: list, watch_id: str | None = None) -> list:
+    """Every schedule this watch owns, whichever shape it uses.
+
+    A time-triggered watch has no targets, so a teardown that only walked
+    `targets` would silently delete nothing and leave a schedule billing --
+    the same failure the unpaginated GSI query had, arriving by a different
+    road. `watch_id` is passed by every caller and the extra delete is a no-op
+    for a condition watch, which has no schedule under that name.
+    """
+    names = [_schedule_name(t["target_id"]) for t in targets]
+    if watch_id:
+        names.append(_schedule_name(watch_id))
+
     deleted = []
-    for target in targets:
-        name = _schedule_name(target["target_id"])
+    for name in names:
         try:
             scheduler.delete_schedule(Name=name)
             deleted.append(name)
@@ -675,7 +720,7 @@ def delete_watch(event) -> dict:
     _get_watch(watch_id)
 
     targets = _targets_for(watch_id)
-    deleted = _delete_schedules(targets)
+    deleted = _delete_schedules(targets, watch_id)
 
     for target in targets:
         _targets().delete_item(Key={"target_id": target["target_id"]})

@@ -101,10 +101,21 @@ class FakeTargets:
 def aws(monkeypatch):
     """Point the handler at fakes and record the order things happened in."""
 
-    def build(pages=None, missing=(), email_fails=False, update_raises=None):
+    def build(pages=None, missing=(), email_fails=False, update_raises=None,
+              watch_schedule=False):
         if pages is None:
             pages = [[{"target_id": "t_1", "watch_id": "w_1"}]]
         targets = FakeTargets(pages, update_raises)
+
+        # Which schedules actually exist. The teardown now also tries a
+        # watch-level name, because a time-triggered watch owns its schedule
+        # directly and has no targets to walk -- and for a condition watch
+        # there is no such schedule, so AWS raises. A fake that quietly
+        # succeeded for every name would hide exactly that difference.
+        existing = {f"schedule-ai-app-{t['target_id']}"
+                    for page in pages for t in page}
+        if watch_schedule:
+            existing.add("schedule-ai-app-w_1")
 
         dynamodb = MagicMock()
         dynamodb.Table.return_value = targets
@@ -123,7 +134,7 @@ def aws(monkeypatch):
 
         def delete_schedule(Name):
             log.append(("delete_schedule", Name))
-            if Name in missing:
+            if Name in missing or Name not in existing:
                 raise ResourceNotFoundException(Name)
             return {}
 
@@ -233,7 +244,10 @@ def test_the_email_goes_before_any_schedule_is_deleted(aws):
     env = aws()
     handler.lambda_handler(triggered(), None)
 
-    assert [step for step, _ in env.log] == ["send_email", "delete_schedule"]
+    # Two deletes: the target's, and the attempt at a watch-level one, which
+    # a condition watch does not have. What matters is that the email is first.
+    assert [step for step, _ in env.log][0] == "send_email"
+    assert set(step for step, _ in env.log) == {"send_email", "delete_schedule"}
 
 
 def test_a_failed_email_leaves_every_schedule_alive(aws):
