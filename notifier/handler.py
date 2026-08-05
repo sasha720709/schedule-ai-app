@@ -8,6 +8,7 @@ duplicate check than a match nobody hears about."""
 import os
 from datetime import datetime, timezone
 from email import encoders
+from email.utils import formatdate, make_msgid
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -397,6 +398,19 @@ def _send_with_calendar(address: str, subject: str, body: str,
         message["Subject"] = subject
         message["From"] = address
         message["To"] = address
+        # `Date` and `Message-ID` are mandatory in RFC 5322 and are the two
+        # headers `send_email` adds for you. `SendRawEmail` sends **exactly**
+        # what it is handed, so leaving them off produces a message SES
+        # accepts, returns a MessageId for, and logs as sent -- which Gmail
+        # then files as spam or drops without a bounce.
+        #
+        # This cost the first two reminders. Everything else in this system
+        # goes out through `send_email` and arrives; the two that took the new
+        # path did not, and the logs said "emailed" for both. A send that is
+        # accepted and never delivered is the worst shape of failure this
+        # project has: it reports success.
+        message["Date"] = formatdate(localtime=False)
+        message["Message-ID"] = make_msgid(domain=address.split("@")[-1])
         message.attach(MIMEText(body, "plain", "utf-8"))
 
         # text/calendar with METHOD=PUBLISH is what makes a mail client offer

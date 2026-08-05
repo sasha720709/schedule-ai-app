@@ -917,3 +917,23 @@ def test_an_ordinary_watch_still_goes_out_as_a_plain_email(aws):
 
     assert env.ses.send_raw_email.call_count == 0
     assert env.ses.send_email.call_count == 1
+
+
+def test_the_raw_message_carries_the_headers_ses_would_have_added(aws):
+    """`Date` and `Message-ID` are mandatory in RFC 5322 and are exactly what
+    `send_email` adds for you. `SendRawEmail` sends what it is handed, so
+    without them SES accepts the message, returns a MessageId, logs it as sent
+    -- and Gmail files it as spam or drops it with no bounce.
+
+    This cost the first two reminders. Every other email in this system goes
+    out through `send_email` and arrives; the two that took the new path did
+    not, and the log said "emailed" for both. A send that is accepted and
+    never delivered reports success, which is the worst failure shape here.
+    """
+    env = aws()
+    handler.lambda_handler(reminder(), None)
+    message, _ = parts_of(env)
+
+    assert message["Date"]
+    assert message["Message-ID"]
+    assert message["From"] and message["To"] and message["Subject"]
