@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -672,11 +673,22 @@ def test_product_is_not_a_compiled_kind():
 import kinds.reminder as reminder_module  # noqa: E402
 from kinds.reminder import ReminderKind  # noqa: E402
 
-NOW_ISO = "2026-08-05T12:00:00+00:00"
+# The moment the model is scripted to return, computed rather than written
+# down. A literal date here was correct on the day it was typed and turned
+# twelve reminder tests red the moment the real clock walked past it -- these
+# tests call `datetime.now()` for real, and `_moment` refuses the past,
+# correctly. Two days out, so the date is still in the future in every zone
+# these tests name (they span UTC-4 to UTC+3, and the margin covers all of
+# UTC-12..UTC+14 anyway).
+#
+# The tests that WANT a rejected moment pass `when=` explicitly, so they are
+# unaffected by this.
+WHEN_ISO = (datetime.now(timezone.utc) + timedelta(days=2)).strftime(
+    "%Y-%m-%dT09:00:00")
 
 
 def reminder_client(**overrides):
-    answer = {"when": "2026-08-06T09:00:00", "timezone": None,
+    answer = {"when": WHEN_ISO, "timezone": None,
               "title": "Call the dentist", "note": "bring the X-ray"}
     answer.update(overrides)
     return Scripted(answer)
@@ -705,7 +717,7 @@ def test_the_moment_keeps_its_wall_clock_reading():
     plan = ReminderKind().plan("remind me at 9am tomorrow",
                                client=reminder_client())
 
-    assert plan["fire_at"].startswith("2026-08-06T09:00:00")
+    assert plan["fire_at"].startswith(WHEN_ISO)
 
 
 def test_a_named_zone_in_the_request_is_used():
