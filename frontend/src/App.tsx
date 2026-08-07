@@ -1,17 +1,21 @@
 /**
- * ScheduleAI, minimal UI.
+ * ScheduleAI.
  *
- * Deliberately unstyled beyond legibility -- this exists to prove hosting,
- * real-browser CORS and the deploy pipeline, and to drive the lifecycle API
- * from something other than curl. The designed version is 4c.
+ * Master-detail, soonest first: a list of everything being watched, and one
+ * of them opened. The same four moves at both sizes — the list, a watch
+ * opened in full, the exchange that creates one, and the plan card that has
+ * to be confirmed before anything is scheduled. On a desktop the list and the
+ * detail sit side by side; on a phone they are two screens with a back link.
+ * **One app, re-laid rather than re-designed** — there is no separate mobile
+ * build and no device sniffing, only a width query in `index.css`.
  *
- * The one piece of real product thinking here is the proposed-plan card: a
- * watch the Planner has finished thinking about is shown with its targets,
- * its interval and the monthly cost of that interval, and nothing is
- * scheduled until "Start watching" is pressed.
+ * The visual direction is Broadsheet (see `docs/frontend-strategy.md`): the
+ * serif is the chrome, sections are separated by space rather than by boxes,
+ * and the accents are used like spot colour — cyan for what happens next,
+ * magenta only for what you should read before going further.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   clearSession,
   completeSignIn,
@@ -22,49 +26,90 @@ import {
 import {
   ApiError,
   confirmWatch,
+  type CostEstimate,
   createWatch,
   deleteWatch,
+  editReminder,
   getWatch,
-  type CostEstimate,
   listWatches,
-  monthlyCost,
+  type ReminderEdit,
   setWatchStatus,
   type Staleness,
-  type MatchedItem,
-  type PlanQuestion,
   type Target,
   type Watch,
 } from "./api";
+import Compose from "./Compose";
+import Detail from "./Detail";
+import { countdown, isSoon, shortMoment } from "./format";
+
+/** When a watch will next do something, whichever kind it is. */
+function nextMomentOf(watch: Watch, nextCheck?: string | null): string | null {
+  return watch.fire_at ?? nextCheck ?? null;
+}
+
+/**
+ * Soonest first, which is the only ordering that answers the question the
+ * list is for: what happens next. Anything with no next moment — proposed,
+ * triggered, degraded — sorts after everything that has one, because a
+ * finished watch is history and an unconfirmed one has not started.
+ */
+function bySoonest(nextChecks: Record<string, string | null>) {
+  return (a: Watch, b: Watch) => {
+    const at = nextMomentOf(a, nextChecks[a.watch_id]);
+    const bt = nextMomentOf(b, nextChecks[b.watch_id]);
+    if (at && bt) return new Date(at).getTime() - new Date(bt).getTime();
+    if (at) return -1;
+    if (bt) return 1;
+    // Both dormant: newest first, so a plan just made is at the top.
+    return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+  };
+}
+
+/** The second line of a list row: what kind of thing this is, in a few words. */
+function metaOf(watch: Watch): string {
+  if (watch.fire_at) {
+    const repeat =
+      watch.repeat === "daily"
+        ? "every day"
+        : watch.repeat === "weekly"
+          ? "every week"
+          : "once";
+    return `${shortMoment(watch.fire_at)} · ${repeat}`;
+  }
+  if (watch.status !== "active") return watch.status;
+  const cadence = watch.check_interval_min
+    ? `every ${watch.check_interval_min} min`
+    : "scheduled";
+  return watch.repeating ? `keeps running · ${cadence}` : cadence;
+}
 
 export default function App() {
   // The token is held in state only so React re-renders when it appears or
-  // goes. It is never *sent* from here -- `auth()` below asks auth.ts for a
-  // current one on every call, because the one in state may have expired
-  // while the tab sat open.
+  // goes. It is never *sent* from here -- `auth()` asks auth.ts for a current
+  // one on every call, because the one in state may have expired while the
+  // tab sat open.
   const [token, setToken] = useState<string | null>(null);
   const [checkedSession, setCheckedSession] = useState(false);
   const [watches, setWatches] = useState<Watch[]>([]);
   const [targets, setTargets] = useState<Record<string, Target[]>>({});
-  // The per-check rate is the server's to know: it depends on the fetch
-  // method and on whether the target carries a compiled extractor.
   const [costs, setCosts] = useState<Record<string, CostEstimate | null>>({});
-  // When each active watch next runs. Held here rather than on the Watch row
-  // because it is computed, not stored: it is correct for about one interval
-  // and a stale copy in the table would be worse than no copy at all.
+  // Computed, never stored: right for about one interval, and a stale copy in
+  // the table would be worse than no copy at all.
   const [nextChecks, setNextChecks] = useState<Record<string, string | null>>({});
-  // Whether each target has stopped moving. Computed by the server from the
-  // current interval, so it cannot be cached alongside the target row.
   const [staleness, setStaleness] = useState<Record<string, Staleness[]>>({});
   const [error, setError] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [composing, setComposing] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
 
   const resetLocalState = useCallback(() => {
     setToken(null);
     setWatches([]);
     setTargets({});
     setNextChecks({});
+    setSelectedId(null);
     setLoaded(false);
   }, []);
 
@@ -76,8 +121,8 @@ export default function App() {
     resetLocalState();
   }, [resetLocalState]);
 
-  // The "Sign out" button: a real logout, not just a local one, so the next
-  // "Sign in" doesn't silently resume this same session.
+  // The "Sign out" button: a real logout, so the next "Sign in" does not
+  // silently resume this same session.
   const signOut = useCallback(() => {
     resetLocalState();
     forgetSession();
@@ -86,7 +131,6 @@ export default function App() {
   const handle = useCallback(
     (err: unknown) => {
       if (err instanceof ApiError && err.unauthorized) {
-        // 401 (header absent) and 403 (header wrong) both land here.
         setError("Your session ended. Sign in again.");
         endSession();
         return;
@@ -96,8 +140,6 @@ export default function App() {
     [endSession],
   );
 
-  // One place that answers "what token do I send right now", so a session
-  // that expired while the tab was open refreshes instead of failing.
   const auth = useCallback(async () => {
     const fresh = await currentToken();
     if (!fresh) {
@@ -107,8 +149,6 @@ export default function App() {
     return fresh;
   }, []);
 
-  // Finish a sign-in if this page load is the return leg from Google, then
-  // settle on whether there is a usable session.
   useEffect(() => {
     void (async () => {
       try {
@@ -121,6 +161,18 @@ export default function App() {
     })();
   }, []);
 
+  /** Pull one watch's detail: targets, cost, next check, staleness. */
+  const loadDetail = useCallback(
+    async (id: string) => {
+      const detail = await getWatch(await auth(), id);
+      setTargets((prev) => ({ ...prev, [id]: detail.targets }));
+      setCosts((prev) => ({ ...prev, [id]: detail.cost }));
+      setNextChecks((prev) => ({ ...prev, [id]: detail.next_check_at }));
+      setStaleness((prev) => ({ ...prev, [id]: detail.staleness }));
+    },
+    [auth],
+  );
+
   const refresh = useCallback(async () => {
     if (!token) return;
     try {
@@ -129,40 +181,25 @@ export default function App() {
       setError(null);
       setLoaded(true);
 
-      // Targets carry the per-check detail the list rows do not: last value,
-      // the extraction hint, http vs browser. Pull them for anything the user
-      // has to act on or read.
-      const tokenForBatch = await auth();
-      const interesting = listed.watches.filter(
-        (w) => w.status === "proposed" || w.status === "triggered",
+      // Detail for anything the user has to act on or is looking at. A
+      // reminder carries its own `fire_at` on the list row, so the common
+      // case needs no extra call.
+      const wanted = listed.watches.filter(
+        (w) => w.status === "proposed" || w.watch_id === selectedId,
       );
-      const fetched = await Promise.all(
-        interesting.map((w) =>
-          getWatch(tokenForBatch, w.watch_id).then(
-            (r) => [w.watch_id, r] as const,
-          ),
-        ),
-      );
-      setTargets((prev) => ({
-        ...prev,
-        ...Object.fromEntries(fetched.map(([id, r]) => [id, r.targets])),
-      }));
-      setCosts((prev) => ({
-        ...prev,
-        ...Object.fromEntries(fetched.map(([id, r]) => [id, r.cost])),
-      }));
+      await Promise.all(wanted.map((w) => loadDetail(w.watch_id)));
     } catch (err) {
       handle(err);
     }
-  }, [token, auth, handle]);
+  }, [token, auth, handle, loadDetail, selectedId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   // Planning takes ~20s, so a just-created watch needs polling until it
-  // settles. Stop the moment nothing is mid-flight rather than polling
-  // forever: every request is billed and the stage is throttled to 10 rps.
+  // settles. Stop the moment nothing is mid-flight: every request is billed
+  // and the stage is throttled to 10 rps.
   const planning = watches.some((w) => w.status === "planning");
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
@@ -185,691 +222,258 @@ export default function App() {
     }
   }
 
-  async function onCreate(event: React.FormEvent) {
-    event.preventDefault();
-    const text = prompt.trim();
-    if (!text) return;
-    await act(async () => {
-      await createWatch(await auth(), text);
-      setPrompt("");
-    });
-  }
+  const ordered = useMemo(
+    () => [...watches].sort(bySoonest(nextChecks)),
+    [watches, nextChecks],
+  );
 
-  // Deliberately a button and nothing else. 4c designs this properly; until
-  // then a login screen is the easiest place in a project to spend an
-  // afternoon on work that gets deleted. The security lives in auth.ts, which
-  // is not throwaway -- this is.
+  const selected = watches.find((w) => w.watch_id === selectedId) ?? null;
+  const pending = watches.find((w) => w.watch_id === pendingId) ?? undefined;
+
+  // A plan that is ready closes the loop: the overlay shows it, and confirming
+  // or discarding is what dismisses the overlay.
+  const planReady = pending?.status === "proposed";
+
   if (!checkedSession) {
     return (
-      <main>
-        <h1>ScheduleAI</h1>
-        <p className="quiet">Checking your session…</p>
-      </main>
+      <div className="app">
+        <Masthead />
+        <div className="pane-detail">
+          <p className="quiet">Checking your session…</p>
+        </div>
+      </div>
     );
   }
 
   if (!token) {
     return (
-      <main>
-        <h1>ScheduleAI</h1>
-        <p className="quiet">
-          Sign in with the Google account this app was set up for. Anyone else
-          is turned away before an account is created.
-        </p>
-        <button onClick={() => void signIn()}>Sign in with Google</button>
-        {error && <p className="notice">{error}</p>}
-      </main>
+      <div className="app">
+        <Masthead />
+        <div className="pane-detail">
+          <div className="measure detail">
+            <h1>Watch something, and be told when it changes.</h1>
+            <p className="lead">
+              A price, a vacancy, a share, or a date you do not want to miss.
+            </p>
+            <p className="aside" style={{ marginTop: "var(--space-4)" }}>
+              Sign in with the Google account this was set up for. Anyone else
+              is turned away before an account is created.
+            </p>
+            <div className="actions">
+              <button className="btn btn-primary" onClick={() => void signIn()}>
+                Sign in with Google
+              </button>
+            </div>
+            {error && <p className="notice">{error}</p>}
+          </div>
+        </div>
+      </div>
     );
   }
 
-  return (
-    <main>
-      <header>
-        <h1>ScheduleAI</h1>
-        <button onClick={signOut}>Sign out</button>
-      </header>
+  function selectWatch(id: string) {
+    setSelectedId(id);
+    if (!targets[id]) void act(() => loadDetail(id));
+  }
 
-      <form onSubmit={onCreate}>
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          rows={2}
-          placeholder="tell me when a Steam Deck OLED drops under $450"
-          disabled={busy}
-        />
-        <button type="submit" disabled={busy || !prompt.trim()}>
-          Plan a watch
-        </button>
-      </form>
-
-      {error && <p className="notice">{error}</p>}
-
-      <h2>Watches{planning && <span className="quiet"> · planning…</span>}</h2>
-
-      {!loaded && <p className="quiet">Loading…</p>}
-      {loaded && watches.length === 0 && (
-        <p className="quiet">Nothing yet. Describe something to watch above.</p>
-      )}
-
-      <ul className="watches">
-        {watches.map((watch) => (
-          <WatchRow
-            key={watch.watch_id}
-            watch={watch}
-            targets={targets[watch.watch_id]}
-            cost={costs[watch.watch_id]}
-            nextCheck={nextChecks[watch.watch_id]}
-            staleness={staleness[watch.watch_id]}
-            busy={busy}
-            onConfirm={(interval, answers) =>
-              void act(async () => {
-                const done = await confirmWatch(
-                  await auth(),
-                  watch.watch_id,
-                  interval,
-                  answers,
-                );
-                setNextChecks((prev) => ({
-                  ...prev,
-                  [watch.watch_id]: done.next_check_at,
-                }));
-              })
-            }
-            onPause={() =>
-              void act(() => auth().then((t) => setWatchStatus(t, watch.watch_id, "paused")))
-            }
-            onResume={() =>
-              void act(async () => {
-                const done = await setWatchStatus(
-                  await auth(),
-                  watch.watch_id,
-                  "active",
-                );
-                setNextChecks((prev) => ({
-                  ...prev,
-                  [watch.watch_id]: done.next_check_at,
-                }));
-              })
-            }
-            onDelete={() => void act(() => auth().then((t) => deleteWatch(t, watch.watch_id)))}
-            onExpand={() =>
-              void act(async () => {
-                const detail = await getWatch(await auth(), watch.watch_id);
-                setTargets((prev) => ({
-                  ...prev,
-                  [watch.watch_id]: detail.targets,
-                }));
-                setCosts((prev) => ({
-                  ...prev,
-                  [watch.watch_id]: detail.cost,
-                }));
-                setNextChecks((prev) => ({
-                  ...prev,
-                  [watch.watch_id]: detail.next_check_at,
-                }));
-                setStaleness((prev) => ({
-                  ...prev,
-                  [watch.watch_id]: detail.staleness,
-                }));
-              })
-            }
-          />
-        ))}
-      </ul>
-    </main>
+  const detailFor = (watch: Watch) => (
+    <Detail
+      watch={watch}
+      targets={targets[watch.watch_id]}
+      cost={costs[watch.watch_id]}
+      nextCheck={nextChecks[watch.watch_id]}
+      staleness={staleness[watch.watch_id]}
+      busy={busy}
+      onBack={() => setSelectedId(null)}
+      onConfirm={(interval, answers) =>
+        void act(async () => {
+          const done = await confirmWatch(
+            await auth(),
+            watch.watch_id,
+            interval,
+            answers,
+          );
+          setNextChecks((prev) => ({
+            ...prev,
+            [watch.watch_id]: done.next_check_at,
+          }));
+          if (watch.watch_id === pendingId) {
+            setComposing(false);
+            setPendingId(null);
+            setSelectedId(watch.watch_id);
+          }
+        })
+      }
+      onEdit={(edit: ReminderEdit) =>
+        void act(async () => {
+          const done = await editReminder(await auth(), watch.watch_id, edit);
+          setNextChecks((prev) => ({
+            ...prev,
+            [watch.watch_id]: done.next_check_at,
+          }));
+        })
+      }
+      onPause={() =>
+        void act(() =>
+          auth().then((t) => setWatchStatus(t, watch.watch_id, "paused")),
+        )
+      }
+      onResume={() =>
+        void act(async () => {
+          const done = await setWatchStatus(await auth(), watch.watch_id, "active");
+          setNextChecks((prev) => ({
+            ...prev,
+            [watch.watch_id]: done.next_check_at,
+          }));
+        })
+      }
+      onDelete={() =>
+        void act(async () => {
+          await deleteWatch(await auth(), watch.watch_id);
+          if (watch.watch_id === selectedId) setSelectedId(null);
+          if (watch.watch_id === pendingId) {
+            setComposing(false);
+            setPendingId(null);
+          }
+        })
+      }
+    />
   );
-}
-
-/**
- * "next check at 16:00, in 16 hours" -- the sentence whose absence cost a
- * night's watching.
- *
- * A market watch confirmed at 23:33 local time was three minutes past the last
- * slot of its trading-hours window, so it would not run until the New York
- * open sixteen hours later. It was correct, and it was silent, and silence and
- * broken look identical from the outside. The relative half matters more than
- * the clock time: "16:00" alone still reads like something is wrong.
- */
-/** A moment, in the reader's own locale, with how far off it is. */
-function describeMoment(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  const minutes = Math.round((at.getTime() - Date.now()) / 60000);
-  const when = at.toLocaleString(undefined, {
-    weekday: Math.abs(minutes) > 12 * 60 ? "short" : undefined,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  if (minutes <= 0) return when;
-  if (minutes < 60) return `${when}, in ${minutes} min`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 36) return `${when}, in ${hours} h`;
-  return `${when}, in ${Math.round(hours / 24)} days`;
-}
-
-function describeNextCheck(iso: string): string {
-  const at = new Date(iso);
-  const minutes = Math.round((at.getTime() - Date.now()) / 60000);
-  const when = at.toLocaleString(undefined, {
-    weekday: minutes > 12 * 60 ? "short" : undefined,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  if (minutes <= 1) return `next check ${when}, any moment now`;
-  if (minutes < 60) return `next check ${when}, in ${minutes} min`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 36) return `next check ${when}, in ${hours} h`;
-  return `next check ${when}, in ${Math.round(hours / 24)} days`;
-}
-
-/**
- * The postings themselves, with links.
- *
- * This replaces the worst thing the product did: a `count` extractor returned
- * an integer, so a vacancy watch told the user "1" and linked to the search
- * page, leaving them to go and find the job -- which is most of the work they
- * asked to be spared.
- */
-function Matches({ items, base }: { items: MatchedItem[]; base: string }) {
-  return (
-    <ul className="matches">
-      {items.map((item) => (
-        <li key={item.id}>
-          {/* Ranked items lead with their score, because that is what gets
-              scanned for. Unranked ones look exactly as they did before: an
-              email or a list may carry both, since ranking is allowed to fail
-              and must never withhold a result. */}
-          {typeof item.score === "number" && (
-            <span className="score">{item.score}/10</span>
-          )}
-          {typeof item.price === "number" && (
-            <span className="score">
-              {item.price.toLocaleString()} {item.currency ?? ""}
-            </span>
-          )}
-          {item.href ? (
-            <a href={new URL(item.href, base).href} target="_blank" rel="noreferrer">
-              {item.text || "(untitled)"}
-            </a>
-          ) : (
-            item.text || "(untitled)"
-          )}
-          {item.why && <span className="quiet"> — {item.why}</span>}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** "3 h ago". Deliberately coarse -- this is context, not a measurement. */
-function describeSince(iso: string): string {
-  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (minutes < 2) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 36) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} days ago`;
-}
-
-function WatchRow({
-  watch,
-  targets,
-  cost,
-  nextCheck,
-  staleness,
-  busy,
-  onConfirm,
-  onPause,
-  onResume,
-  onDelete,
-  onExpand,
-}: {
-  watch: Watch;
-  targets?: Target[];
-  cost?: CostEstimate | null;
-  nextCheck?: string | null;
-  staleness?: Staleness[];
-  busy: boolean;
-  onConfirm: (interval: number, answers: Record<string, string[]>) => void;
-  onPause: () => void;
-  onResume: () => void;
-  onDelete: () => void;
-  onExpand: () => void;
-}) {
-  const [interval, setIntervalValue] = useState(watch.check_interval_min ?? 60);
-  // Which option is selected per question. Empty means "no preference", which
-  // is a real answer and the default -- questions are a help, not a form.
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-
-  const questions = watch.questions ?? [];
-
-  // Narrowing today's list is an exact set intersection, because each option
-  // already carries the ids of the items it covers. Tomorrow's postings cannot
-  // be filtered this way -- they do not exist yet -- so the same answers are
-  // sent to the server as ranking preferences instead.
-  const allowed = questions.reduce<Set<string> | null>((keep, q) => {
-    const chosen = answers[q.id] ?? [];
-    if (!chosen.length) return keep;
-    const covered = new Set(
-      q.options.filter((o) => chosen.includes(o.value)).flatMap((o) => o.items),
-    );
-    if (!keep) return covered;
-    return new Set([...keep].filter((id) => covered.has(id)));
-  }, null);
-
-  const narrow = (items: MatchedItem[]) =>
-    allowed ? items.filter((i) => allowed.has(i.id)) : items;
-
-  const toggle = (q: PlanQuestion, value: string) =>
-    setAnswers((prev) => {
-      const chosen = prev[q.id] ?? [];
-      return {
-        ...prev,
-        [q.id]: chosen.includes(value)
-          ? chosen.filter((v) => v !== value)
-          : [...chosen, value],
-      };
-    });
 
   return (
-    <li>
-      <div className="row">
-        <span className={`status ${watch.status}`}>{watch.status}</span>
-        <span className="prompt">{watch.prompt}</span>
-      </div>
+    <div className="app">
+      <Masthead onSignOut={signOut} />
 
-      {/* A reminder has no condition to show, and showing none would leave the
-          card blank where every other watch explains itself. The zone is
-          named on purpose: it is a deployment setting until a user record
-          exists, so a wrong one has to be visible in the second before
-          confirming rather than at 6am. */}
-      {watch.fire_at && (
-        <p className="quiet">
-          reminds you at {describeMoment(watch.fire_at)}
-          {watch.fire_timezone && <> ({watch.fire_timezone})</>}
-          {watch.reminder_title && <> — {watch.reminder_title}</>}
-        </p>
-      )}
-      {watch.fire_at && (
-        <p className="quiet">
-          {watch.repeat === "daily"
-            ? "every day at this time"
-            : watch.repeat === "weekly"
-              ? "every week on this day"
-              : "once"}
-          {watch.expires_at && watch.repeat && watch.repeat !== "once" && (
-            <> · stops {new Date(watch.expires_at).toLocaleDateString()}</>
-          )}
-          {" · "}a calendar entry is attached to the email, so your own
-          calendar does the reminding
-        </p>
-      )}
-
-      {/* What this watch actually does. Body text, not `quiet`: it is the
-          single most important sentence on the row, and it spent its life
-          the same grey as the provenance beneath it. */}
-      {watch.condition && (
-        <p>
-          trigger when {watch.condition.metric} {watch.condition.op}{" "}
-          <span className="num">{watch.condition.value}</span>{" "}
-          {watch.condition.currency ?? ""}
-          {/* A relative watch shows where its threshold came from, so the
-              number can be checked against the page it was read off. */}
-          {watch.condition.baseline != null && (
-            <span className="quiet">
-              {" "}
-              (
-              {watch.condition.relative_change_pct
-                ? <>
-                    <span className="num">
-                      {watch.condition.relative_change_pct}%
-                    </span>{" "}
-                    from
-                  </>
-                : "any move below"}{" "}
-              the <span className="num">{watch.condition.baseline}</span>
-              {/* Which reading it came from. The owner accepted a previous
-                  close as a baseline, which is exactly why it has to be
-                  labelled: the two are identical on screen and are not the
-                  same promise. */}
-              {watch.condition.baseline_source === "previous_close"
-                ? " read at the previous close"
-                : " read live at planning"}
-              )
-            </span>
-          )}
-          {watch.check_interval_min != null && watch.status !== "proposed" && (
-            <span className="quiet">
-              {" "}
-              · every <span className="num">{watch.check_interval_min}</span> min
-            </span>
-          )}
-        </p>
-      )}
-
-      {/* Which number the threshold is about, when there is more than one
-          shop. Without this the user has to guess whether "10% cheaper" means
-          cheaper than Ivory, than Amazon, or than some average. */}
-      {watch.condition?.across === "best" && (
-        <p className="quiet">
-          measured across every shop below — the{" "}
-          {watch.condition.op.startsWith(">") ? "highest" : "cheapest"} offer is
-          what this watch calls the price
-        </p>
-      )}
-
-      {/* A shop that was looked at and dropped. Silence here is the same
-          failure as the missing email: the user asked about Amazon, Amazon is
-          not in the list, and nothing said why.
-
-          `notice`, not `quiet`: this is one of the four things a person should
-          read before confirming. It spent its whole life as muted grey, which
-          is where docs/frontend-sentences.md §6 found it. */}
-      {watch.status === "proposed" && !!watch.rejected?.length && (
-        <div className="notice">
-          {watch.rejected.map((r) => (
-            <p key={r.url}>
-              not watching {r.url} — {r.reason}
-            </p>
-          ))}
-        </div>
-      )}
-
-      {/* "Any change" is not a condition on a price, it is a guarantee: a
-          stock never reopens at the previous close, so this fires in the
-          first seconds of the next session. Measured 2026-08-04 -- baseline
-          306.40, first check 306.49, fired. Say so rather than quietly
-          picking a percentage nobody asked for. */}
-      {watch.status === "proposed" &&
-        watch.condition?.baseline != null &&
-        !watch.condition.relative_change_pct && (
-          <p className="notice">
-            any move at all triggers this — at the next open that is close to
-            certain. Say a size (&ldquo;5% down&rdquo;) if you meant one.
+      <div className="split">
+        {/* On a phone these two are alternatives; the width query in
+            index.css is what turns them from panes into screens. */}
+        <div className="pane-list" data-hidden={Boolean(selected)}>
+          <div className="compose-dock">
+            <button
+              className="btn btn-primary btn-block"
+              onClick={() => {
+                setComposing(true);
+                setPendingId(null);
+              }}
+            >
+              New watch
+            </button>
+          </div>
+          <p className="aside quiet" style={{ marginBottom: "var(--space-6)" }}>
+            A price, a vacancy, a share, or a reminder.
           </p>
-        )}
 
-      {/* Only for an active watch: a paused one has no schedule, so a time
-          here would describe something that does not exist. */}
-      {watch.status === "active" && nextCheck && (
-        <p className="quiet">{describeNextCheck(nextCheck)}</p>
-      )}
+          {error && <p className="notice">{error}</p>}
 
-      {/* The difference a person needs to know before confirming: this one
-          does not stop at the first result, and therefore has an end date. */}
-      {watch.repeating && watch.status !== "expired" && (
-        <p className="quiet">
-          keeps running — reports each new match once, never the same one twice
-          {watch.trigger_count ? ` · ${watch.trigger_count} reported so far` : ""}
-          {watch.expires_at
-            ? ` · runs until ${new Date(watch.expires_at).toLocaleDateString()}`
-            : ""}
-        </p>
-      )}
+          <div className="label" style={{ marginBottom: "14px" }}>
+            {planning ? "Planning…" : "Soonest first"}
+          </div>
 
-      {watch.status === "expired" && (
-        <p className="quiet">
-          finished: this watch ran its full term and stopped
-          {watch.trigger_count
-            ? `, after telling you about ${watch.trigger_count} thing${
-                watch.trigger_count === 1 ? "" : "s"
-              }`
-            : ""}
-          . Nothing went wrong — a watch that keeps running rather than
-          stopping at its first result is given an end date so a forgotten one
-          cannot check for years. Describe it again to restart it.
-        </p>
-      )}
+          {!loaded && <p className="quiet">Loading…</p>}
+          {loaded && !watches.length && (
+            <p className="quiet">
+              Nothing yet. Describe the first thing you want watched.
+            </p>
+          )}
 
-      {watch.plan_error && (
-        <p className="notice">planning failed: {watch.plan_error}</p>
-      )}
-
-      {watch.status === "degraded" && (
-        <p className="notice">
-          stopped: the site changed and automatic repair did not help —{" "}
-          {watch.degraded_reason ?? "no reason recorded"}. Checking has
-          stopped, so this costs nothing; delete it and describe it again to
-          rebuild against the new page.
-        </p>
-      )}
-
-      {/* The point of plan-then-confirm: nothing is scheduled yet, and the
-          cost of the Planner's chosen interval is on screen before it runs. */}
-      {watch.status === "proposed" && (
-        <div className="plan">
-          {targets?.map((t) => (
-            /* The direction, in one element: the URL reads as prose on the
-               left, the measured reading sits right and aligned so two shops
-               can be compared down the column. */
-            <div key={t.target_id} className="target">
-              <span className="url">
-                <a href={t.url} target="_blank" rel="noreferrer">
-                  {t.url}
-                </a>
-                <span className="quiet"> · {t.fetch_method}</span>
-              </span>
-
-              {t.verified_raw != null ? (
-                <span className="reading">
-                  <span className="num">{String(t.verified_raw)}</span>
-                  <br />
-                  <span className="quiet">read just now</span>
-                </span>
-              ) : (
-                <span className="reading quiet">not read yet</span>
-              )}
-
-              {t.verified_raw != null && (
-                <p className="quiet full">this is what will be watched</p>
-              )}
-
-              {/* Asking for a foreign company by its bare ticker returns the
-                  US depositary receipt -- "SAP" is the NYSE ADR in USD, not
-                  Frankfurt. `notice` because it is the difference between the
-                  watch the user meant and a different instrument entirely,
-                  and it is only visible in the second before confirming. */}
-              {t.instrument_name && (
-                <p className="notice full">
-                  {t.instrument_name}
-                  {t.exchange && <> · {t.exchange}</>}
-                  {t.currency && <> · {t.currency}</>} — check this is the
-                  listing you meant
-                </p>
-              )}
-
-              {/* A count verified at zero is honest and says nothing on its
-                  own. This is what lets someone judge the filter before
-                  paying for a schedule. */}
-              {t.unfiltered_count != null && (
-                <p className="quiet full">
-                  <span className="num">{t.unfiltered_count}</span> item
-                  {t.unfiltered_count === 1 ? "" : "s"} listed on this page
-                  today, <span className="num">{String(t.verified_raw ?? 0)}</span>{" "}
-                  of which match
-                </p>
-              )}
-              {!!t.verified_items?.length && (
-                <div className="full">
-                  <Matches items={narrow(t.verified_items)} base={t.url} />
-                </div>
-              )}
-              <p className="quiet full">{t.extract_hint}</p>
-            </div>
-          ))}
-
-          {/* Built from what the search actually returned, so every option
-              has real items behind it. A generic form would ask about hours
-              no posting mentions and a city every result already shares. */}
-          {questions.length > 0 && (
-            <div className="questions">
-              {questions.map((q) => (
-                <div key={q.id}>
-                  <p>{q.question}</p>
-                  <div className="chips">
-                    {q.options.map((o) => (
-                      <button
-                        key={o.value}
-                        className={
-                          (answers[q.id] ?? []).includes(o.value)
-                            ? "chip on"
-                            : "chip"
-                        }
-                        onClick={() => toggle(q, o.value)}
-                        disabled={busy}
+          <div className="rows">
+            {ordered.map((watch) => {
+              const moment = nextMomentOf(watch, nextChecks[watch.watch_id]);
+              return (
+                <button
+                  key={watch.watch_id}
+                  onClick={() => selectWatch(watch.watch_id)}
+                  aria-current={watch.watch_id === selectedId}
+                >
+                  <div className="row-head">
+                    <span className="row-title">
+                      {watch.reminder_title || watch.prompt}
+                    </span>
+                    {moment && (
+                      <span
+                        className={`row-when${isSoon(moment) ? " soon" : ""}`}
                       >
-                        {o.label}{" "}
-                        {/* The count is what makes the option grounded rather
-                            than generic: every one covers real items. */}
-                        <span className="n">{o.items.length}</span>
-                      </button>
-                    ))}
+                        {countdown(moment)}
+                      </span>
+                    )}
                   </div>
-                </div>
-              ))}
-              {/* The two kinds mean genuinely different things by an answer,
-                  and saying the wrong one would be a lie about what happens
-                  next. A stream ranks; a price watch pins. */}
+                  <div className="row-meta">{metaOf(watch)}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="pane-detail" data-hidden={!selected}>
+          {selected ? (
+            <>
+              <button
+                className="btn btn-ghost back-link label"
+                onClick={() => setSelectedId(null)}
+                style={{ marginBottom: "var(--space-3)", paddingLeft: 0 }}
+              >
+                ← All watches
+              </button>
+              {detailFor(selected)}
+            </>
+          ) : (
+            <div className="measure">
               <p className="quiet">
-                {watch.repeating
-                  ? "Answering narrows what is shown here, and tells the watch what to prefer later — it never hides a future posting, only ranks it lower."
-                  : "Answering narrows what is shown here, and pins what gets watched. Leave it blank and the watch follows the cheapest thing on the page, which is usually an accessory."}
+                {watches.length
+                  ? "Pick something on the left to see what it knows."
+                  : ""}
               </p>
             </div>
           )}
-
-          {/* The only place in the product where a number is shown before it
-              is spent. That is the argument for plan-then-confirm existing at
-              all, so it gets its own rule above it rather than trailing the
-              targets as another muted line. */}
-          <div className="commit">
-            <label>
-              check every{" "}
-              <input
-                type="number"
-                min={1}
-                max={1440}
-                value={interval}
-                onChange={(e) => setIntervalValue(Number(e.target.value))}
-                disabled={busy}
-              />{" "}
-              min
-            </label>
-            <span className="spend">
-              {cost ? (
-                <>
-                  ≈{" "}
-                  <span className="num">
-                    $
-                    {monthlyCost(
-                      cost.cost_per_check_usd,
-                      interval,
-                      targets?.length ?? 1,
-                    ).toFixed(2)}
-                  </span>
-                  /month
-                </>
-              ) : (
-                <span className="quiet">
-                  cost unknown until a target is verified
-                </span>
-              )}
-              {watch.check_interval_min !== interval && (
-                <span className="quiet">
-                  {" "}
-                  · planner suggested{" "}
-                  <span className="num">{watch.check_interval_min}</span>
-                </span>
-              )}
-            </span>
-          </div>
-
-          {/* The budget-derived floor, so an interval the server will refuse
-              is visible before the button is pressed rather than as a 409
-              afterwards. The fourth of the four warnings that used to be
-              indistinguishable from ordinary provenance. */}
-          {cost && interval < cost.min_interval_min && (
-            <p className="notice">
-              below the <span className="num">{cost.min_interval_min}</span> min
-              this budget allows — starting it will be refused
-            </p>
-          )}
-
-          <div className="actions">
-            <button
-              className="go"
-              onClick={() => onConfirm(interval, answers)}
-              disabled={busy}
-            >
-              Start watching
-            </button>
-            <button onClick={onDelete} disabled={busy}>
-              Discard
-            </button>
-          </div>
         </div>
-      )}
+      </div>
 
-      {targets && watch.status !== "proposed" && (
-        <ul className="targets">
-          {targets.map((t) => (
-            <li key={t.target_id}>
-              <span className="quiet">{t.url}</span>
-              {t.last_value && (
-                <>
-                  {" "}
-                  — last read <strong>{t.last_value}</strong>
-                </>
-              )}
-              {!!t.last_items?.length && (
-                <Matches items={t.last_items} base={t.url} />
-              )}
-              {t.last_note && <p className="quiet">{t.last_note}</p>}
-              {t.last_error && <p className="notice">{t.last_error}</p>}
-              {(() => {
-                const s = staleness?.find((x) => x.target_id === t.target_id);
-                if (!s?.last_changed_at) return null;
-                // Stated for every target, flagged only where a trading window
-                // makes "should have moved by now" a claim anyone can check:
-                // a whole session without a single tick is a frozen feed.
-                const moved = describeSince(s.last_changed_at);
-                return s.stale ? (
-                  <p className="notice">
-                    unchanged for {s.unchanged_checks} checks — a whole trading
-                    session without a tick. Last moved {moved}; the feed may be
-                    frozen rather than the price.
-                  </p>
-                ) : (
-                  <p className="quiet">last moved {moved}</p>
-                );
-              })()}
-            </li>
-          ))}
-        </ul>
+      {composing && (
+        <Compose
+          pending={pending}
+          busy={busy}
+          error={error}
+          onClose={() => {
+            setComposing(false);
+            setPendingId(null);
+          }}
+          onSend={(prompt) =>
+            void act(async () => {
+              const made = await createWatch(await auth(), prompt);
+              setPendingId(made.watch_id);
+            })
+          }
+        >
+          {planReady && pending ? detailFor(pending) : null}
+        </Compose>
       )}
+    </div>
+  );
+}
 
-      {watch.status !== "proposed" && watch.status !== "planning" && (
-        <div>
-          {watch.status === "active" && (
-            <button onClick={onPause} disabled={busy}>
-              Pause
+/** The thick-thin rule pair: the one place this system prints a rule, as
+ * front-page furniture rather than as a divider between sections. */
+function Masthead({ onSignOut }: { onSignOut?: () => void }) {
+  const today = new Date().toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+  return (
+    <div className="masthead">
+      <div className="thick" />
+      <div className="line">
+        <span className="label">ScheduleAI</span>
+        <nav>
+          <span className="label">{today}</span>
+          {onSignOut && (
+            <button className="btn btn-ghost label" onClick={onSignOut}>
+              Sign out
             </button>
           )}
-          {watch.status === "paused" && (
-            <button onClick={onResume} disabled={busy}>
-              Resume
-            </button>
-          )}{" "}
-          {!targets && (
-            <button onClick={onExpand} disabled={busy}>
-              Show detail
-            </button>
-          )}{" "}
-          <button onClick={onDelete} disabled={busy}>
-            Delete
-          </button>
-        </div>
-      )}
-    </li>
+        </nav>
+      </div>
+      <div className="thin" />
+    </div>
   );
 }

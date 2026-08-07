@@ -1,324 +1,343 @@
-/* The design system, such as it is. Small enough to memorise on purpose --
-   `docs/frontend-strategy.md` §6 step 3: written down means never re-decided.
-   Read that document and `docs/frontend-sentences.md` before changing
-   anything here; both are arguments, and the values below are their
-   conclusions rather than preferences.
+/* Broadsheet, as this app uses it.
+   ---------------------------------------------------------------------------
+   Newsprint set for the web: near-black Source Serif 4 on paper white, with
+   the process inks -- cyan and a rarer magenta -- used small and deliberately,
+   like spot colour. Hierarchy comes from the serif scale and from negative
+   space. **No boxes and no dividers between sections.** The one place a rule
+   prints is as front-page furniture: the thick-thin pair around the masthead.
 
-   Direction, settled 2026-08-07: **a well-set document with terminal
-   numbers.** Prose reads as prose; every measured number is monospace and
-   aligned so it can be compared. Reference: Linear, for typographic
-   hierarchy and restraint.
+   The tokens below are the design system's own, copied rather than linked so
+   the app ships one stylesheet and no build-time dependency on a folder that
+   lives outside the repo. Take every colour, size and space from a variable;
+   never hard-code a hex or a px the tokens already carry.
 
-   The bans that shape this file, all of them taken:
-     no gradients, no glassmorphism, no drop shadows, no decorative icons,
-     NO CARDS BY DEFAULT, one accent colour meaning "needs your attention"
-     and never "this is a button", monospace for measured numbers, no emoji,
-     no placeholder copy. */
+   Supersedes the Linear/monospace direction of earlier on 2026-08-07 --
+   see docs/frontend-strategy.md, which records why. The one idea carried
+   across: a measured number is content, and provenance ("read just now",
+   "45 min ago") is content too, never chrome. */
 
 :root {
-  /* --- two typefaces, and the second one carries meaning ------------------
-     Sans is for prose. Mono is reserved for numbers this system MEASURED --
-     prices, thresholds, counts, intervals, costs, times. Using it decoratively
-     would spend the one signal we have for "this is a reading". */
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
+  --color-bg: #f3f2f2;
+  --color-surface: #eae9e9;
+  --color-text: #201e1d;
+  --color-accent: #0088b0;
+  --color-accent-2: #d6006c;
+  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
 
-  /* --- type scale, six steps ---------------------------------------------
-     Ratio ~1.15 at the small end where most of this product lives, opening up
-     at the top. Anything not on this scale is a decision nobody made. */
-  --t0: 0.75rem;    /* status chips, option counts */
-  --t1: 0.8125rem;  /* provenance: "read just now", "45 min ago" */
-  --t2: 0.9375rem;  /* body -- the sentences */
-  --t3: 1.0625rem;  /* the prompt: what the user asked for */
-  --t4: 1.375rem;   /* section headings */
-  --t5: 1.75rem;    /* the one thing on the page */
+  --color-neutral-700: #605d5d;
+  --color-neutral-800: #444141;
 
-  /* --- spacing, six steps, deliberately NOT uniform -----------------------
-     Even spacing means nobody decided what belongs together. These are far
-     enough apart that grouping is visible: s1 binds, s4 separates. */
-  --s0: 0.25rem;
-  --s1: 0.5rem;
-  --s2: 0.75rem;
-  --s3: 1.25rem;
-  --s4: 2rem;
-  --s5: 3.25rem;
+  --color-accent-700: #006786;
+  /* Body-size text in the accent needs a deep step: the accent-to-ground pair
+     is tuned to 3:1, which carries icons and large text but not paragraphs. */
+  --color-accent-2-700: #aa0b56;
 
-  /* --- four colours, each with a meaning ----------------------------------
-     ink       what the product says
-     quiet     provenance and qualification -- HOW it knows, when it read it
-     attention the one accent: "you should look at this before confirming"
-     rule      hairlines doing the work boxes used to do
-     Note `quiet` is a real colour, not opacity. Opacity fades the mono
-     figures into illegibility at small sizes, and provenance is content. */
-  --bg: #fbfbfa;
-  --ink: #17181c;
-  --quiet: #6b6f76;
-  --attention: #9a3412;
-  --rule: #e3e2df;
+  --font-heading: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-heading-weight: 600;
 
-  --radius: 3px;
+  --space-1: 5px;
+  --space-2: 10px;
+  --space-3: 15px;
+  --space-4: 20px;
+  --space-6: 30px;
+  --space-8: 40px;
 
-  font-family: var(--sans);
-  font-size: 16px;
-  line-height: 1.55;
-  color: var(--ink);
-  background: var(--bg);
-  color-scheme: light dark;
+  --radius-md: 2px;
+
+  /* The type scale, as the two designs actually use it. Named by role rather
+     than by step, because every one of these appears in the comps. */
+  --t-label: 12px;   /* the uppercase section labels and the masthead */
+  --t-meta: 13px;    /* the second line of a list row */
+  --t-small: 14px;   /* qualifications under a fact */
+  --t-body: 15px;
+  --t-read: 17px;    /* the answer under a section label */
+  --t-row: 18px;     /* a list row's title */
+  --t-lead: 21px;    /* when it fires -- the second most important line */
+  --t-title: 34px;   /* the detail heading on a phone */
+  --t-display: 44px; /* the detail heading on a desktop */
+
+  color-scheme: light;
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #131417;
-    --ink: #e8e8e6;
-    --quiet: #9a9ea6;
-    /* Lifted, not the same hex: #9a3412 on a dark ground fails contrast and
-       reads as brown rather than as a warning. */
-    --attention: #f0a882;
-    --rule: #2a2c31;
-  }
-}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--color-bg); }
 
-body { margin: 0; }
-
-main {
-  /* ~68 characters at --t2. A measure wide enough for a sentence and narrow
-     enough that the eye finds the next line. */
-  max-width: 40rem;
-  margin: 0 auto;
-  padding: var(--s4) var(--s3) var(--s5);
-}
-
-/* --- typography ----------------------------------------------------------- */
-
-h1 {
-  font-size: var(--t4);
-  font-weight: 620;
-  letter-spacing: -0.011em;
+h1, h2, h3 {
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
   margin: 0;
 }
 
-h2 {
-  font-size: var(--t1);
-  font-weight: 600;
-  letter-spacing: 0.04em;
+a { color: var(--color-accent); }
+a:hover { color: var(--color-accent-700); }
+
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
+/* --- the recurring pieces of voice --------------------------------------- */
+
+/* The uppercase kicker over every section. This is the system's main
+   organising device, standing in for the headings a boxed layout would use. */
+.label {
+  font-size: var(--t-label);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--quiet);
-  margin: var(--s4) 0 var(--s2);
+  color: var(--color-neutral-700);
 }
+.label.accent { color: var(--color-accent-700); }
 
-p { margin: var(--s0) 0; font-size: var(--t2); }
-a { color: inherit; text-underline-offset: 2px; }
+/* Provenance and qualification. Content, not chrome -- most of what makes
+   this product trustworthy is written in this colour. */
+.quiet { color: var(--color-neutral-700); }
 
-/* Every measured number. The one place mono is allowed, and the reason it
-   means anything when it appears. `tabular-nums` so a column of prices lines
-   up on the decimal rather than wandering. */
-.num {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 0.95em;
-}
-
-/* Provenance: how we know, and when we read it. Content, not chrome. */
-.quiet { color: var(--quiet); font-size: var(--t1); margin: var(--s0) 0; }
-
-/* The one accent, and it means "look at this before you confirm". Used by the
-   four pre-confirm warnings and by the two statuses the user did not ask for.
-   Never used for a button. */
+/* The one thing on a screen that says "look before you go further": the
+   pre-confirm warnings, and the two statuses nobody asked for. Magenta is the
+   rarer second ink and this is what it is saved for. */
 .notice {
-  color: var(--attention);
-  font-size: var(--t1);
-  margin: var(--s1) 0;
-  /* A rule rather than a box: it marks the line without fencing it. */
-  border-left: 2px solid currentColor;
-  padding-left: var(--s2);
+  color: var(--color-accent-2-700);
+  font-size: var(--t-small);
+  line-height: 1.55;
+  margin: var(--space-2) 0;
 }
 
-/* --- header --------------------------------------------------------------- */
+/* A note the user wrote, and a quote from the request. The serif's true
+   italic is loaded for exactly this. */
+.said { font-style: italic; }
 
-header {
+/* --- buttons -------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  font-size: var(--t-small);
+  line-height: 1.2;
+  color: var(--color-text);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border-radius: var(--radius-md);
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: var(--color-accent); color: var(--color-bg); }
+.btn-primary:hover:not(:disabled) { background: #1186ac; }
+.btn-primary:active:not(:disabled) { background: var(--color-accent-700); }
+.btn-secondary { border-color: var(--color-divider); }
+.btn-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.btn-secondary:active:not(:disabled) { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
+.btn-ghost { color: var(--color-accent); padding-inline: var(--space-1); }
+.btn-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.btn-block { width: 100%; }
+
+/* --- form controls -------------------------------------------------------- */
+
+.input {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: var(--t-small);
+  color: var(--color-text);
+  caret-color: var(--color-accent);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+.input::placeholder { color: color-mix(in srgb, var(--color-text) 65%, transparent); opacity: 1; }
+.input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+textarea.input { resize: vertical; line-height: 1.5; }
+
+.field { margin-bottom: var(--space-4); }
+.field > label { display: block; margin-bottom: var(--space-1); }
+
+/* The once / daily / weekly choice, and the only segmented control here. */
+.seg { display: inline-flex; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-md); }
+.seg-opt { display: inline-flex; align-items: center; padding: 7px 14px; font-size: var(--t-meta); cursor: pointer; }
+.seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
+.seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.seg-opt:has(input:checked) { background: var(--color-accent); color: var(--color-bg); }
+.seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.seg-opt:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+
+/* The one boxed component the system allows, reserved for a genuinely
+   discrete item -- here, the plan awaiting a yes. */
+.card {
+  padding: var(--space-6) calc(var(--space-6) - 2px);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* --- masthead: the only rules that print -------------------------------- */
+
+.masthead { flex: none; padding: 18px var(--space-8) 0; }
+.masthead .thick { height: 4px; background: var(--color-text); }
+.masthead .thin { height: 1px; background: var(--color-text); }
+.masthead .line {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--s3);
-  padding-bottom: var(--s2);
-  border-bottom: 1px solid var(--rule);
-  margin-bottom: var(--s4);
+  gap: var(--space-4);
+  padding: 8px 0 7px;
 }
+.masthead .line > nav { display: flex; gap: var(--space-6); align-items: baseline; }
+.masthead a { text-decoration: none; }
 
-/* --- controls ------------------------------------------------------------- */
+/* --- app shell ------------------------------------------------------------ */
 
-textarea, input, button { font: inherit; }
+.app { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.split { flex: 1; display: flex; min-height: 0; }
 
-textarea {
+.pane-list {
+  width: 340px;
+  flex: none;
+  padding: 26px var(--space-6) var(--space-8) var(--space-8);
+  overflow-y: auto;
+  border-right: 1px solid var(--color-divider);
+}
+.pane-detail { flex: 1; overflow-y: auto; padding: 44px 56px 72px; }
+.pane-detail > .measure { max-width: 640px; }
+
+/* --- the list ------------------------------------------------------------- */
+
+.rows { display: flex; flex-direction: column; }
+.rows > button {
+  display: block;
   width: 100%;
-  box-sizing: border-box;
-  font-size: var(--t2);
-  padding: var(--s2);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  background: transparent;
+  text-align: left;
+  background: none;
+  border: 0;
+  font: inherit;
   color: inherit;
-  resize: vertical;
-}
-textarea:focus-visible, input:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: -1px;
-}
-
-input[type="number"] {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  width: 4.5rem;
-  padding: 0.1rem var(--s0);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  background: transparent;
-  color: inherit;
-}
-
-/* Buttons are text with a target, not objects. The accent is not available to
-   them -- it means "attention", and a button is not an alarm. */
-button {
-  font-size: var(--t1);
   cursor: pointer;
-  padding: var(--s0) var(--s2);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  background: transparent;
-  color: inherit;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-1);
+  border-radius: var(--radius-md);
 }
-button:hover:not(:disabled) { border-color: var(--quiet); }
-button:disabled { cursor: not-allowed; color: var(--quiet); }
+.rows > button:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+.rows > button[aria-current="true"] { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
 
-/* The one primary action in the product: the moment money starts being spent.
-   Solid because it is genuinely the thing to do next, not to be decorative. */
-button.go {
-  background: var(--ink);
-  color: var(--bg);
-  border-color: var(--ink);
-  font-weight: 550;
-}
-button.go:hover:not(:disabled) { opacity: 0.85; }
-button.go:disabled { opacity: 0.4; }
+.row-head { display: flex; align-items: baseline; gap: var(--space-2); }
+.row-title { font-size: var(--t-row); line-height: 1.3; flex: 1; text-wrap: pretty; }
+.row-when { font-size: var(--t-meta); white-space: nowrap; color: var(--color-neutral-700); }
+/* Cyan marks the next thing to happen, which is the one fact the list exists
+   to carry. Everything else on the row is neutral. */
+.row-when.soon { color: var(--color-accent-700); }
+.row-meta { font-size: var(--t-meta); color: var(--color-neutral-700); margin-top: 3px; }
 
-/* --- the watch list ------------------------------------------------------
-   No cards. A hairline and space do the separating; a border and a radius
-   around each watch would fence data that does not need fencing, and would
-   make a two-line reminder look like the same object as a fifteen-line plan.
-   Length is information here -- see docs/frontend-sentences.md §6. */
+/* --- the detail ----------------------------------------------------------- */
 
-ul.watches { list-style: none; padding: 0; margin: 0; }
+.detail-kickers { display: flex; gap: var(--space-3); align-items: baseline; }
+.detail h1 { font-size: var(--t-display); line-height: 1.08; margin-top: 14px; text-wrap: pretty; }
+.detail .lead { font-size: var(--t-lead); line-height: 1.45; margin-top: var(--space-3); }
+.detail .countdown { font-size: var(--t-body); color: var(--color-accent-700); margin-top: 4px; }
 
-ul.watches > li {
-  padding: var(--s3) 0;
-  border-top: 1px solid var(--rule);
-}
-ul.watches > li:first-child { border-top: none; padding-top: var(--s1); }
+/* Sections are separated by space, never by a rule or a box. This one number
+   is what makes the page read as an open broadsheet. */
+.sec { margin-top: 34px; }
+.sec > .answer { font-size: var(--t-read); line-height: 1.55; margin-top: 8px; max-width: 52ch; text-wrap: pretty; }
+.sec > .aside { font-size: var(--t-small); line-height: 1.6; color: var(--color-neutral-700); margin-top: 6px; max-width: 52ch; }
+.sec > .said { font-size: 19px; line-height: 1.55; margin-top: 8px; max-width: 46ch; text-wrap: pretty; }
 
-/* The prompt is what the user asked for, and it is the thing that dominates
-   each entry. Everything else on the row is subordinate to it. */
-.row {
+.actions { display: flex; gap: var(--space-2); margin-top: var(--space-8); flex-wrap: wrap; }
+
+/* --- the compose overlay -------------------------------------------------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg);
+  z-index: 60;
   display: flex;
-  gap: var(--s2);
-  align-items: baseline;
-  margin-bottom: var(--s1);
+  flex-direction: column;
 }
-.prompt { flex: 1; font-size: var(--t3); font-weight: 550; letter-spacing: -0.008em; }
+.transcript { flex: 1; overflow-y: auto; padding: 44px var(--space-8) var(--space-4); }
+.transcript > .measure { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-6); }
+.turn > .said, .turn > .text { font-size: 19px; line-height: 1.6; max-width: 56ch; text-wrap: pretty; margin-top: 7px; }
+.composer { flex: none; border-top: 1px solid var(--color-divider); padding: var(--space-4) var(--space-8) 26px; }
+.composer > .measure { max-width: 680px; margin: 0 auto; display: flex; gap: 12px; align-items: flex-end; }
+.composer textarea { flex: 1; font-size: var(--t-read); padding: 12px 14px; resize: none; }
 
-/* --- status --------------------------------------------------------------
-   Eight of them, and each exists because collapsing it into another caused a
-   real bug (strategy doc §7). They are distinguished by weight and colour,
-   not by eight hues -- and the two that matter most are the two the user did
-   not ask for. */
-.status {
-  font-family: var(--mono);
-  text-transform: uppercase;
-  font-size: var(--t0);
-  letter-spacing: 0.05em;
-  color: var(--quiet);
-  white-space: nowrap;
-}
-/* Running, and costing money. The only status in ink. */
-.status.active { color: var(--ink); font-weight: 600; }
-/* A plan awaiting a decision: nothing is scheduled and nothing is being spent.
-   Underlined rather than coloured -- it is waiting on the user, not wrong. */
-.status.proposed { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
-/* Did not happen on request. `expired` and `triggered` are terminal and fine,
-   so they stay quiet; these two are the ones to look at. */
-.status.failed, .status.degraded { color: var(--attention); font-weight: 600; }
+.choices { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 
-/* --- the plan card -------------------------------------------------------
-   Not a form: the system showing its work. Separated from the summary above
-   it by space rather than by a box. */
-.plan { margin-top: var(--s3); }
+/* --- the plan card -------------------------------------------------------- */
 
-/* A target: the URL reads as prose on the left, the measured value sits right
-   and aligned so two shops can be compared at a glance. This is the whole
-   "document with terminal numbers" idea in one rule. */
-.target {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0 var(--s3);
-  align-items: baseline;
-  padding: var(--s2) 0;
-  border-top: 1px solid var(--rule);
-}
-.target > .full { grid-column: 1 / -1; }
-.target .reading { text-align: right; font-size: var(--t2); white-space: nowrap; }
-.target .url { word-break: break-all; font-size: var(--t2); }
+.plan-title { font-family: var(--font-heading); font-weight: 600; font-size: 28px; line-height: 1.15; margin-top: 8px; text-wrap: pretty; }
+.plan-when { font-size: var(--t-read); line-height: 1.5; margin-top: 12px; }
+.plan .rule { height: 1px; background: var(--color-divider); margin: 22px 0 16px; }
+.plan .terms { font-size: var(--t-small); line-height: 1.6; color: var(--color-neutral-700); max-width: 46ch; }
 
-/* --- questions -----------------------------------------------------------
-   Built from what the search actually returned, so every option has real
-   items behind it. The count is part of the option, not a badge on it. */
-.questions { margin-top: var(--s3); }
-.chips { display: flex; flex-wrap: wrap; gap: var(--s1); margin: var(--s1) 0; }
-.chip { font-size: var(--t1); }
-.chip.on { border-color: var(--ink); background: var(--ink); color: var(--bg); }
-.chip .n { font-family: var(--mono); opacity: 0.7; }
+/* A target being proposed. Space and alignment, no box. */
+.target { margin-top: var(--space-4); }
+.target .url { font-size: var(--t-small); word-break: break-all; }
+.target .reading { font-size: var(--t-read); margin-top: 4px; }
 
-/* --- the cost line, and the decision -------------------------------------- */
-.commit {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--s1) var(--s3);
-  margin-top: var(--s3);
-  padding-top: var(--s2);
-  border-top: 1px solid var(--rule);
-}
-.commit .spend { font-size: var(--t2); }
-.actions { display: flex; gap: var(--s1); margin-top: var(--s3); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.chip { font-size: var(--t-meta); padding: 7px 12px; border: 1px solid var(--color-divider); border-radius: var(--radius-md); background: transparent; color: inherit; cursor: pointer; font-family: var(--font-body); }
+.chip.on { background: var(--color-accent); color: var(--color-bg); border-color: var(--color-accent); }
+.chip .n { color: inherit; opacity: 0.7; }
 
-/* --- matched items: ranked jobs, or offers with a price -------------------
-   The score or the price leads the line, because that is what gets scanned
-   for. A fixed first column puts them under each other so a list of ten can
-   be read down rather than across. Both are measured, so both are mono. */
-ul.matches { list-style: none; padding: 0; margin: var(--s1) 0; }
-ul.matches > li {
-  display: grid;
-  grid-template-columns: 4.5rem 1fr;
-  gap: 0 var(--s2);
-  align-items: baseline;
-  padding: var(--s0) 0;
-  font-size: var(--t1);
-}
-/* No score and no price: the text still starts in the second column, so a
-   ranked list and an unranked one do not sit at different left edges. */
-ul.matches > li > :first-child:not(.score) { grid-column: 2; }
-.score {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  color: var(--quiet);
+.matches { list-style: none; padding: 0; margin: var(--space-2) 0 0; }
+.matches > li { padding: var(--space-1) 0; font-size: var(--t-small); line-height: 1.5; }
+.matches .score { color: var(--color-accent-700); }
+
+/* --- phone ---------------------------------------------------------------
+   One app, two shapes. The sidebar and the detail stop being side by side and
+   become two screens with a back link -- the same four moves, re-laid rather
+   than re-designed. Everything above is shared; only what must change does. */
+
+@media (max-width: 860px) {
+  .masthead { padding: 14px var(--space-4) 0; }
+  .masthead .thick { height: 3px; }
+
+  .split { display: block; overflow-y: auto; }
+
+  .pane-list {
+    width: auto;
+    border-right: 0;
+    padding: var(--space-4) var(--space-4) 96px;
+    overflow: visible;
+  }
+  /* On a phone the list and the detail are alternatives, never neighbours. */
+  .pane-list[data-hidden="true"] { display: none; }
+
+  .pane-detail { padding: 26px var(--space-4) 96px; overflow: visible; }
+  .pane-detail[data-hidden="true"] { display: none; }
+
+  .detail h1 { font-size: var(--t-title); }
+  .detail .lead { font-size: 19px; }
+  .sec { margin-top: 26px; }
+
+  /* The one solid accent fill on the screen, above the home indicator. */
+  .compose-dock {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: var(--space-3) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, var(--color-bg) 72%, transparent);
+  }
+  .compose-dock .btn { font-size: var(--t-read); padding: 15px 16px; }
+
+  .transcript { padding: var(--space-6) var(--space-4) var(--space-4); }
+  .composer { padding: var(--space-3) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom)); }
+  .actions { position: sticky; bottom: 0; }
+  .actions .btn { flex: 1; font-size: 16px; padding: 13px 12px; }
 }
 
-/* --- a running watch's targets -------------------------------------------- */
-ul.targets { list-style: none; padding: 0; margin: var(--s2) 0 0; }
-ul.targets > li {
-  padding: var(--s1) 0;
-  border-top: 1px solid var(--rule);
-  word-break: break-word;
-  font-size: var(--t1);
+/* On a desktop the create control lives in the sidebar, not docked. */
+@media (min-width: 861px) {
+  .compose-dock { margin-bottom: var(--space-6); }
+  .back-link { display: none; }
 }

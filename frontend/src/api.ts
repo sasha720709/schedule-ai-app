@@ -284,6 +284,38 @@ export const deleteWatch = (token: string, id: string) =>
     method: "DELETE",
   });
 
+/** What a reminder lets you change once it exists. */
+export interface ReminderEdit {
+  /** Local wall-clock, `YYYY-MM-DDTHH:MM:SS`, with no offset and no trailing
+   * Z. The zone travels beside it on the watch and is not edited here: the
+   * server re-validates the moment in the watch's own zone, so sending an
+   * offset would be interpreted twice. */
+  fire_at?: string;
+  repeat?: "once" | "daily" | "weekly";
+  reminder_note?: string;
+}
+
+/**
+ * Change a reminder that already exists — and, given a new time, bring back
+ * one that has already fired.
+ *
+ * The only editable thing in the product. Every other watch is defined by
+ * what it reads, so changing it means paying for a fresh plan; a reminder is
+ * defined by a moment and a sentence, which are the two things a person
+ * mistypes. The title is deliberately not here: it is what the calendar entry
+ * is called. Nor is the timezone, which is a profile setting waiting on a
+ * user record rather than a per-reminder field.
+ *
+ * A time in the past comes back as a 400 carrying a sentence to show the
+ * user, not a code — the server refuses it so EventBridge never has to.
+ */
+export const editReminder = (token: string, id: string, edit: ReminderEdit) =>
+  request<{ watch: Watch; next_check_at: string | null }>(
+    token,
+    `/watches/${id}`,
+    { method: "PATCH", body: JSON.stringify(edit) },
+  );
+
 /**
  * Monthly cost at a chosen interval, using the server's own per-check rate.
  *

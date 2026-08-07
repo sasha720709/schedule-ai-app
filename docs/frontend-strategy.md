@@ -109,10 +109,20 @@ fix. Constraints work; taste-by-request does not. A brief that says *"make it
 clean and modern"* returns the statistical average of every dashboard on the
 internet. A brief with bans in it returns something else.
 
-**Settled 2026-08-07: the owner took the whole list.** All of it applies, and
-"no cards by default" is the one that most changes what is on screen today —
-every watch currently sits in a bordered box. The list below is now the brief,
-not a proposal.
+**Settled 2026-08-07: the owner took the whole list**, and Broadsheet
+independently agrees with almost all of it — no boxes, no dividers, ornament
+nowhere, one accent doing meaning rather than decoration. Two amendments came
+with the design and win over the text below:
+
+- **Monospace is out.** Broadsheet sets figures in the serif. The point of the
+  rule was that a measured number should be legible as a measurement and
+  should align; that survives without a second typeface.
+- **There are two accents, not one** — cyan and magenta. They are not
+  interchangeable: cyan marks *what happens next* (a countdown, a link, the
+  primary action), magenta marks *what you should read before going further*.
+  Never both in the same small component.
+
+The rest of the list below is the brief, not a proposal.
 
 A starting set, to be argued with rather than accepted:
 
@@ -162,33 +172,58 @@ starts.** References are the highest-value input available and the only one I
 cannot generate: two or three products you actually like, with a sentence each
 on *what specifically* to take. Without them I will average everything.
 
-### Settled 2026-08-07
+### Settled 2026-08-07 — superseded the same day, and the second answer is the one that shipped
 
-**Reference: Linear**, for typographic hierarchy and restraint, and for
-keyboard-first density. One reference, deliberately — a single clear one beats
-four averaged, which is the failure this section exists to prevent.
+**This section records both, because the first was reasoned from this document
+and the second came from outside it, and that difference is the lesson.**
 
-**Direction: a well-set document with terminal numbers.** Chosen against three
-alternatives (a dense trading terminal, a fully prose-led document, and
-conventional labelled sections). The argument that decided it comes from
-`docs/frontend-sentences.md`: the content of the plan card is **6–15 sentences
-whose number varies by watch**, not a fixed set of fields. So the prose stays
-prose and reads as prose, while every *measured* number — price, threshold,
-interval, cost, count, time-since — is monospace and column-aligned so it can
-be scanned and compared.
+The first answer, reached by working through §4 and §5 as written: *Linear,
+and a well-set document with monospace for every measured number.* It was
+defensible and it was **derived**, which is exactly the problem §5 warns about
+— "references are the highest-value input available and the only one I cannot
+generate". Given four candidate references and a written argument, I produced
+the average of the written argument.
 
-The rejected options, and why, since these are the decisions most likely to be
-re-litigated:
+**The owner then supplied an actual design**, a newsprint system called
+**Broadsheet**, with a desktop screen and a phone screen. That is the input
+this document asked for, and it wins over anything reasoned here.
 
-- **A dense terminal** squeezes the full warning sentences into codes. Four of
-  them ("any move at all triggers this", "below the budget floor", "not
-  watching amazon — USD", the wrong-instrument line) exist *because* a
-  shortened version already shipped and caused a bug. They must stay
-  sentences.
-- **Fully prose-led** puts the numbers inline, where they cannot be compared
-  across shops or scanned across twenty watches.
-- **Labelled sections** is the generic answer, and was offered only so the
-  comparison was honest.
+**The direction that shipped: Broadsheet.** Near-black Source Serif 4 on paper
+white; **the serif is the chrome**, not paired with a sans. Hierarchy from the
+serif scale and from negative space. **No boxes and no dividers between
+sections** — the one place a rule prints is the thick-thin pair around the
+masthead, as front-page furniture. Cyan for what happens next; magenta as the
+rarer second ink, saved for what you must read before going further.
+
+Structure, the same four moves at both sizes: a list **soonest first**, one
+watch **opened in full**, the exchange that **creates** one, and the **plan
+card** that has to be confirmed before anything is scheduled. Desktop puts the
+list and the detail side by side; a phone makes them two screens with a back
+link. **One app** — no separate mobile build, no device sniffing, a single
+860px query in `index.css`.
+
+What survived from the first answer, because it came from the evidence rather
+than from taste:
+
+- **The plan card is 6–15 sentences whose number varies by watch**, so it is a
+  variable-length argument and not a form with optional fields. Broadsheet's
+  space-not-boxes rule happens to suit that better than the boxed version did.
+- **The four pre-confirm warnings are not `.muted`.** They now take the
+  magenta. Each exists because a shortened version already shipped and caused
+  a bug, so none of them may be compressed into a code or a badge.
+- **Provenance is content, not chrome** — "read just now", "45 min ago",
+  "before delivery". It is set in `--color-neutral-700`, a real colour rather
+  than an opacity, because at 13px an opacity fade stops being legible.
+
+What was dropped: monospace. Broadsheet sets figures in the serif, and mixing
+a mono in would be the "no sans-serif for UI chrome" ban wearing a different
+hat. The numbers are still aligned and still comparable; they are just not a
+second typeface.
+
+**The order of work below still holds** — the sentence inventory
+(`docs/frontend-sentences.md`) was step 1 and it is what made the detail pane
+buildable in an afternoon. Steps 3–5 were done in code rather than in Figma,
+because the owner supplied the design instead of the tokens.
 
 ---
 
