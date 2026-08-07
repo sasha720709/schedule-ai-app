@@ -2,17 +2,41 @@
 
 Context for any Claude Code session working in this repo — read this first.
 
-## Start here (last session: 2026-08-05)
+## Start here (last session: 2026-08-07)
 
-Everything is committed, deployed and green. **882 tests** pass in ~3s with
+Everything is committed, deployed and green. **896 tests** pass in ~3s with
 `python -m pytest -q` from the repo root, and every suite also passes alone
 (`for d in */; do pytest $d; done`).
 
-**AWS is not idle.** One watch is live and deliberate: `w_355a0d83`, the
-owner's own weekly reminder at 22:42 Israel time, created through the new
-sign-in. One schedule, a Lambda invocation a week, effectively free. It is the
-first row in this project that carries a real `user_id` rather than
-`"default"`. Leave it; delete it from the UI if it stops being wanted.
+**4c is built and deployed — the interface is no longer the missing piece.**
+The owner supplied an actual design (a newsprint system called **Broadsheet**)
+rather than a brief, which is the input `docs/frontend-strategy.md` §5 said it
+could not generate. Read that file before touching a component: it records
+both the direction reasoned *from* the document and the one that arrived from
+outside it, because the difference is the lesson.
+
+**Reminders are editable, and that is new.** The line further down saying "a
+watch cannot be edited" is now true only of condition watches. See "Editing,
+and the two bugs it uncovered" below.
+
+**AWS is not idle, and what is live has changed.** `w_355a0d83` (the weekly
+reminder) is **gone** — deleted at some point after 2026-08-05. As of
+2026-08-07 there are **two active condition watches**, both the owner's own,
+created through the deployed UI:
+
+| watch | what | targets |
+|---|---|---|
+| `w_a22b2a94` | TA35 index, "when prices change from current" | 1 |
+| `w_0daa22ea` | cloud engineer vacancies at NVIDIA | 2 |
+
+Three schedules, hourly. Leave them; they are deliberate. Verify rather than
+trust this table — `aws scheduler list-schedules --query 'Schedules[].Name'`
+and a scan of `schedule-ai-app-watches` are two commands and this section has
+been wrong before.
+
+Note the TA35 one is **"change from current"**, which is the shape recorded
+below as a guarantee rather than a condition: a `relative_change_pct` of 0
+fires on the first tick after the market opens. That is expected, not a bug.
 
 **Sign-in is real now, and the passcode is gone.** Google, federated through
 a Cognito user pool, with API Gateway verifying the ID token itself --
@@ -30,7 +54,53 @@ products; the model answers `null` when a request could be either, and `null`
 puts *"Once, or every day?"* on the plan card. Confirming without answering
 keeps it a one-off, which is the recoverable direction. A repeat is a **cron**,
 never `rate(1 day)` — a rate counts from creation, so "every day at 9pm" would
-drift — with no `ActionAfterCompletion` and a 90-day term.
+drift — with `ActionAfterCompletion: NONE` and a 90-day term.
+
+### Editing, and the two bugs it uncovered (2026-08-07)
+
+`PATCH /watches/{id}` now also takes `fire_at`, `repeat` and `reminder_note`
+for a time-triggered watch. The owner chose those three: **not** the title
+(it is what the calendar entry is called) and **not** the timezone (a profile
+setting waiting on a user record — making it per-reminder now would be
+building the wrong thing twice).
+
+**Editing a fired reminder re-arms it**, so `triggered` is no longer terminal
+for this one kind. The Checker needed no change, and the reason is worth
+keeping: the guard against firing twice is a **conditional write on
+`status = active`**, not a memory of having fired. A guard keyed on
+`triggered_at` being set would read identically in every existing test and
+silently refuse every re-armed reminder. `checker/test_checker.py` has a test
+saying exactly that, because the two Lambdas cannot see each other.
+
+Two bugs fell out of building it, both invisible offline:
+
+- **`_next_check_for` was wrong for every reminder ever made.** It derived the
+  answer from `check_interval_min`, which for a reminder is the 1440
+  placeholder that exists only because the cost model wants a number — so a
+  9pm reminder reported "in 24 hours" from whenever it was asked. Nothing
+  surfaced it until the interface grew a countdown.
+- **`repeating_expression` omitted `ActionAfterCompletion`**, relying on NONE
+  being the AWS default. Harmless at create time; not harmless once a `once`
+  → `daily` flip calls `update_schedule` on a schedule already carrying
+  `DELETE`. It is stated explicitly now, so the flip does not rest on
+  UpdateSchedule's replace semantics. **Two existing tests asserted the key's
+  absence** — that assertion was the fragility, not the code.
+
+**The past-moment guard is `shared/moment.py`** now, used by the Planner (on
+the model's answer) and the api (on a time the user typed). One guard in two
+Lambdas is a guard that will disagree with itself. `MAX_YEARS_AHEAD` is
+still 2. **Both `api/build.sh` and `planner/build.sh` must list it** — the
+copy lists are explicit, and a missing module builds a happy zip that dies on
+import at the first request.
+
+**Proven live and deleted afterwards** (2026-08-07), by writing a synthetic
+reminder row by hand, the way 8d's corrupted `scope` was verified: moving the
+time produced `at(2026-08-11T08:30:00)` / `Asia/Jerusalem` / `DELETE`; the
+flip to `daily` produced `cron(30 8 * * ? *)` / **`NONE`** and a term of
+2026-11-05; the flip back restored `at(...)` / `DELETE` and cleared the term;
+a past time was refused `400` with the sentence rather than a 500 from
+EventBridge. The row and its schedule were deleted and a scan afterwards
+returned only the owner's own three schedules.
 
 **Two bugs that only a real run could produce, both on 2026-08-05:**
 
@@ -249,18 +319,34 @@ always going to come before the interface.** Three ways to watch and then stop
 -- a share price, a job vacancy, a thing for sale -- plus calendar reminders,
 plus real accounts. All of it deployed and proven live.
 
-**Only one thing of consequence is left: the interface.**
+**4c shipped on 2026-08-07, so the list below has moved up by one.**
 
-1. **4c -- the designed interface.** Read `docs/frontend-strategy.md` before
-   opening a component. It is not a style guide; it is an argument about why
-   generated UI looks generated and what to do about it in *this* codebase,
-   and it was written because the owner named the problem exactly: "I don't
-   want it to look AI-ish."
+1. ~~**4c -- the designed interface.**~~ **Done and deployed.** Broadsheet:
+   master-detail, soonest first, one responsive app rather than two builds.
+   Still read `docs/frontend-strategy.md` before opening a component — it is
+   not a style guide but an argument about why generated UI looks generated,
+   written because the owner named the problem exactly: "I don't want it to
+   look AI-ish."
 
-   The short version, so it is not lost if that file is skipped: **this app's
-   advantage is that it has something true and specific to say on every
-   screen**, and a whole day was spent making those sentences precise. Design
-   it from the sentences outward. Do not start from a component library.
+   Three things from that work worth not re-deriving:
+
+   - **The design came from the owner, not from the document.** Given four
+     candidate references and a written argument, I produced the average of
+     the written argument. The moment an actual design arrived the result got
+     better. Ask for one; do not reason your way to a look.
+   - **`docs/frontend-sentences.md` is the content design** — every
+     user-facing sentence the product can produce, with its file:line and the
+     failure that caused it. It is what made the detail pane buildable in an
+     afternoon, and it is the thing to update when a new sentence is added.
+   - **Four warnings must never become badges**: "any move at all triggers
+     this", "below the budget floor", "not watching amazon — USD", and the
+     wrong-instrument line. Each exists because a shortened version already
+     shipped and caused a bug. They take the magenta and they stay sentences.
+
+   What is *not* built: **multi-turn chat (4d)**. The compose overlay is laid
+   out as a transcript because that is what the exchange is, but it is one
+   turn each way and the composer locks after sending. Do not make it look
+   like it can answer a follow-up.
 
 2. **Shares tier 4 -- a `Checks` history table.** `last_value` is overwritten
    every tick, so "the price over the last month" cannot be drawn.
@@ -299,7 +385,8 @@ plus real accounts. All of it deployed and proven live.
 | `docs/marketplaces-roadmap.md` | **all five steps done**; §7–§9 are the write-ups |
 | `docs/phase-9-watch-kinds.md` | §10b is the missing-email write-up; §10 is what is left |
 | `docs/architecture-review-2026-07-31.md` | every architectural decision to that date |
-| `docs/frontend-strategy.md` | **read before 4c** — why generated UI looks generated, and what to do in this codebase |
+| `docs/frontend-strategy.md` | **read before touching a component** — why generated UI looks generated; records both the reasoned direction and the Broadsheet one that shipped |
+| `docs/frontend-sentences.md` | every user-facing sentence, with the failure that caused it — the content design |
 
 ### Things carried forward that are easy to lose
 
@@ -783,9 +870,15 @@ will start to hurt.
   now carries is what it will use. Building a second firing mechanism to serve
   one phrasing would have been the expensive way there.
 
-- **A watch cannot be edited.** No changing the threshold, the interval,
-  or a bad target URL — the only recourse is delete and re-plan, which
-  pays for a fresh Sonnet call and web search.
+- **A *condition* watch cannot be edited.** No changing the threshold or a
+  bad target URL — the only recourse is delete and re-plan, which pays for a
+  fresh Sonnet call and web search. (The interval is the exception and always
+  was: `PATCH` retunes it, under the same budget gate as confirm.) **A
+  reminder is different and is editable** as of 2026-08-07 — see below. The
+  split is deliberate rather than partial work: a condition watch is defined
+  by *what it reads*, so changing it means re-deriving an extractor, while a
+  reminder is defined by a moment and a sentence, which are the two things a
+  person mistypes.
 - **No partial-failure handling in the Planner.** If schedule creation
   fails halfway through a multi-target plan, earlier targets keep their
   schedules and the `Watches` row is never written.
@@ -848,10 +941,17 @@ designed chat UI) and the deploy half of 7.
 | `reminder` | nowhere — the clock is the trigger | no |
 | `value` | web search, compiled extractor | yes |
 
-**882 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
-the repo root. By area — `shared/` 434, `planner/` 151, `api/` 106,
-`gatekeeper/` 15, `checker/` 107, `notifier/` 63, `fetcher/` 6. They run on
+**896 offline tests**, ~3s, no AWS and no cost: `python -m pytest -q` from
+the repo root. By area — `shared/` 434, `planner/` 151, `api/` 119,
+`gatekeeper/` 15, `checker/` 108, `notifier/` 63, `fetcher/` 6. They run on
 every push (`.github/workflows/tests.yml`).
+
+**A fixture with a literal future date is a test that expires.** Twelve
+reminder tests went red on CI overnight on 2026-08-07 with nothing changed:
+the scripted model answer carried `2026-08-06T09:00:00`, which was tomorrow
+when it was written and yesterday when the clock reached it. `_moment` refused
+it, correctly — the guard did its job and the fixture was the bug. Anything
+compared against `datetime.now()` must be **computed** relative to now.
 
 **The whole cycle was proven live on 2026-08-02, both kinds of watch.**
 `w_b9b8efab` (value): planned a Steam browser target, verified `$789.00`,
@@ -893,9 +993,11 @@ SNS topic with a confirmed email subscription and three CloudWatch
 alarms; and seven IAM roles (one per Lambda, plus
 `schedule-ai-app-scheduler-invoke-checker` that schedules assume).
 
-**There are no schedules** as of 2026-08-05, and the tables are empty —
-verified by scan after the step-3 live run, which deleted both of its watches.
-The system is idle and billing nothing.
+**Three schedules are live** as of 2026-08-07, belonging to the owner's own
+two condition watches (`w_a22b2a94`, `w_0daa22ea` — see "Start here"). Hourly,
+HTTP targets, a few cents a month. The 2026-08-05 note saying the tables were
+empty is superseded; check with `aws scheduler list-schedules` rather than
+trusting either sentence.
 
 **Notifications are sent from `notifications@beer7.click`**, a domain the
 owner already owned, verified in SES with Easy DKIM and its three
@@ -997,7 +1099,7 @@ Phase 6 was pulled ahead of 4, and Phase 8 is now pulled ahead of 5, 4c and 7.
 | ✅ | **10b** · Vacancies finished | all four steps — items, repeating+dedup, ranking, grounded questions |
 | ✅ | **10c** · Marketplaces | all five steps done — shops, `offers`, Amazon, pinning, one reading, delivery, blocked |
 | ✅ | **11** · Calendar reminders | done with Phase 9 steps 3b–5; the trigger existed by the time the `.ics` was written |
-| ⬜ | **4c** · Designed chat interface | the side quest, deliberately late |
+| ✅ | **4c** · Designed interface | done 2026-08-07 — Broadsheet, master-detail, responsive; reminders editable |
 | ◐ | **7** · CI/CD via GitHub OIDC | tests-on-push done; the **deploy** half stays last |
 
 **Phases 10a/10b/10c are the owner's product plan**, not a renumbering of the
