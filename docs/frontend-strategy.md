@@ -109,6 +109,11 @@ fix. Constraints work; taste-by-request does not. A brief that says *"make it
 clean and modern"* returns the statistical average of every dashboard on the
 internet. A brief with bans in it returns something else.
 
+**Settled 2026-08-07: the owner took the whole list.** All of it applies, and
+"no cards by default" is the one that most changes what is on screen today —
+every watch currently sits in a bordered box. The list below is now the brief,
+not a proposal.
+
 A starting set, to be argued with rather than accepted:
 
 - **No gradients. No glassmorphism. No drop shadows** except where something
@@ -156,6 +161,34 @@ The nearest reference points worth stealing from, and *what* to steal:
 starts.** References are the highest-value input available and the only one I
 cannot generate: two or three products you actually like, with a sentence each
 on *what specifically* to take. Without them I will average everything.
+
+### Settled 2026-08-07
+
+**Reference: Linear**, for typographic hierarchy and restraint, and for
+keyboard-first density. One reference, deliberately — a single clear one beats
+four averaged, which is the failure this section exists to prevent.
+
+**Direction: a well-set document with terminal numbers.** Chosen against three
+alternatives (a dense trading terminal, a fully prose-led document, and
+conventional labelled sections). The argument that decided it comes from
+`docs/frontend-sentences.md`: the content of the plan card is **6–15 sentences
+whose number varies by watch**, not a fixed set of fields. So the prose stays
+prose and reads as prose, while every *measured* number — price, threshold,
+interval, cost, count, time-since — is monospace and column-aligned so it can
+be scanned and compared.
+
+The rejected options, and why, since these are the decisions most likely to be
+re-litigated:
+
+- **A dense terminal** squeezes the full warning sentences into codes. Four of
+  them ("any move at all triggers this", "below the budget floor", "not
+  watching amazon — USD", the wrong-instrument line) exist *because* a
+  shortened version already shipped and caused a bug. They must stay
+  sentences.
+- **Fully prose-led** puts the numbers inline, where they cannot be compared
+  across shops or scanned across twenty watches.
+- **Labelled sections** is the generic answer, and was offered only so the
+  comparison was honest.
 
 ---
 

@@ -203,7 +203,7 @@ export default function App() {
     return (
       <main>
         <h1>ScheduleAI</h1>
-        <p className="muted">Checking your session…</p>
+        <p className="quiet">Checking your session…</p>
       </main>
     );
   }
@@ -212,12 +212,12 @@ export default function App() {
     return (
       <main>
         <h1>ScheduleAI</h1>
-        <p className="muted">
+        <p className="quiet">
           Sign in with the Google account this app was set up for. Anyone else
           is turned away before an account is created.
         </p>
         <button onClick={() => void signIn()}>Sign in with Google</button>
-        {error && <p className="error">{error}</p>}
+        {error && <p className="notice">{error}</p>}
       </main>
     );
   }
@@ -242,13 +242,13 @@ export default function App() {
         </button>
       </form>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="notice">{error}</p>}
 
-      <h2>Watches{planning && <span className="muted"> · planning…</span>}</h2>
+      <h2>Watches{planning && <span className="quiet"> · planning…</span>}</h2>
 
-      {!loaded && <p className="muted">Loading…</p>}
+      {!loaded && <p className="quiet">Loading…</p>}
       {loaded && watches.length === 0 && (
-        <p className="muted">Nothing yet. Describe something to watch above.</p>
+        <p className="quiet">Nothing yet. Describe something to watch above.</p>
       )}
 
       <ul className="watches">
@@ -394,7 +394,7 @@ function Matches({ items, base }: { items: MatchedItem[]; base: string }) {
           ) : (
             item.text || "(untitled)"
           )}
-          {item.why && <span className="muted"> — {item.why}</span>}
+          {item.why && <span className="quiet"> — {item.why}</span>}
         </li>
       ))}
     </ul>
@@ -484,14 +484,14 @@ function WatchRow({
           exists, so a wrong one has to be visible in the second before
           confirming rather than at 6am. */}
       {watch.fire_at && (
-        <p className="muted">
+        <p className="quiet">
           reminds you at {describeMoment(watch.fire_at)}
           {watch.fire_timezone && <> ({watch.fire_timezone})</>}
           {watch.reminder_title && <> — {watch.reminder_title}</>}
         </p>
       )}
       {watch.fire_at && (
-        <p className="muted">
+        <p className="quiet">
           {watch.repeat === "daily"
             ? "every day at this time"
             : watch.repeat === "weekly"
@@ -505,20 +505,29 @@ function WatchRow({
         </p>
       )}
 
+      {/* What this watch actually does. Body text, not `quiet`: it is the
+          single most important sentence on the row, and it spent its life
+          the same grey as the provenance beneath it. */}
       {watch.condition && (
-        <p className="muted">
+        <p>
           trigger when {watch.condition.metric} {watch.condition.op}{" "}
-          {watch.condition.value} {watch.condition.currency ?? ""}
+          <span className="num">{watch.condition.value}</span>{" "}
+          {watch.condition.currency ?? ""}
           {/* A relative watch shows where its threshold came from, so the
               number can be checked against the page it was read off. */}
           {watch.condition.baseline != null && (
-            <>
+            <span className="quiet">
               {" "}
               (
               {watch.condition.relative_change_pct
-                ? `${watch.condition.relative_change_pct}% from`
+                ? <>
+                    <span className="num">
+                      {watch.condition.relative_change_pct}%
+                    </span>{" "}
+                    from
+                  </>
                 : "any move below"}{" "}
-              the {watch.condition.baseline}
+              the <span className="num">{watch.condition.baseline}</span>
               {/* Which reading it came from. The owner accepted a previous
                   close as a baseline, which is exactly why it has to be
                   labelled: the two are identical on screen and are not the
@@ -527,10 +536,13 @@ function WatchRow({
                 ? " read at the previous close"
                 : " read live at planning"}
               )
-            </>
+            </span>
           )}
           {watch.check_interval_min != null && watch.status !== "proposed" && (
-            <> · every {watch.check_interval_min} min</>
+            <span className="quiet">
+              {" "}
+              · every <span className="num">{watch.check_interval_min}</span> min
+            </span>
           )}
         </p>
       )}
@@ -539,7 +551,7 @@ function WatchRow({
           shop. Without this the user has to guess whether "10% cheaper" means
           cheaper than Ivory, than Amazon, or than some average. */}
       {watch.condition?.across === "best" && (
-        <p className="muted">
+        <p className="quiet">
           measured across every shop below — the{" "}
           {watch.condition.op.startsWith(">") ? "highest" : "cheapest"} offer is
           what this watch calls the price
@@ -548,9 +560,13 @@ function WatchRow({
 
       {/* A shop that was looked at and dropped. Silence here is the same
           failure as the missing email: the user asked about Amazon, Amazon is
-          not in the list, and nothing said why. */}
+          not in the list, and nothing said why.
+
+          `notice`, not `quiet`: this is one of the four things a person should
+          read before confirming. It spent its whole life as muted grey, which
+          is where docs/frontend-sentences.md §6 found it. */}
       {watch.status === "proposed" && !!watch.rejected?.length && (
-        <div className="muted">
+        <div className="notice">
           {watch.rejected.map((r) => (
             <p key={r.url}>
               not watching {r.url} — {r.reason}
@@ -567,7 +583,7 @@ function WatchRow({
       {watch.status === "proposed" &&
         watch.condition?.baseline != null &&
         !watch.condition.relative_change_pct && (
-          <p className="muted">
+          <p className="notice">
             any move at all triggers this — at the next open that is close to
             certain. Say a size (&ldquo;5% down&rdquo;) if you meant one.
           </p>
@@ -576,13 +592,13 @@ function WatchRow({
       {/* Only for an active watch: a paused one has no schedule, so a time
           here would describe something that does not exist. */}
       {watch.status === "active" && nextCheck && (
-        <p className="muted">{describeNextCheck(nextCheck)}</p>
+        <p className="quiet">{describeNextCheck(nextCheck)}</p>
       )}
 
       {/* The difference a person needs to know before confirming: this one
           does not stop at the first result, and therefore has an end date. */}
       {watch.repeating && watch.status !== "expired" && (
-        <p className="muted">
+        <p className="quiet">
           keeps running — reports each new match once, never the same one twice
           {watch.trigger_count ? ` · ${watch.trigger_count} reported so far` : ""}
           {watch.expires_at
@@ -592,7 +608,7 @@ function WatchRow({
       )}
 
       {watch.status === "expired" && (
-        <p className="muted">
+        <p className="quiet">
           finished: this watch ran its full term and stopped
           {watch.trigger_count
             ? `, after telling you about ${watch.trigger_count} thing${
@@ -606,11 +622,11 @@ function WatchRow({
       )}
 
       {watch.plan_error && (
-        <p className="error">planning failed: {watch.plan_error}</p>
+        <p className="notice">planning failed: {watch.plan_error}</p>
       )}
 
       {watch.status === "degraded" && (
-        <p className="error">
+        <p className="notice">
           stopped: the site changed and automatic repair did not help —{" "}
           {watch.degraded_reason ?? "no reason recorded"}. Checking has
           stopped, so this costs nothing; delete it and describe it again to
@@ -623,41 +639,62 @@ function WatchRow({
       {watch.status === "proposed" && (
         <div className="plan">
           {targets?.map((t) => (
+            /* The direction, in one element: the URL reads as prose on the
+               left, the measured reading sits right and aligned so two shops
+               can be compared down the column. */
             <div key={t.target_id} className="target">
-              <a href={t.url} target="_blank" rel="noreferrer">
-                {t.url}
-              </a>
-              <span className="muted"> · {t.fetch_method}</span>
+              <span className="url">
+                <a href={t.url} target="_blank" rel="noreferrer">
+                  {t.url}
+                </a>
+                <span className="quiet"> · {t.fetch_method}</span>
+              </span>
+
+              {t.verified_raw != null ? (
+                <span className="reading">
+                  <span className="num">{String(t.verified_raw)}</span>
+                  <br />
+                  <span className="quiet">read just now</span>
+                </span>
+              ) : (
+                <span className="reading quiet">not read yet</span>
+              )}
+
+              {t.verified_raw != null && (
+                <p className="quiet full">this is what will be watched</p>
+              )}
+
               {/* Asking for a foreign company by its bare ticker returns the
-                  US depositary receipt. This line is how that becomes
-                  visible before confirming instead of never. */}
+                  US depositary receipt -- "SAP" is the NYSE ADR in USD, not
+                  Frankfurt. `notice` because it is the difference between the
+                  watch the user meant and a different instrument entirely,
+                  and it is only visible in the second before confirming. */}
               {t.instrument_name && (
-                <p className="muted">
+                <p className="notice full">
                   {t.instrument_name}
                   {t.exchange && <> · {t.exchange}</>}
-                  {t.currency && <> · {t.currency}</>}
+                  {t.currency && <> · {t.currency}</>} — check this is the
+                  listing you meant
                 </p>
               )}
-              {t.verified_raw != null && (
-                <p>
-                  read <strong>{String(t.verified_raw)}</strong> just now —
-                  this is what will be watched
-                </p>
-              )}
+
               {/* A count verified at zero is honest and says nothing on its
                   own. This is what lets someone judge the filter before
                   paying for a schedule. */}
               {t.unfiltered_count != null && (
-                <p className="muted">
-                  {t.unfiltered_count} item
+                <p className="quiet full">
+                  <span className="num">{t.unfiltered_count}</span> item
                   {t.unfiltered_count === 1 ? "" : "s"} listed on this page
-                  today, {String(t.verified_raw ?? 0)} of which match
+                  today, <span className="num">{String(t.verified_raw ?? 0)}</span>{" "}
+                  of which match
                 </p>
               )}
               {!!t.verified_items?.length && (
-                <Matches items={narrow(t.verified_items)} base={t.url} />
+                <div className="full">
+                  <Matches items={narrow(t.verified_items)} base={t.url} />
+                </div>
               )}
-              <p className="muted">{t.extract_hint}</p>
+              <p className="quiet full">{t.extract_hint}</p>
             </div>
           ))}
 
@@ -668,27 +705,32 @@ function WatchRow({
             <div className="questions">
               {questions.map((q) => (
                 <div key={q.id}>
-                  <p className="muted">{q.question}</p>
-                  {q.options.map((o) => (
-                    <button
-                      key={o.value}
-                      className={
-                        (answers[q.id] ?? []).includes(o.value)
-                          ? "chip on"
-                          : "chip"
-                      }
-                      onClick={() => toggle(q, o.value)}
-                      disabled={busy}
-                    >
-                      {o.label} <span className="muted">{o.items.length}</span>
-                    </button>
-                  ))}
+                  <p>{q.question}</p>
+                  <div className="chips">
+                    {q.options.map((o) => (
+                      <button
+                        key={o.value}
+                        className={
+                          (answers[q.id] ?? []).includes(o.value)
+                            ? "chip on"
+                            : "chip"
+                        }
+                        onClick={() => toggle(q, o.value)}
+                        disabled={busy}
+                      >
+                        {o.label}{" "}
+                        {/* The count is what makes the option grounded rather
+                            than generic: every one covers real items. */}
+                        <span className="n">{o.items.length}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ))}
               {/* The two kinds mean genuinely different things by an answer,
                   and saying the wrong one would be a lie about what happens
                   next. A stream ranks; a price watch pins. */}
-              <p className="muted">
+              <p className="quiet">
                 {watch.repeating
                   ? "Answering narrows what is shown here, and tells the watch what to prefer later — it never hides a future posting, only ranks it lower."
                   : "Answering narrows what is shown here, and pins what gets watched. Leave it blank and the watch follows the cheapest thing on the page, which is usually an accessory."}
@@ -696,47 +738,71 @@ function WatchRow({
             </div>
           )}
 
-          <label>
-            check every{" "}
-            <input
-              type="number"
-              min={1}
-              max={1440}
-              value={interval}
-              onChange={(e) => setIntervalValue(Number(e.target.value))}
-              disabled={busy}
-            />{" "}
-            min
-          </label>{" "}
-          <span className="muted">
-            {cost ? (
-              <>
-                ≈ $
-                {monthlyCost(
-                  cost.cost_per_check_usd,
-                  interval,
-                  targets?.length ?? 1,
-                ).toFixed(2)}
-                /month
-                {/* The budget-derived floor, so an interval the server will
-                    refuse is visible before the button is pressed rather than
-                    as a 409 afterwards. */}
-                {interval < cost.min_interval_min && (
-                  <> · below the {cost.min_interval_min} min this budget allows</>
-                )}
-              </>
-            ) : (
-              <>cost unknown until a target is verified</>
-            )}
-            {watch.check_interval_min !== interval && (
-              <> · planner suggested {watch.check_interval_min}</>
-            )}
-          </span>
+          {/* The only place in the product where a number is shown before it
+              is spent. That is the argument for plan-then-confirm existing at
+              all, so it gets its own rule above it rather than trailing the
+              targets as another muted line. */}
+          <div className="commit">
+            <label>
+              check every{" "}
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={interval}
+                onChange={(e) => setIntervalValue(Number(e.target.value))}
+                disabled={busy}
+              />{" "}
+              min
+            </label>
+            <span className="spend">
+              {cost ? (
+                <>
+                  ≈{" "}
+                  <span className="num">
+                    $
+                    {monthlyCost(
+                      cost.cost_per_check_usd,
+                      interval,
+                      targets?.length ?? 1,
+                    ).toFixed(2)}
+                  </span>
+                  /month
+                </>
+              ) : (
+                <span className="quiet">
+                  cost unknown until a target is verified
+                </span>
+              )}
+              {watch.check_interval_min !== interval && (
+                <span className="quiet">
+                  {" "}
+                  · planner suggested{" "}
+                  <span className="num">{watch.check_interval_min}</span>
+                </span>
+              )}
+            </span>
+          </div>
 
-          <div>
-            <button onClick={() => onConfirm(interval, answers)} disabled={busy}>
+          {/* The budget-derived floor, so an interval the server will refuse
+              is visible before the button is pressed rather than as a 409
+              afterwards. The fourth of the four warnings that used to be
+              indistinguishable from ordinary provenance. */}
+          {cost && interval < cost.min_interval_min && (
+            <p className="notice">
+              below the <span className="num">{cost.min_interval_min}</span> min
+              this budget allows — starting it will be refused
+            </p>
+          )}
+
+          <div className="actions">
+            <button
+              className="go"
+              onClick={() => onConfirm(interval, answers)}
+              disabled={busy}
+            >
               Start watching
-            </button>{" "}
+            </button>
             <button onClick={onDelete} disabled={busy}>
               Discard
             </button>
@@ -748,7 +814,7 @@ function WatchRow({
         <ul className="targets">
           {targets.map((t) => (
             <li key={t.target_id}>
-              <span className="muted">{t.url}</span>
+              <span className="quiet">{t.url}</span>
               {t.last_value && (
                 <>
                   {" "}
@@ -758,8 +824,8 @@ function WatchRow({
               {!!t.last_items?.length && (
                 <Matches items={t.last_items} base={t.url} />
               )}
-              {t.last_note && <p className="muted">{t.last_note}</p>}
-              {t.last_error && <p className="error">{t.last_error}</p>}
+              {t.last_note && <p className="quiet">{t.last_note}</p>}
+              {t.last_error && <p className="notice">{t.last_error}</p>}
               {(() => {
                 const s = staleness?.find((x) => x.target_id === t.target_id);
                 if (!s?.last_changed_at) return null;
@@ -768,13 +834,13 @@ function WatchRow({
                 // a whole session without a single tick is a frozen feed.
                 const moved = describeSince(s.last_changed_at);
                 return s.stale ? (
-                  <p className="error">
+                  <p className="notice">
                     unchanged for {s.unchanged_checks} checks — a whole trading
                     session without a tick. Last moved {moved}; the feed may be
                     frozen rather than the price.
                   </p>
                 ) : (
-                  <p className="muted">last moved {moved}</p>
+                  <p className="quiet">last moved {moved}</p>
                 );
               })()}
             </li>
