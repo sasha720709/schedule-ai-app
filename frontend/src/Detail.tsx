@@ -134,7 +134,11 @@ export default function Detail(props: DetailProps) {
       {!editing && watch.status === "proposed" && <PlanCard {...props} />}
 
       {!editing && watch.status !== "proposed" && watch.status !== "planning" && (
-        <div className="actions">
+        // `pinned`: what you can DO with this watch stays reachable while the
+        // page scrolls past it. A detail page runs long -- note, repeat,
+        // condition, targets, the request, history -- and on a phone the
+        // buttons were a scroll away from everything that explains them.
+        <div className="actions pinned">
           {/* The only editable thing in the product, and the only place this
               button appears. A condition watch is defined by what it reads,
               so changing it means describing it again. */}
@@ -485,7 +489,9 @@ function EditReminder({
         <p className="aside">Carried into the email and the calendar entry.</p>
       </div>
 
-      <div className="actions" style={{ marginTop: "var(--space-4)" }}>
+      {/* Pinned on every size, not just on a phone: a form whose Save button
+          has scrolled off is a form you cannot tell is finished. */}
+      <div className="actions pinned">
         <button
           className="btn btn-primary"
           onClick={save}

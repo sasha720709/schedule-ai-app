@@ -207,7 +207,10 @@ textarea.input { resize: vertical; line-height: 1.5; }
   overflow-y: auto;
   border-right: 1px solid var(--color-divider);
 }
-.pane-detail { flex: 1; overflow-y: auto; padding: 44px 56px 72px; }
+/* The bottom padding is small because a pinned action bar supplies its own.
+   A large one here would let the bar lift away from the bottom edge by that
+   much at full scroll, which reads as the bar coming loose. */
+.pane-detail { flex: 1; overflow-y: auto; padding: 44px 56px var(--space-4); }
 .pane-detail > .measure { max-width: 640px; }
 
 /* --- the list ------------------------------------------------------------- */
@@ -251,6 +254,42 @@ textarea.input { resize: vertical; line-height: 1.5; }
 .sec > .said { font-size: 19px; line-height: 1.55; margin-top: 8px; max-width: 46ch; text-wrap: pretty; }
 
 .actions { display: flex; gap: var(--space-2); margin-top: var(--space-8); flex-wrap: wrap; }
+
+/* An action bar that stays put while its page scrolls past.
+   ---------------------------------------------------------------------------
+   Sticky rather than fixed, deliberately: it participates in layout, so a
+   short page leaves it exactly where it falls and it only starts holding
+   position once there is something to scroll. Fixed would float it over a
+   half-empty screen.
+
+   It sticks to whichever ancestor scrolls -- `.pane-detail` on a desktop, the
+   whole `.split` on a phone -- which is why one rule covers both. The fade
+   above it is the press-sheet treatment the design system uses for its own
+   docked control, rather than a rule: this system does not draw dividers. */
+.actions.pinned {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--color-bg);
+  margin-top: var(--space-6);
+  padding: var(--space-3) 0 var(--space-3);
+}
+.actions.pinned::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 28px;
+  background: linear-gradient(to top, var(--color-bg), transparent);
+  pointer-events: none;
+}
+/* The card's own ground, so a pinned bar inside the plan card does not print
+   a paper-white strip over the surface fill. */
+.card .actions.pinned { background: var(--color-surface); }
+.card .actions.pinned::before {
+  background: linear-gradient(to top, var(--color-surface), transparent);
+}
 
 /* --- the compose overlay -------------------------------------------------- */
 
@@ -312,7 +351,7 @@ textarea.input { resize: vertical; line-height: 1.5; }
   /* On a phone the list and the detail are alternatives, never neighbours. */
   .pane-list[data-hidden="true"] { display: none; }
 
-  .pane-detail { padding: 26px var(--space-4) 96px; overflow: visible; }
+  .pane-detail { padding: 26px var(--space-4) var(--space-3); overflow: visible; }
   .pane-detail[data-hidden="true"] { display: none; }
 
   .detail h1 { font-size: var(--t-title); }
@@ -332,7 +371,13 @@ textarea.input { resize: vertical; line-height: 1.5; }
 
   .transcript { padding: var(--space-6) var(--space-4) var(--space-4); }
   .composer { padding: var(--space-3) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom)); }
-  .actions { position: sticky; bottom: 0; }
+
+  /* Full-width targets on a phone, clear of the home indicator. The detail
+     pane's own bottom padding is what stops the last section hiding behind
+     this once it is holding position. */
+  .actions.pinned {
+    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+  }
   .actions .btn { flex: 1; font-size: 16px; padding: 13px 12px; }
 }
 

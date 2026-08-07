@@ -173,6 +173,45 @@ async function exchange(body: Record<string, string>): Promise<Tokens> {
   return tokens;
 }
 
+/** Raised when the sign-in came back refused rather than merely broken. */
+export class NotPermitted extends Error {}
+
+/**
+ * What Cognito says when the allow-list turned someone away.
+ *
+ * `gatekeeper/` is a pre-sign-up trigger, so it runs at the moment Cognito
+ * would create the user -- *after* Google has authenticated them. Cognito
+ * returns the Lambda's exception on the redirect back here, wrapped in its own
+ * prefix: `PreSignUp failed with error <our message>.` The prefix is Cognito
+ * describing its own plumbing and means nothing to the person reading it.
+ *
+ * This is the missing half of the bug reported on 2026-08-07: signing in with
+ * a second Google account "did not succeed", and the only explanation was
+ * whatever Cognito chose to render on its own domain. When it hands the reason
+ * back, the app is a far better place to say it.
+ */
+function describeAuthError(code: string, description: string | null): Error {
+  const raw = (description ?? "").replace(/\+/g, " ").trim();
+  const unwrapped = raw
+    .replace(/^PreSignUp failed with error\s*/i, "")
+    .replace(/\.$/, "")
+    .trim();
+
+  // The allow-list is the only refusal this app produces on purpose, and it is
+  // a different event from a broken sign-in: nothing is wrong, the answer is
+  // just no.
+  if (/not permitted|not allowed|access denied/i.test(unwrapped)) {
+    return new NotPermitted(
+      unwrapped || "That account is not on the list for this app.",
+    );
+  }
+  if (code === "access_denied") {
+    // The user pressed cancel on Google's own screen.
+    return new NotPermitted("Sign-in was cancelled.");
+  }
+  return new Error(unwrapped || `sign-in failed (${code})`);
+}
+
 /**
  * Finish a sign-in if this page load is the return leg. Returns the tokens if
  * it was, null if this is an ordinary visit.
@@ -180,7 +219,9 @@ async function exchange(body: Record<string, string>): Promise<Tokens> {
 export async function completeSignIn(): Promise<Tokens | null> {
   const params = new URLSearchParams(window.location.search);
   const code = params.get("code");
-  if (!code) return null;
+  const failure = params.get("error");
+
+  if (!code && !failure) return null;
 
   const expected = sessionStorage.getItem(STATE_KEY);
   const verifier = sessionStorage.getItem(VERIFIER_KEY);
@@ -188,13 +229,21 @@ export async function completeSignIn(): Promise<Tokens | null> {
   sessionStorage.removeItem(VERIFIER_KEY);
 
   // Scrub before anything else can throw. A code left in the address bar
-  // outlives the error that stopped it being used.
+  // outlives the error that stopped it being used -- and an `error_description`
+  // left there is the refusal reappearing on every refresh.
   window.history.replaceState({}, "", window.location.pathname);
+
+  // Checked before `state`, because a refusal is the answer to the question
+  // and a state mismatch on a request that already failed is noise.
+  if (failure) throw describeAuthError(failure, params.get("error_description"));
 
   if (!expected || params.get("state") !== expected) {
     throw new Error("sign-in did not match this browser — start again");
   }
   if (!verifier) throw new Error("sign-in was started somewhere else");
+  // Unreachable: the only way past the guard above with no code is a `failure`,
+  // which already threw. Stated so the type narrows without a cast.
+  if (!code) throw new Error("sign-in came back with nothing to exchange");
 
   return exchange({
     grant_type: "authorization_code",

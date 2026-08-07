@@ -20,6 +20,7 @@ import {
   clearSession,
   completeSignIn,
   currentToken,
+  NotPermitted,
   signIn,
   signOut as forgetSession,
 } from "./auth";
@@ -103,6 +104,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  // A refusal is not a broken sign-in: nothing went wrong, the answer is no.
+  // Kept apart from `error` so the sign-in screen can say the right thing.
+  const [refused, setRefused] = useState<string | null>(null);
 
   const resetLocalState = useCallback(() => {
     setToken(null);
@@ -154,7 +158,8 @@ export default function App() {
       try {
         await completeSignIn();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (err instanceof NotPermitted) setRefused(err.message);
+        else setError(err instanceof Error ? err.message : String(err));
       }
       setToken(await currentToken());
       setCheckedSession(true);
@@ -246,29 +251,7 @@ export default function App() {
   }
 
   if (!token) {
-    return (
-      <div className="app">
-        <Masthead />
-        <div className="pane-detail">
-          <div className="measure detail">
-            <h1>Watch something, and be told when it changes.</h1>
-            <p className="lead">
-              A price, a vacancy, a share, or a date you do not want to miss.
-            </p>
-            <p className="aside" style={{ marginTop: "var(--space-4)" }}>
-              Sign in with the Google account this was set up for. Anyone else
-              is turned away before an account is created.
-            </p>
-            <div className="actions">
-              <button className="btn btn-primary" onClick={() => void signIn()}>
-                Sign in with Google
-              </button>
-            </div>
-            {error && <p className="notice">{error}</p>}
-          </div>
-        </div>
-      </div>
-    );
+    return <SignIn error={error} refused={refused} onSignIn={() => void signIn()} />;
   }
 
   function selectWatch(id: string) {
@@ -447,6 +430,93 @@ export default function App() {
           {planReady && pending ? detailFor(pending) : null}
         </Compose>
       )}
+    </div>
+  );
+}
+
+/**
+ * The way in.
+ *
+ * This app is behind an allow-list, and that is unusual enough to be worth
+ * saying out loud rather than discovering. Turning on Google sign-in turns it
+ * on for everyone who has a Google account, so `gatekeeper/` refuses anyone
+ * not named in `allowed_emails` — but it is a *pre-sign-up* trigger, which
+ * means it runs after Google has already authenticated you. The person has
+ * picked an account and consented before anything says no.
+ *
+ * So this screen does two things the old one-button version did not:
+ *
+ * - **It warns before, not after.** One line saying the list exists is worth
+ *   more than any amount of apology afterwards.
+ * - **It explains the refusal in the app's own voice.** Cognito's wording is
+ *   `PreSignUp failed with error …`, rendered on Cognito's own domain, which
+ *   is where the 2026-08-07 report of "I don't succeed" came from. When
+ *   Cognito hands the reason back on the redirect, we say it here instead —
+ *   and say plainly that nothing is broken.
+ */
+function SignIn({
+  error,
+  refused,
+  onSignIn,
+}: {
+  error: string | null;
+  refused: string | null;
+  onSignIn: () => void;
+}) {
+  return (
+    <div className="app">
+      <Masthead />
+      <div className="pane-detail">
+        <div className="measure detail">
+          <div className="detail-kickers">
+            <span className="label accent">Sign in</span>
+          </div>
+
+          <h1>Watch something. Be told when it changes.</h1>
+          <p className="lead">
+            A price, a vacancy, a share, or a date you would rather not miss.
+            It looks, and when the thing you asked about happens, it emails
+            you — then stops.
+          </p>
+
+          {refused ? (
+            /* Not an error state. The system worked; the answer is no. */
+            <div className="sec">
+              <div className="label accent">That account cannot be used</div>
+              <p className="answer">{refused}</p>
+              <p className="aside">
+                Nothing is broken and nothing was created. This app is private
+                to a short list of addresses, and the check happens after
+                Google has confirmed who you are — which is why you were asked
+                to pick an account first. Sign in with the address it was set
+                up for, or ask its owner to add yours.
+              </p>
+            </div>
+          ) : (
+            <div className="sec">
+              <div className="label">Before you do</div>
+              <p className="answer">
+                This is a private app, open to a short list of Google
+                addresses.
+              </p>
+              <p className="aside">
+                Google checks who you are; nothing here ever sees a password.
+                If your address is not on the list you will be turned away
+                after choosing an account, and no account is created.
+              </p>
+            </div>
+          )}
+
+          <div className="actions">
+            <button className="btn btn-primary" onClick={onSignIn}>
+              {refused ? "Try a different account" : "Sign in with Google"}
+            </button>
+          </div>
+
+          {/* A genuine fault, as opposed to a refusal. */}
+          {error && <p className="notice">{error}</p>}
+        </div>
+      </div>
     </div>
   );
 }
