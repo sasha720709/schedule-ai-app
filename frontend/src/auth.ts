@@ -91,10 +91,35 @@ function store(tokens: Tokens) {
   localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
 }
 
-export function signOut() {
+/**
+ * Drop local tokens without touching Cognito or Google. For a session that
+ * ended on its own -- expired refresh token, a 401 mid-request -- where
+ * redirecting the browser away to an external logout page would be a jarring
+ * response to what the user experiences as an ordinary API error.
+ */
+export function clearSession() {
   localStorage.removeItem(TOKENS_KEY);
   sessionStorage.removeItem(VERIFIER_KEY);
   sessionStorage.removeItem(STATE_KEY);
+}
+
+/**
+ * Clear local tokens and end the Cognito session too, then send the browser
+ * to Cognito's `/logout`. Clearing only `localStorage` (the old behaviour)
+ * left Cognito's own session alive, so the next `signIn()` silently resumed
+ * it -- "sign out" without ever actually being signed out.
+ *
+ * This does not touch Google's own session cookie -- Google has no logout
+ * endpoint a relying party can call on a user's behalf. `prompt=select_account`
+ * in `signIn()` is what stops that cookie from being used silently.
+ *
+ * Only for the user-initiated "Sign out" button. A session that ends on its
+ * own uses `clearSession()` instead -- see there for why.
+ */
+export function signOut() {
+  clearSession();
+  const params = new URLSearchParams({ client_id: CLIENT_ID, logout_uri: REDIRECT });
+  window.location.assign(`${DOMAIN}/logout?${params}`);
 }
 
 /** Send the browser to Google, by way of Cognito. */
@@ -116,6 +141,11 @@ export async function signIn() {
     code_challenge_method: "S256",
     // Straight to Google. Cognito's own chooser would show one option.
     identity_provider: "Google",
+    // Without this, Google silently reuses whatever session cookie is
+    // already in the browser -- no chooser, no consent, just the same
+    // account every time, even right after signOut(). Cognito passes this
+    // through to Google's own /authorize endpoint unchanged.
+    prompt: "select_account",
   });
   window.location.assign(`${DOMAIN}/oauth2/authorize?${params}`);
 }
@@ -184,7 +214,7 @@ export async function currentToken(): Promise<string | null> {
   if (!tokens) return null;
   if (Date.now() < tokens.expiresAt) return tokens.idToken;
   if (!tokens.refreshToken) {
-    signOut();
+    clearSession();
     return null;
   }
 
@@ -197,8 +227,10 @@ export async function currentToken(): Promise<string | null> {
   } catch {
     // A refresh token that no longer works means the session is over --
     // revoked, expired, or the user signed out elsewhere. Clearing it is what
-    // stops every subsequent request retrying a dead credential.
-    signOut();
+    // stops every subsequent request retrying a dead credential. Local only:
+    // this runs mid-request, not from the "Sign out" button, so it must not
+    // redirect the browser away from whatever it was doing.
+    clearSession();
     return null;
   }
 }

@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  clearSession,
   completeSignIn,
   currentToken,
   signIn,
@@ -59,8 +60,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  const signOut = useCallback(() => {
-    forgetSession();
+  const resetLocalState = useCallback(() => {
     setToken(null);
     setWatches([]);
     setTargets({});
@@ -68,17 +68,32 @@ export default function App() {
     setLoaded(false);
   }, []);
 
+  // A session that ends on its own (expired refresh token, a 401 mid-request)
+  // clears local state only -- redirecting to Cognito's logout page in
+  // response to an ordinary API error would be a jarring surprise.
+  const endSession = useCallback(() => {
+    clearSession();
+    resetLocalState();
+  }, [resetLocalState]);
+
+  // The "Sign out" button: a real logout, not just a local one, so the next
+  // "Sign in" doesn't silently resume this same session.
+  const signOut = useCallback(() => {
+    resetLocalState();
+    forgetSession();
+  }, [resetLocalState]);
+
   const handle = useCallback(
     (err: unknown) => {
       if (err instanceof ApiError && err.unauthorized) {
         // 401 (header absent) and 403 (header wrong) both land here.
         setError("Your session ended. Sign in again.");
-        signOut();
+        endSession();
         return;
       }
       setError(err instanceof Error ? err.message : String(err));
     },
-    [signOut],
+    [endSession],
   );
 
   // One place that answers "what token do I send right now", so a session
