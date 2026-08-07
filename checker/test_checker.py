@@ -1571,6 +1571,28 @@ def test_a_paused_timed_watch_stays_quiet(env):
     assert env.module.events.put_events.call_count == 0
 
 
+def test_a_re_armed_reminder_fires_again(env):
+    """Editing a fired reminder puts it back to `active` and builds it a new
+    schedule (api `_edit_reminder`, 2026-08-07). Nothing here changed to allow
+    that, and this test is why: the guard against firing twice is a
+    *conditional write on `status = active`*, not a memory of having fired, so
+    restoring the status is genuinely all it takes.
+
+    A guard keyed on `triggered_at` being set, or on a `has_fired` flag, would
+    read identically in every other test and would silently refuse every
+    re-armed reminder. Written down here because the two Lambdas cannot see
+    each other.
+    """
+    a_timed_watch(env, status="active", trigger_count=1,
+                  triggered_at="2026-08-06T21:00:00+00:00")
+
+    result = fire(env)
+
+    assert result.get("skipped") is not True
+    assert env.module.events.put_events.call_count == 1
+    assert env.watches.items["w_1"]["status"] == "triggered"
+
+
 def test_a_retry_that_loses_the_race_says_nothing(env):
     a_timed_watch(env)
     original = env.watches.update_item

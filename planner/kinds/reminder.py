@@ -33,10 +33,11 @@ a new one, and it will close when a user record exists.
 """
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import llm
+import moment
 from kinds.base import Kind
 
 # Where "9am" is, absent anything better. A deployment setting, like
@@ -46,8 +47,10 @@ DEFAULT_TIMEZONE = os.environ.get("DEFAULT_TIMEZONE", "Asia/Jerusalem")
 
 # A reminder further out than this is almost certainly a misread year. The
 # limit is a sanity check rather than a policy: EventBridge will happily accept
-# `at(2126-...)` and then hold a schedule for a century.
-MAX_YEARS_AHEAD = 2
+# `at(2126-...)` and then hold a schedule for a century. Defined beside the
+# guard that enforces it, and re-exported here because this module's readers
+# expect to find it here.
+MAX_YEARS_AHEAD = moment.MAX_YEARS_AHEAD
 
 ONCE, DAILY, WEEKLY = "once", "daily", "weekly"
 REPEATS = (ONCE, DAILY, WEEKLY)
@@ -228,41 +231,11 @@ def _zone(name) -> str:
     return DEFAULT_TIMEZONE
 
 
-def _moment(raw, zone_name: str) -> datetime:
-    """The local wall-clock time to fire at, validated.
-
-    Returned **aware but unconverted**: the reading stays 09:00 and the zone
-    travels beside it, which is the shape `at(...)` needs. Converting to UTC
-    here would make "9am" mean 9am only until the clocks changed.
-    """
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("could not work out when to remind you")
-
-    try:
-        parsed = datetime.fromisoformat(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"could not read {raw!r} as a date and time") from exc
-
-    zone = ZoneInfo(zone_name)
-    local = parsed.replace(tzinfo=zone) if parsed.tzinfo is None \
-        else parsed.astimezone(zone)
-
-    now = datetime.now(zone)
-    if local <= now:
-        # A schedule in the past is refused by EventBridge at create time,
-        # which would surface as a 500 from confirm long after the plan looked
-        # fine. Say it here, in a sentence, while there is still something to
-        # correct -- a guardrail that returns 500 is an outage.
-        raise ValueError(
-            f"{local:%Y-%m-%d %H:%M} ({zone_name}) has already passed — "
-            f"say a time in the future"
-        )
-    if local > now + timedelta(days=365 * MAX_YEARS_AHEAD):
-        raise ValueError(
-            f"{local:%Y-%m-%d %H:%M} is more than {MAX_YEARS_AHEAD} years "
-            f"away — check the year"
-        )
-    return local
+# The validated moment moved to `shared/moment.py` when a reminder became
+# editable: the api now applies the identical guard to a time the *user* typed,
+# and one guard in two Lambdas is a guard that will eventually disagree with
+# itself. Re-exported under the old private name so nothing here changed shape.
+_moment = moment.parse
 
 
 def _fallback_title(request: str) -> str:

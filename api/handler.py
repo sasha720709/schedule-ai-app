@@ -14,7 +14,8 @@ external side effects it could half-complete.
     GET    /watches              list
     GET    /watches/{id}         detail, including targets
     POST   /watches/{id}/confirm create schedules, -> active
-    PATCH  /watches/{id}         pause / resume / change interval
+    PATCH  /watches/{id}         pause / resume / change interval,
+                                 or edit a reminder's time, repeat and note
     DELETE /watches/{id}         delete rows AND schedules
 
 CORS is configured on the API Gateway itself, so no headers are set here.
@@ -32,6 +33,7 @@ from boto3.dynamodb.conditions import Key
 import across
 import condition as condition_mod
 import cost
+import moment
 import questions
 import schedules
 
@@ -461,6 +463,14 @@ def _next_check_for(watch: dict, targets: list) -> str | None:
     schedule that does not exist."""
     if watch.get("status") != "active":
         return None
+    # A reminder knows its next firing exactly -- it is the whole watch. Left
+    # to the line below it would be *derived from `check_interval_min`*, which
+    # for a reminder is the 1440 placeholder that exists only because the cost
+    # model reads it, so a 9pm reminder answered "in 24 hours" from whenever it
+    # was asked. Wrong every time, and invisible until the interface grew a
+    # countdown.
+    if watch.get("fire_at"):
+        return watch["fire_at"]
     return _next_check_at(watch.get("check_interval_min"), _window_of(targets))
 
 
@@ -769,14 +779,126 @@ def confirm_watch(event) -> dict:
     })
 
 
+#: What a reminder lets you change after it exists. Deliberately not the
+#: title: it is what the calendar entry is called and what the email subject
+#: says, and the owner kept it as planned on 2026-08-07. Deliberately not the
+#: timezone either -- that is a profile setting waiting on a user record, and
+#: making it per-reminder now would be building the wrong thing twice.
+EDITABLE_REMINDER_FIELDS = ("fire_at", "repeat", "reminder_note")
+
+
+def _edit_reminder(watch_id: str, watch: dict, body: dict,
+                   updates: list, values: dict, names: dict) -> None:
+    """Apply an edit to a time-triggered watch, rescheduling if the clock moved.
+
+    Appends to the caller's update lists rather than writing, so an edit and a
+    pause arriving in one request are still a single conditional write.
+
+    Three things are worth knowing before touching this:
+
+    - **The schedule is replaced, never added to.** Both shapes are keyed on
+      `_schedule_name(watch_id)` and `_put_schedule` falls back from create to
+      update with the full argument set, so flipping once -> daily rewrites the
+      expression *and* `ActionAfterCompletion` rather than leaving a one-shot
+      that deletes itself after the first firing.
+    - **A moment the user typed gets the same guard as one the model produced**
+      (`shared/moment.py`). A past time is refused here, in a sentence, rather
+      than by EventBridge as a 500 -- the 2026-08-04 lesson.
+    - **Editing a fired reminder re-arms it.** Decided 2026-08-07. `triggered`
+      stops being terminal for this one kind, which is why the transition is
+      explicit below rather than a side effect of writing `status`.
+    """
+    kind_is_time = bool(watch.get("fire_at"))
+    asked = [f for f in EDITABLE_REMINDER_FIELDS if f in body]
+    if not asked:
+        return
+    if not kind_is_time:
+        raise HttpError(
+            400,
+            "only a reminder can be edited — a condition watch is defined by "
+            "what it reads, so change it by describing it again",
+        )
+
+    zone = watch.get("fire_timezone") or None
+    repeat = watch.get("repeat") or "once"
+    fire_at = watch.get("fire_at")
+
+    if "repeat" in body:
+        wanted = body["repeat"]
+        if wanted not in ("once", "daily", "weekly"):
+            raise HttpError(400, "repeat must be 'once', 'daily' or 'weekly'")
+        repeat = wanted
+
+    if "fire_at" in body:
+        try:
+            # Stored as the wall-clock reading it was given, with the zone
+            # beside it -- so it is re-validated in the watch's own zone, not
+            # in the server's.
+            when = moment.parse(body["fire_at"], zone or "UTC")
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+        fire_at = when.isoformat()
+
+    if "reminder_note" in body:
+        note = " ".join(str(body["reminder_note"] or "").split())[:500]
+        updates.append("reminder_note = :rn")
+        values[":rn"] = note
+
+    # A reminder that already fired is `triggered`, and `at(...)` deleted its
+    # own schedule on the way out. Giving it a new time brings it back: the
+    # owner asked for "fix the reminder" to cover a reminder that already went
+    # off, and re-describing it from scratch loses the note and the history.
+    was_terminal = watch.get("status") in ("triggered", "expired")
+    if was_terminal and "fire_at" not in body:
+        raise HttpError(
+            409,
+            f"this reminder already {'fired' if watch.get('status') == 'triggered' else 'finished'}"
+            " — give it a new time to set it going again",
+        )
+
+    schedule_changed = "fire_at" in body or "repeat" in body
+    if schedule_changed:
+        if repeat == "once":
+            arn = _upsert_once(watch_id, fire_at, zone)
+            expires_at = None
+        else:
+            arn = _upsert_repeating(watch_id, fire_at, repeat, zone)
+            # Restarted from now, not from the original creation: the term
+            # exists so a forgotten repeat cannot run for years, and an edit
+            # is proof it is not forgotten.
+            expires_at = (datetime.now(timezone.utc)
+                          + timedelta(days=REPEATING_TERM_DAYS)).isoformat()
+
+        updates.append("fire_at = :fa")
+        values[":fa"] = fire_at
+        updates.append("#r = :r")
+        names["#r"] = "repeat"
+        values[":r"] = repeat
+        updates.append("schedule_arn = :sa")
+        values[":sa"] = arn
+        updates.append("expires_at = :x")
+        values[":x"] = expires_at
+
+        if was_terminal:
+            updates.append("#s = :s")
+            names["#s"] = "status"
+            values[":s"] = "active"
+            print(f"re-armed {watch_id}: was {watch.get('status')}, "
+                  f"now active at {fire_at}")
+
+    print(f"edited {watch_id}: {', '.join(asked)}")
+
+
 def patch_watch(event) -> dict:
-    """Pause, resume, or retune the interval of an existing watch."""
+    """Pause, resume, retune the interval, or edit a reminder."""
     watch_id = event["pathParameters"]["id"]
     watch = _get_watch(watch_id)
     body = _body(event)
 
     updates, names, values = [], {}, {}
     status = watch.get("status")
+
+    _edit_reminder(watch_id, watch, body, updates, values, names)
 
     if "status" in body:
         wanted = body["status"]
@@ -788,7 +910,11 @@ def patch_watch(event) -> dict:
                 raise HttpError(409, f"watch {watch_id} is {status}, cannot resume")
         else:
             raise HttpError(400, "status must be 'paused' or 'active'")
-        updates.append("#s = :s")
+        # A re-arming edit may already have written this in the same request.
+        # Two `#s = :s` clauses in one UpdateExpression is a ValidationException,
+        # so the later, more explicit instruction simply wins.
+        if "#s = :s" not in updates:
+            updates.append("#s = :s")
         names["#s"] = "status"
         values[":s"] = wanted
         status = wanted
@@ -829,7 +955,11 @@ def patch_watch(event) -> dict:
         values[":i"] = _to_decimal(interval)
 
     if not updates:
-        raise HttpError(400, "nothing to update: send status or check_interval_min")
+        raise HttpError(
+            400,
+            "nothing to update: send status, check_interval_min, or "
+            "fire_at / repeat / reminder_note for a reminder",
+        )
 
     updates.append("updated_at = :u")
     values[":u"] = _now()

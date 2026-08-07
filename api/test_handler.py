@@ -7,6 +7,7 @@ unexpected exception that must not leak a stack trace to the caller.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1041,7 +1042,7 @@ def test_answering_daily_creates_a_repeating_schedule(aws):
 
     args = env.scheduler.create_schedule.call_args.kwargs
     assert args["ScheduleExpression"] == "cron(0 21 * * ? *)"
-    assert "ActionAfterCompletion" not in args
+    assert args["ActionAfterCompletion"] == "NONE"
     assert body_of(response)["repeating"] is True
 
 
@@ -1101,6 +1102,197 @@ def test_a_nonsense_answer_falls_back_rather_than_crashing(aws):
 
     assert response["statusCode"] == 200
     assert body_of(response)["repeat"] == "once"
+
+
+# --------------------------------------------------------------------------
+# Editing a reminder
+#
+# The first thing in this product that can be changed after it exists. Every
+# other watch is defined by what it reads, so "change it" means re-planning;
+# a reminder is defined by a moment and a sentence, and both are things a
+# person mistypes. Decided 2026-08-07.
+#
+# The moment is computed, never written down -- see the twelve reminder tests
+# that went red on 2026-08-07 because a literal date walked into the past.
+# --------------------------------------------------------------------------
+
+def in_days(days=2, hour=9):
+    """A wall-clock reading safely in the future, in every zone these use."""
+    when = datetime.now(timezone.utc) + timedelta(days=days)
+    return when.strftime(f"%Y-%m-%dT{hour:02d}:00:00")
+
+
+def live_reminder(**extra):
+    row = {"watch_id": "w_1", "status": "active",
+           "fire_at": in_days(1), "fire_timezone": "Asia/Jerusalem",
+           "reminder_title": "Call the dentist", "repeat": "once"}
+    row.update(extra)
+    return {"w_1": row}
+
+
+def sole_update(env):
+    """The one UpdateExpression the request produced, as a string."""
+    assert len(env.watches.updates) == 1
+    return env.watches.updates[0]
+
+
+def test_moving_a_reminder_replaces_its_schedule(aws):
+    env = aws(watches=live_reminder(), targets={})
+    when = in_days(3, hour=20)
+
+    response = call("PATCH /watches/{id}", {"fire_at": when}, watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    args = env.scheduler.create_schedule.call_args.kwargs
+    # Same name as the original, so this replaces rather than adds a second
+    # schedule that would fire at the old time forever.
+    assert args["Name"] == "schedule-ai-app-w_1"
+    assert args["ScheduleExpression"] == f"at({when})"
+    assert args["ScheduleExpressionTimezone"] == "Asia/Jerusalem"
+
+
+def test_a_time_in_the_past_is_refused_with_a_sentence(aws):
+    """The same guard the Planner applies to the model's answer, applied to
+    the user's. EventBridge would reject it as a 500, and a guardrail that
+    returns 500 is an outage."""
+    aws(watches=live_reminder(), targets={})
+    response = call("PATCH /watches/{id}",
+                    {"fire_at": "2020-01-01T09:00:00"}, watch_id="w_1")
+
+    assert response["statusCode"] == 400
+    assert "already passed" in body_of(response)["error"]
+
+
+def test_an_unreadable_time_is_refused_before_any_schedule_is_touched(aws):
+    env = aws(watches=live_reminder(), targets={})
+    response = call("PATCH /watches/{id}", {"fire_at": "soonish"},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 400
+    assert env.scheduler.create_schedule.call_count == 0
+    assert env.watches.updates == []
+
+
+def test_switching_to_daily_swaps_at_for_cron_and_starts_a_term(aws):
+    """`at(...)` carries ActionAfterCompletion DELETE. Left in place, a
+    reminder switched to daily would delete itself after firing once."""
+    env = aws(watches=live_reminder(), targets={})
+    response = call("PATCH /watches/{id}", {"repeat": "daily"},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"].startswith("cron(")
+    assert args["ActionAfterCompletion"] == "NONE"
+    assert sole_update(env)["ExpressionAttributeValues"][":x"] is not None
+
+
+def test_switching_back_to_once_restores_the_self_deleting_schedule(aws):
+    env = aws(watches=live_reminder(repeat="daily"), targets={})
+    call("PATCH /watches/{id}", {"repeat": "once"}, watch_id="w_1")
+
+    args = env.scheduler.create_schedule.call_args.kwargs
+    assert args["ScheduleExpression"].startswith("at(")
+    assert args["ActionAfterCompletion"] == "DELETE"
+    # And the 90-day term goes with it: a one-off already has an end.
+    assert sole_update(env)["ExpressionAttributeValues"][":x"] is None
+
+
+def test_editing_only_the_note_touches_no_schedule(aws):
+    """Nothing about when it fires changed, so nothing about the schedule
+    should be rewritten."""
+    env = aws(watches=live_reminder(), targets={})
+    response = call("PATCH /watches/{id}",
+                    {"reminder_note": "  bring   the X-ray  "}, watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert env.scheduler.create_schedule.call_count == 0
+    assert sole_update(env)["ExpressionAttributeValues"][":rn"] == "bring the X-ray"
+
+
+def test_a_condition_watch_cannot_be_edited_this_way(aws):
+    """It is defined by what it reads, and none of these fields mean anything
+    to it. Saying so beats writing fire_at onto a price watch."""
+    aws(watches={"w_1": {"watch_id": "w_1", "status": "active"}},
+        targets=one_target())
+    response = call("PATCH /watches/{id}", {"fire_at": in_days()},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 400
+    assert "only a reminder" in body_of(response)["error"]
+
+
+def test_an_unknown_repeat_is_refused(aws):
+    aws(watches=live_reminder(), targets={})
+    assert call("PATCH /watches/{id}", {"repeat": "fortnightly"},
+                watch_id="w_1")["statusCode"] == 400
+
+
+def test_a_fired_reminder_re_arms_when_given_a_new_time(aws):
+    """`at(...)` deleted its own schedule on the way out, so this creates a
+    fresh one and brings the watch back to active. Decided 2026-08-07:
+    re-describing it from scratch would lose the note and the history."""
+    env = aws(watches=live_reminder(status="triggered", trigger_count=1),
+              targets={})
+    response = call("PATCH /watches/{id}", {"fire_at": in_days(4)},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert env.scheduler.create_schedule.call_count == 1
+    assert sole_update(env)["ExpressionAttributeValues"][":s"] == "active"
+
+
+def test_a_fired_reminder_cannot_be_edited_without_a_new_time(aws):
+    """Changing the note of something that already happened does nothing a
+    user would want, and silently leaving it `triggered` would read as a
+    reminder that was quietly set going again."""
+    env = aws(watches=live_reminder(status="triggered"), targets={})
+    response = call("PATCH /watches/{id}", {"reminder_note": "later"},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 409
+    assert "already fired" in body_of(response)["error"]
+    assert env.watches.updates == []
+
+
+def test_re_arming_and_pausing_cannot_collide(aws):
+    """Both write `status`, and two `#s = :s` clauses in one UpdateExpression
+    is a ValidationException -- the same shape as the `repeat` reserved-word
+    bug of 2026-08-05. They cannot meet: re-arming needs a terminal watch and
+    pausing needs an active one. This test is what keeps that true, because
+    the guard in `patch_watch` is otherwise unreachable and would be deleted
+    by the next person tidying up.
+    """
+    env = aws(watches=live_reminder(status="triggered"), targets={})
+    response = call("PATCH /watches/{id}",
+                    {"fire_at": in_days(5), "status": "paused"},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 409
+    assert env.watches.updates == []
+
+
+def test_pausing_a_reminder_leaves_its_schedule_alone(aws):
+    """A paused reminder keeps its EventBridge schedule and the Checker
+    declines to fire it -- `_fire_on_time` returns early on any status that is
+    not active. Deleting the schedule here would make resuming it silent."""
+    env = aws(watches=live_reminder(), targets={})
+    response = call("PATCH /watches/{id}", {"status": "paused"},
+                    watch_id="w_1")
+
+    assert response["statusCode"] == 200
+    assert env.scheduler.delete_schedule.call_count == 0
+
+
+def test_a_reminders_next_check_is_its_own_firing_time(aws):
+    """Derived from `check_interval_min` it would read the 1440 placeholder
+    that exists only because the cost model wants a number, and answer "in 24
+    hours" for a reminder due in ten minutes."""
+    when = in_days(1, hour=21)
+    aws(watches=live_reminder(fire_at=when), targets={})
+    response = call("GET /watches/{id}", watch_id="w_1")
+
+    assert body_of(response)["next_check_at"] == when
 
 
 # --------------------------------------------------------------------------

@@ -418,9 +418,16 @@ def test_a_weekly_reminder_keeps_the_day_of_the_week():
 
 
 def test_a_repeating_reminder_never_deletes_itself():
-    """It has to survive its own firing. What stops it is the watch's term."""
+    """It has to survive its own firing. What stops it is the watch's term.
+
+    Asserted as an explicit NONE rather than as an absent key: since reminders
+    became editable, a `once` -> `daily` flip calls `update_schedule` on a
+    schedule that already carries DELETE, and an absent field would only
+    clear it by way of UpdateSchedule's replace semantics. Too subtle to rest
+    "does this delete itself after one firing" on.
+    """
     args = schedules.repeating_expression(datetime(2026, 8, 5, 21, 7), "daily")
-    assert "ActionAfterCompletion" not in args
+    assert args["ActionAfterCompletion"] == "NONE"
 
 
 def test_the_string_form_the_row_stores_is_accepted_here_too():

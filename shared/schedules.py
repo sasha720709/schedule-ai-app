@@ -299,9 +299,16 @@ def repeating_expression(when, repeat: str, timezone_name=None) -> dict:
     long each invocation took, and a rate schedule created at 14:00 fires at
     14:00 forever. A cron pins the wall-clock time, which is the entire request.
 
-    No `ActionAfterCompletion` -- it must survive its own firing. What stops it
-    is the watch's term, checked by the Checker, exactly as a repeating vacancy
-    watch is stopped.
+    **`ActionAfterCompletion: NONE`, stated rather than omitted.** It has to
+    survive its own firing -- what stops it is the watch's term, checked by the
+    Checker, exactly as a repeating vacancy watch is stopped. NONE is already
+    the AWS default, so this was left out until reminders became editable on
+    2026-08-07. Now a reminder can be flipped from `once` to `daily`, and that
+    path calls `update_schedule` on a schedule already carrying
+    `ActionAfterCompletion: DELETE`. Omitting the field there would leave the
+    correctness of the flip resting on UpdateSchedule being a full replacement
+    that resets absent fields to their defaults -- true, and far too subtle to
+    depend on for "does this reminder delete itself after firing once".
     """
     if isinstance(when, str):
         when = datetime.fromisoformat(when)
@@ -313,7 +320,8 @@ def repeating_expression(when, repeat: str, timezone_name=None) -> dict:
     else:
         raise ValueError(f"unknown repeat {repeat!r}")
 
-    args = {"ScheduleExpression": f"cron({fields})"}
+    args = {"ScheduleExpression": f"cron({fields})",
+            "ActionAfterCompletion": "NONE"}
     if timezone_name:
         # The same reason `cron` windows carry one: a UTC cron drifts by an
         # hour twice a year, and a reminder that moves to 8pm every autumn is
